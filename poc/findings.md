@@ -43,3 +43,12 @@ Three controlled comparisons: 394 shown / 393.6 read, 367 / 367.4, 366 / 366.3. 
 - The kill came 20+ s after the last hit, so it did not exercise the worst case directly; the 1 s flush cadence bounds the loss structurally and the writer thread is a daemon, so a hard kill can only lose the current unflushed second.
 - Side finding: the one-off weapon layout dump ran at controller-resolve time, when `ActiveWeapons.Slots` and `EquippedInventorySlots.items` were both still empty, so every event carries `"weapon": "unknown"`. `poc/probe_weapon.py` repeats that dump on demand once weapons are equipped; run it in the next session before building weapon attribution.
 - Data sanity: 7 of 35 hits flagged crit (flags bit 1), all `elem` 0 and `kind` direct, which matches a non-elemental gun against wildlife. Flag values seen: 1024, 1026, 16384, 17408, 17410 (bits 10, 1, 14 plus combos), still undecoded.
+
+## E. On-screen readout from Python: PASS
+
+Added on 2026-09-20 (the numbers belong in the game, not only in the offline report). Two mechanisms checked with `poc/probe_ui.py`:
+
+- Canvas text via a `/Script/Engine.HUD:ReceiveDrawHUD` hook: dead. `pc.MyHUD` is an `OakHUD`, but the event never appears in a 234k-line `log_all_calls` trace, so BL4's HUD (Coherent UI) never calls it.
+- Runtime UMG: works. `WidgetBlueprintLibrary.Create(pc, container_class, pc)` with a concrete native `UserWidget` subclass as container (`UserWidget` itself is abstract; `GbxUIUMGListViewItemWidget` worked, `GbxUIUMGUserWidget` is the cleaner-looking candidate, untested), then `unrealsdk.construct_object("TextBlock", widget.WidgetTree, "DmgTrackerText")`, `widget.WidgetTree.RootWidget = text_block`, `text_block.SetText("...")`, `widget.AddToViewport(10000)`, `widget.SetPositionInViewport(make_struct("Vector2D", X=120, Y=320), True)`. The text rendered above the game HUD in the default 24 pt engine font; `RemoveFromParent()` takes it away. Visibility came back as `SelfHitTestInvisible`, so it does not eat clicks. pyunrealsdk returns `Ellipsis` for void UFunction calls.
+- Not yet tried: font size/colour (`SetFont` with a `SlateFontInfo`, `SetColorAndOpacity` with a `SlateColor`), a multi-line layout (a `VerticalBox` root with several `TextBlock` children), and whether the widget survives a map change (expect not; recreate on controller resolve).
+- Number formatting rule for everything shown to the user: Swiss style, `'` for thousands and `.` for decimals (`12'345.5`).
