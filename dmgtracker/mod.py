@@ -42,6 +42,9 @@ DEFAULT_RING_SIZE = 6
 DEFAULT_FLUSH_INTERVAL_S = 1.0
 DEFAULT_SESSIONS_TO_KEEP = 20
 DEFAULT_STATUS_INTERVAL_S = 60.0
+# Seconds without a hit that end an encounter. The spec's 5 s closed fights during weapon
+# swaps and grenade throws in the first real sessions; 15 s keeps a fight together.
+DEFAULT_ENCOUNTER_GAP_S = 15.0
 
 DEFAULT_READOUT_X = 120.0
 DEFAULT_READOUT_Y = 320.0
@@ -82,6 +85,7 @@ ring_size = HiddenOption("ring_size", DEFAULT_RING_SIZE)
 flush_interval_s = HiddenOption("flush_interval_s", DEFAULT_FLUSH_INTERVAL_S)
 sessions_to_keep = HiddenOption("sessions_to_keep", DEFAULT_SESSIONS_TO_KEEP)
 status_interval_s = HiddenOption("status_interval_s", DEFAULT_STATUS_INTERVAL_S)
+encounter_gap_s = HiddenOption("encounter_gap_s", DEFAULT_ENCOUNTER_GAP_S)
 readout_x = HiddenOption("readout_x", DEFAULT_READOUT_X)
 readout_y = HiddenOption("readout_y", DEFAULT_READOUT_Y)
 readout_font_size = HiddenOption("readout_font_size", DEFAULT_READOUT_FONT_SIZE)
@@ -304,7 +308,7 @@ def on_enable() -> None:
     _broken_reported = False
     _readout_errors = 0
     _last_status_time = time.time()
-    tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
+    tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingWindow()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
@@ -327,6 +331,7 @@ def _start_session_log() -> SessionLog | None:
         "version": _mod_version(),
         "schema": LOG_SCHEMA_VERSION,
         "started": time.time(),
+        "encounter_gap_s": float(encounter_gap_s.value),
     }
     folder = _log_dir()
     log = SessionLog(folder, float(flush_interval_s.value), int(sessions_to_keep.value), meta)
@@ -364,6 +369,7 @@ mod = build_mod(
         flush_interval_s,
         sessions_to_keep,
         status_interval_s,
+        encounter_gap_s,
         readout_x,
         readout_y,
         readout_font_size,

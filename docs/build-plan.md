@@ -111,7 +111,7 @@ Hidden (persisted, editable in `sdk_mods/settings/dmgtracker.json`):
 - `log_dir` (default `%LOCALAPPDATA%\BL4DamageTracker\logs`)
 - `tick_function` (default `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget`)
 - `ring_property` (default `RecentlyCausedDamageInstances`), `ring_size` (6)
-- `flush_interval_s` (1.0), `sessions_to_keep` (20)
+- `flush_interval_s` (1.0), `sessions_to_keep` (20), `encounter_gap_s` (15.0; the spec's 5 s ended fights during weapon swaps and grenade throws in the first real sessions; also written to the session meta line so the report uses the same gap)
 - `readout_x`, `readout_y` (120, 320), `readout_font_size` (30), `readout_column_gap` (44), `readout_column_widths` ([320, 240, 190, 140]), `readout_background_alpha` (0.6), `readout_show_rolling_row` (true): the readout layout, changed by editing the settings file (no menu entry; the file is reloaded at enable)
 
 ## report.py
