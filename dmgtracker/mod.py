@@ -52,7 +52,9 @@ GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
 # in their name (probes 2026-09-20, three characters).
 TRICK_BEGIN_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnBegin_Mut"
 TRICK_END_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnEnd_Mut"
-MELEE_TRICK_CLASS_PREFIX = "ATrick_Melee"
+SHARED_PLAYER_TRICK_PREFIX = "ATrick_"
+ENEMY_TRICK_PREFIX = "TRAnim_"
+MELEE_TRICK_FRAGMENT = "Melee"
 SKILL_TRICK_CLASS_FRAGMENT = "ActionSkill"
 DEFAULT_RING_PROPERTY = "RecentlyCausedDamageInstances"
 DEFAULT_RING_SIZE = 6
@@ -470,16 +472,39 @@ def _on_grenade_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: Boun
         pass
 
 
+_seen_melee_tricks: set[str] = set()
+
+
+def _is_player_melee_trick(class_name: str) -> bool:
+    """The player's melee tricks are the shared ATrick_* scripts or the character's own
+    Trick_<Class>_* ones; enemy melee tricks are TRAnim_* and instanced on the enemy."""
+    if MELEE_TRICK_FRAGMENT not in class_name or class_name.startswith(ENEMY_TRICK_PREFIX):
+        return False
+    if class_name.startswith(SHARED_PLAYER_TRICK_PREFIX):
+        return True
+    if character is not None:
+        class_token = character.class_name.removeprefix("Char_")
+        if class_token and class_token in class_name:
+            return True
+    return False
+
+
 def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     """Fires for every trick of every actor; the class name says what it is."""
     try:
         if poller is None:
             return
         class_name = str(obj.Class.Name)
-        if class_name.startswith(MELEE_TRICK_CLASS_PREFIX):
-            poller.note_melee_swing(time.time())
-        elif SKILL_TRICK_CLASS_FRAGMENT in class_name:
+        if SKILL_TRICK_CLASS_FRAGMENT in class_name:
             poller.note_skill_activity(time.time())
+            return
+        if MELEE_TRICK_FRAGMENT in class_name and class_name not in _seen_melee_tricks:
+            # One line per new melee-like trick, so an unexplained Melee/Other case can be
+            # traced back to the trick's name without a probe run.
+            _seen_melee_tricks.add(class_name)
+            _say(f"melee-like trick seen: {class_name} ({'counted' if _is_player_melee_trick(class_name) else 'ignored'})")
+        if _is_player_melee_trick(class_name):
+            poller.note_melee_swing(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 
