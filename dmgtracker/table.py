@@ -34,9 +34,10 @@ STYLE_TOTAL = "total"
 STYLE_SPACER = "spacer"
 
 HEADER_CELLS = ("Weapon", "Total", "DPS", "Share [%]")
-EMPTY_CELLS = ("", "", "", "")
+BEST_HEADER_CELL = "Best DPS"
 EMPTY_SLOT_LABEL = "-"
 ENCOUNTER_LABEL = "Encounter"
+BASE_COLUMNS = len(HEADER_CELLS)
 
 WEAPON_SLOT_ROWS = 4
 # Fixed order of the non-weapon rows, always shown.
@@ -64,7 +65,7 @@ class DamageScope(Protocol):
 
 @dataclass(frozen=True)
 class TableRow:
-    cells: tuple[str, str, str, str]
+    cells: tuple[str, ...]
     style: str
 
 
@@ -83,20 +84,33 @@ def build_rows(
     equipped: list[DamageSource],
     held_instance_id: int,
     encounter: Encounter | None = None,
+    best_dps: dict[int, float] | None = None,
 ) -> list[TableRow]:
-    """The complete table for the current state; the row count only depends on whether an
-    encounter row is requested."""
-    rows = [TableRow(HEADER_CELLS, STYLE_HEADER)]
-    rows.extend(_weapon_slot_rows(window, equipped, held_instance_id))
+    """The complete table for the current state. The row count only depends on whether an
+    encounter row is requested; `best_dps` (lifetime peak DPS in hand per weapon instance)
+    adds a fifth column to every row, filled for the weapon rows."""
+    columns = BASE_COLUMNS + (1 if best_dps is not None else 0)
+    header = HEADER_CELLS + ((BEST_HEADER_CELL,) if best_dps is not None else ())
+    rows = [TableRow(header, STYLE_HEADER)]
+    rows.extend(_weapon_slot_rows(window, equipped, held_instance_id, best_dps))
     rows.extend(_non_weapon_rows(window))
-    rows.append(TableRow(EMPTY_CELLS, STYLE_SPACER))
+    rows.append(TableRow(("",) * columns, STYLE_SPACER))
     rows.append(_total_row(window_label(window_minutes), window))
     if encounter is not None:
         rows.append(_total_row(ENCOUNTER_LABEL, encounter))
-    return rows
+    return [_padded(row, columns) for row in rows]
 
 
-def _weapon_slot_rows(scope: DamageScope, equipped: list[DamageSource], held_instance_id: int) -> list[TableRow]:
+def _padded(row: TableRow, columns: int) -> TableRow:
+    if len(row.cells) == columns:
+        return row
+    cells = tuple(row.cells[:columns]) + ("",) * max(columns - len(row.cells), 0)
+    return TableRow(cells, row.style)
+
+
+def _weapon_slot_rows(
+    scope: DamageScope, equipped: list[DamageSource], held_instance_id: int, best_dps: dict[int, float] | None
+) -> list[TableRow]:
     rows: list[TableRow] = []
     for slot in range(WEAPON_SLOT_ROWS):
         if slot >= len(equipped):
@@ -105,7 +119,11 @@ def _weapon_slot_rows(scope: DamageScope, equipped: list[DamageSource], held_ins
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
         style = STYLE_ACTIVE if weapon.instance_id == held_instance_id else STYLE_ROW
-        rows.append(_weapon_row(weapon.label, totals, scope, style))
+        row = _weapon_row(weapon.label, totals, scope, style)
+        if best_dps is not None:
+            best = best_dps.get(weapon.instance_id, 0.0)
+            row = TableRow(row.cells + (format_number(best) if best > 0 else "",), row.style)
+        rows.append(row)
     return rows
 
 

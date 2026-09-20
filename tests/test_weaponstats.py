@@ -103,6 +103,12 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Peak DPS", store.format_ranking()[0])
         self.assertIn("1'200", store.format_ranking()[1])
 
+    def test_peaks_map(self) -> None:
+        store = WeaponStore(self.path)
+        store.note_peak(1, "A", "", dps=100.0, held_seconds=20.0, now=1.0)
+        store.add_event(hit(2.0, 5.0, wid=2, weapon="B"))
+        self.assertEqual(store.peaks(), {1: 100.0})
+
     def test_records_without_peak_fields_still_load(self) -> None:
         self.path.write_text(json.dumps({"schema": 1, "weapons": [{"instance_id": 5, "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
         store = WeaponStore(self.path)

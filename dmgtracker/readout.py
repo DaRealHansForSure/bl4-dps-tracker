@@ -24,7 +24,6 @@ CONTAINER_CLASSES = ("GbxUIUMGUserWidget", "GbxUIUMGListViewItemWidget")
 FONT_PATH = "/Engine/EngineFonts/Roboto.Roboto"
 TYPEFACE_REGULAR = "Regular"
 TYPEFACE_BOLD = "Bold"
-COLUMNS = 4
 Z_ORDER_ABOVE_HUD = 10000
 SPACER_FONT_SIZE = 10
 ROW_GAP = 2.0
@@ -53,7 +52,11 @@ class ReadoutLayout:
     y: float
     font_size: int
     column_gap: float
-    column_widths: tuple[float, float, float, float]
+    column_widths: tuple[float, ...]
+
+    @property
+    def columns(self) -> int:
+        return len(self.column_widths)
     background_alpha: float
 
 
@@ -167,7 +170,7 @@ class Readout:
             for cell in cells:
                 cell.SetColorAndOpacity(color)
                 cell.SetFont(font)
-        for column, text in enumerate(row.cells):
+        for column, text in enumerate(row.cells[: len(cells)]):
             if self._cell_texts[row_index][column] != text:
                 self._cell_texts[row_index][column] = text
                 cells[column].SetText(text)
@@ -208,7 +211,7 @@ class Readout:
         shadow_offset = self._vector2d(*SHADOW_OFFSET)
         for row_index in range(MAX_ROWS):
             row_cells: list[UObject] = []
-            for column in range(COLUMNS):
+            for column in range(self.layout.columns):
                 cell = unrealsdk.construct_object("TextBlock", tree, f"DmgTrackerCell_{row_index}_{column}")
                 cell.SetFont(normal_font)
                 cell.SetColorAndOpacity(row_color)
@@ -223,7 +226,7 @@ class Readout:
                 slot.SetPadding(self._margin(gap_left, ROW_GAP, 0.0, ROW_GAP))
                 row_cells.append(cell)
             self._cells.append(row_cells)
-            self._cell_texts.append([""] * COLUMNS)
+            self._cell_texts.append([""] * self.layout.columns)
             self._row_styles.append(STYLE_ROW)
             self._row_shown.append(False)
 

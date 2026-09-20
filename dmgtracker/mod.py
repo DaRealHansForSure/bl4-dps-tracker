@@ -71,6 +71,8 @@ DEFAULT_READOUT_Y = 320.0
 DEFAULT_READOUT_FONT_SIZE = 30
 DEFAULT_READOUT_COLUMN_GAP = 44.0
 DEFAULT_READOUT_COLUMN_WIDTHS = [320.0, 240.0, 190.0, 140.0]
+DEFAULT_BEST_COLUMN_WIDTH = 170.0
+BASE_COLUMN_COUNT = 4
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
 DEFAULT_READOUT_WINDOW_MINUTES = 5.0
 READOUT_REFRESH_INTERVAL_S = 0.25
@@ -123,6 +125,7 @@ readout_column_widths = HiddenOption("readout_column_widths", DEFAULT_READOUT_CO
 readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READOUT_BACKGROUND_ALPHA)
 readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
 readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
+readout_show_best_column = HiddenOption("readout_show_best_column", True)
 
 # ------------------------------------------------------------------ state
 
@@ -210,14 +213,17 @@ def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -
 
 def _readout_layout() -> ReadoutLayout:
     widths = [float(width) for width in readout_column_widths.value]
-    if len(widths) != 4:
+    if len(widths) < BASE_COLUMN_COUNT:
         widths = list(DEFAULT_READOUT_COLUMN_WIDTHS)
+    columns = BASE_COLUMN_COUNT + (1 if readout_show_best_column.value else 0)
+    while len(widths) < columns:
+        widths.append(DEFAULT_BEST_COLUMN_WIDTH)
     return ReadoutLayout(
         x=float(readout_x.value),
         y=float(readout_y.value),
         font_size=int(readout_font_size.value),
         column_gap=float(readout_column_gap.value),
-        column_widths=(widths[0], widths[1], widths[2], widths[3]),
+        column_widths=tuple(widths[:columns]),
         background_alpha=float(readout_background_alpha.value),
     )
 
@@ -348,7 +354,8 @@ def _refresh_readout() -> None:
         rolling.prune(_combat_clock)
         _record_peaks(wall_now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
-        rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter)
+        best_dps = _best_dps_by_weapon() if readout_show_best_column.value else None
+        rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter, best_dps)
         readout.render(rows)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -365,6 +372,12 @@ def _should_show_table(controller: UObject, pawn: Any) -> bool:
     if not resolver.is_character(pawn) or controller.bShowMouseCursor or _transition_hidden:
         return False
     return not pawn.bHidden
+
+
+def _best_dps_by_weapon() -> dict[int, float]:
+    if weapon_store is None:
+        return {}
+    return weapon_store.peaks()
 
 
 def _record_peaks(now: float) -> None:
@@ -755,6 +768,7 @@ mod = build_mod(
         readout_background_alpha,
         readout_window_minutes,
         readout_show_encounter_row,
+        readout_show_best_column,
     ],
     keybinds=[],
     hooks=[],

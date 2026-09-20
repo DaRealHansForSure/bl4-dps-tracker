@@ -215,6 +215,11 @@ class WeaponStore:
 
     # ------------------------------------------------------------------ reading
 
+    def peaks(self) -> dict[int, float]:
+        """Peak DPS in hand per weapon instance, for the table's Best DPS column."""
+        with self._lock:
+            return {instance_id: record.peak_dps for instance_id, record in self.records.items() if record.peak_dps > 0}
+
     def ranking(self) -> list[WeaponRecord]:
         """Records by DPS in hand, best first; weapons never held long enough come last."""
         with self._lock:

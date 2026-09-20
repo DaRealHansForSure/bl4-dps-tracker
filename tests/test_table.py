@@ -97,6 +97,17 @@ class BuildRowsTests(unittest.TestCase):
         self.assertEqual(rows[8].cells[1], "0", "Other")
         self.assertEqual(rows[10].cells[1], "1'508", "the swapped-out shotgun still counts in the total")
 
+    def test_best_dps_column_is_optional_and_only_on_weapon_rows(self) -> None:
+        rows = build_rows(window_with(now=100.0), WINDOW_MINUTES, EQUIPPED, 280, best_dps={277: 12345.6, 280: 0.0})
+        self.assertEqual(rows[0].cells, ("Weapon", "Total", "DPS", "Share [%]", "Best DPS"))
+        self.assertTrue(all(len(row.cells) == 5 for row in rows))
+        self.assertEqual(rows[1].cells[4], "", "no peak yet")
+        self.assertEqual(rows[2].cells[4], "12'346")
+        self.assertEqual(rows[5].cells[4], "", "Skill row has no best column value")
+        self.assertEqual(rows[10].cells[4], "")
+        without = build_rows(window_with(now=100.0), WINDOW_MINUTES, EQUIPPED, 280)
+        self.assertTrue(all(len(row.cells) == 4 for row in without))
+
     def test_four_equipped_weapons_fill_the_slots(self) -> None:
         four = [DamageSource("weapon", f"Gun {index}", "", index) for index in range(1, 5)]
         rows = build_rows(window_with(now=100.0), WINDOW_MINUTES, four, 3)
