@@ -25,8 +25,8 @@ WINDOW_MINUTES = 5.0
 FIXED_LABELS = ["Weapon", "Vladof Assault Rifle", "Jakobs Sniper", "-", "-", "Skill", "Grenade", "Melee", "Other", "", "Last 5 min"]
 
 
-def hit(t: float, dmg: float, source: DamageSource = SNIPER, kind: str = "direct") -> dict:
-    return {"t": t, "dmg": dmg, "kind": kind, "crit": False, "kill": False,
+def hit(t: float, dmg: float, source: DamageSource = SNIPER, kind: str = "direct", crit: bool = False, kill: bool = False) -> dict:
+    return {"t": t, "dmg": dmg, "kind": kind, "crit": crit, "kill": kill,
             "src": source.kind, "weapon": source.label, "wid": source.item_id, "target": "Char_X_1"}
 
 
@@ -111,6 +111,21 @@ class BuildRowsTests(unittest.TestCase):
         self.assertEqual(rows[10].cells[4], "")
         without = build_rows(window_with(now=100.0), WINDOW_MINUTES, EQUIPPED, "280")
         self.assertTrue(all(len(row.cells) == 4 for row in without))
+
+    def test_crit_and_kill_columns(self) -> None:
+        window = window_with(
+            hit(100.0, 100.0, SNIPER, crit=True, kill=True), hit(101.0, 50.0, SNIPER), hit(102.0, 5.0, SNIPER, kind="dot"),
+            hit(103.0, 20.0, DamageSource("skill", "Skill", "", ""), kill=True), now=105.0,
+        )
+        rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277", crit_and_kills=True)
+        self.assertEqual(rows[0].cells, ("Weapon", "Total", "DPS", "Share [%]", "Crit [%]", "Kills"))
+        self.assertEqual(rows[2].cells[4:], ("50.0", "1"), "one crit in two direct hits; the status tick does not count")
+        self.assertEqual(rows[3].cells[4:], ("0.0", "0"), "an empty slot")
+        self.assertEqual(rows[5].cells[4:], ("0.0", "1"), "Skill")
+        self.assertEqual(rows[10].cells[4:], ("33.3", "2"), "the window row sums everything")
+        with_best = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277", best=PeakDps({"277": 9.0}, {}), crit_and_kills=True)
+        self.assertEqual(with_best[0].cells[-1], "Best DPS")
+        self.assertEqual(with_best[2].cells[-1], "9")
 
     def test_hidden_rows_are_left_out_but_still_count_in_the_total(self) -> None:
         melee = DamageSource("melee", "Melee", "", "")

@@ -45,6 +45,7 @@ from .attribution import (
     OTHER_SOURCE,
     SKILL_SOURCE,
     SOURCE_WEAPON,
+    UNKNOWN_SOURCE,
     DamageSource,
     WeaponResolver,
 )
@@ -407,7 +408,22 @@ class DamagePoller:
                     return previous
         if target_name:
             self._hits_since_swap.add(target_name)
+        if held.item_id == "":
+            return self._gun_without_one_in_hand(target_name, now)
         return held
+
+    def _gun_without_one_in_hand(self, target_name: str, now: float) -> DamageSource:
+        """Gun damage while no gun resolves (mid swap, the slot empty for a moment): a sticky
+        or an explosive round of a gun that is no longer in hand. The gun that last hit this
+        target within the stick window, else the gun swapped away, else unknown."""
+        remembered = self._last_hit_by_target.get(target_name) if target_name else None
+        if remembered is not None:
+            last_source, when = remembered
+            if last_source.kind == SOURCE_WEAPON and now - when <= STICK_WINDOW_S:
+                return last_source
+        if self._previous_held is not None and self._previous_held.item_id != "":
+            return self._previous_held
+        return UNKNOWN_SOURCE
 
     def _recent_explosion_source(self, now: float) -> DamageSource | None:
         for when, source in reversed(self._explosions):

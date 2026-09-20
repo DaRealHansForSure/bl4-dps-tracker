@@ -7,21 +7,21 @@ Single player. Tested against the game build of 2026-09-19 with oak2-mod-manager
 ## What you see
 
 ```
-Weapon                   Total        DPS   Share [%]   Best DPS
-Vladof Assault Rifle   442'795     26'047        13.8     31'202      <- the gun in hand is yellow
-Jakobs Shotgun         237'166     29'646         7.4     29'646
-Vladof SMG             207'749     18'886         6.5     22'410
-Torgue Pistol          168'461      7'657         5.2      9'980
-Skill                2'034'870     20'349        63.2     24'118
-Grenade                120'322      1'204         3.7      3'350
-Other                    7'703         77         0.2
+Weapon                   Total        DPS   Share [%]   Crit [%]   Kills   Best DPS
+Vladof Assault Rifle   442'795     26'047        13.8       31.5      12     31'202      <- the gun in hand is yellow
+Jakobs Shotgun         237'166     29'646         7.4       12.0       4     29'646
+Vladof SMG             207'749     18'886         6.5       28.1       6     22'410
+Torgue Pistol          168'461      7'657         5.2        9.4       2      9'980
+Skill                2'034'870     20'349        63.2       14.2      31     24'118
+Grenade                120'322      1'204         3.7        0.0       1      3'350
+Other                    7'703         77         0.2        0.0       0
 
-Last 5 min           3'219'066     32'190       100.0
+Last 5 min           3'219'066     32'190       100.0       19.8      56
 ```
 
 - Every number covers the **last 5 minutes of fighting**. The clock only runs while a fight is on, so menus, driving, loading and walking between fights do not move the numbers.
 - A weapon row's **DPS is damage per second while that gun was in your hands during fights**. A gun you used for one minute out of five gets its own fair number; that is the column to compare a new gun against an old one.
-- `Total` is the window damage, `Share [%]` the share of the window total.
+- `Total` is the window damage, `Share [%]` the share of the window total, `Crit [%]` the share of the row's direct hits that were crits (status ticks cannot crit and are left out), `Kills` the kills in the window; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
 - `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character: for a gun with at least 10 s in hand inside the window, for Skill and Grenade over at least 10 s of fighting. It only rises; `dmgreset --weapons` clears it.
 - A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
@@ -45,7 +45,7 @@ Open the console with F6 (in the world, not in the main menu):
 
 While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
 
-- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes, a chart of the window DPS, and the latest hits as they land.
+- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes, a chart of the window DPS with one line per weapon and source (hover for the values at any moment), and the latest hits as they land.
 - **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
 - **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
 - **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.
@@ -72,6 +72,7 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | `readout_show_encounter_row` | `false` | add an `Encounter` row (the current fight, for bosses) |
 | `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |
 | `readout_show_best_column` | `true` | the `Best DPS` column |
+| `readout_show_crit_and_kills` | `true` | the `Crit [%]` and `Kills` columns |
 | `readout_hidden_rows` | `["melee"]` | non-weapon rows to leave out: `melee`, `grenade`, `skill`, `other` |
 | `web_host`, `web_port` | `0.0.0.0`, `8765` | where the dashboard listens (`127.0.0.1` for this machine only) |
 | `readout_font_size` | `30` | font size |

@@ -41,7 +41,7 @@ from websockets.sync.server import Server, ServerConnection, serve  # noqa: E402
 
 from .formatting import parse_number  # noqa: E402
 from .report import default_session_path  # noqa: E402
-from .table import STYLE_TOTAL, TableRow  # noqa: E402
+from .table import STYLE_ACTIVE, STYLE_ROW, STYLE_TOTAL, TableRow  # noqa: E402
 from .webdata import (  # noqa: E402
     DEFAULT_PAGE_SIZE,
     SessionCache,
@@ -72,8 +72,10 @@ RECENT_HITS = 50
 # Window samples (time, DPS, damage) kept for the chart, one per table change, sent on connect.
 CHART_HISTORY = 300
 WINDOW_ROW_PREFIX = "Last "
+EMPTY_SLOT_LABEL = "-"
 TOTAL_CELL = 1
 DPS_CELL = 2
+SOURCE_STYLES = (STYLE_ROW, STYLE_ACTIVE)
 
 Message = dict[str, Any]
 
@@ -108,6 +110,7 @@ class Dashboard:
         self._state_lock = threading.Lock()
         self._wake = threading.Condition(self._state_lock)
         self._rows_json: list[Message] = []
+        self._rows_sample: Message | None = None
         self._rows_dirty = False
         self._last_rows: list[TableRow] = []
         self._pending_hits: list[Message] = []
@@ -197,6 +200,7 @@ class Dashboard:
         sample = _window_sample(rows, time.time())
         with self._wake:
             self._rows_json = rows_json
+            self._rows_sample = sample
             self._rows_dirty = True
             if sample is not None:
                 self._history.append(sample)
@@ -268,7 +272,7 @@ class Dashboard:
             messages.append({"type": "character", "character": self._pending_character})
             self._pending_character = None
         if self._rows_dirty:
-            messages.append({"type": "table", "rows": self._rows_json, "t": time.time()})
+            messages.append({"type": "table", "rows": self._rows_json, "t": time.time(), "sample": self._rows_sample})
             self._rows_dirty = False
         if self._pending_hits:
             messages.append({"type": "hits", "events": self._pending_hits})
@@ -391,13 +395,27 @@ class Dashboard:
 # ------------------------------------------------------------------ helpers
 
 def _window_sample(rows: list[TableRow], now: float) -> Message | None:
-    """The window row's DPS and damage as a chart sample, or None without a window row."""
+    """A chart sample: the window row's DPS and damage, plus the DPS of every source row
+    (each weapon slot, Skill, Grenade, ...), keyed by row position and label so a gun
+    swapped into a slot starts a new line. None without a window row."""
+    window_row = None
+    sources: list[Message] = []
     for row in rows:
-        if row.style == STYLE_TOTAL and row.cells and str(row.cells[0]).startswith(WINDOW_ROW_PREFIX):
-            if len(row.cells) <= DPS_CELL:
-                return None
-            return {"t": now, "dps": parse_number(row.cells[DPS_CELL]), "total": parse_number(row.cells[TOTAL_CELL])}
-    return None
+        if len(row.cells) <= DPS_CELL:
+            continue
+        label = str(row.cells[0])
+        if row.style == STYLE_TOTAL and label.startswith(WINDOW_ROW_PREFIX):
+            window_row = row
+        elif row.style in SOURCE_STYLES and label != EMPTY_SLOT_LABEL:
+            sources.append({"key": f"{len(sources)}:{label}", "label": label, "dps": parse_number(row.cells[DPS_CELL])})
+    if window_row is None:
+        return None
+    return {
+        "t": now,
+        "dps": parse_number(window_row.cells[DPS_CELL]),
+        "total": parse_number(window_row.cells[TOTAL_CELL]),
+        "sources": sources,
+    }
 
 
 def _page_bytes() -> bytes:

@@ -84,6 +84,9 @@ DEFAULT_READOUT_Y = 320.0
 DEFAULT_READOUT_FONT_SIZE = 30
 DEFAULT_READOUT_COLUMN_GAP = 44.0
 DEFAULT_READOUT_COLUMN_WIDTHS = [320.0, 240.0, 190.0, 140.0]
+# Widths of the optional columns, in their order after the base four: Crit [%], Kills, Best DPS.
+DEFAULT_CRIT_COLUMN_WIDTH = 150.0
+DEFAULT_KILLS_COLUMN_WIDTH = 120.0
 DEFAULT_BEST_COLUMN_WIDTH = 170.0
 BASE_COLUMN_COUNT = 4
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
@@ -149,6 +152,7 @@ readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READ
 readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
 readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 readout_show_best_column = HiddenOption("readout_show_best_column", True)
+readout_show_crit_and_kills = HiddenOption("readout_show_crit_and_kills", True)
 # Non-weapon rows to leave out of the table, by source kind: "melee", "grenade", "skill", "other".
 readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
 # The dashboard listens on every interface (0.0.0.0) so other devices on the network can open
@@ -246,12 +250,17 @@ def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -
 # ------------------------------------------------------------------ readout
 
 def _readout_layout() -> ReadoutLayout:
+    """The base column widths come from the settings; an optional column beyond the list
+    gets its default width."""
     widths = [float(width) for width in readout_column_widths.value]
     if len(widths) < BASE_COLUMN_COUNT:
         widths = list(DEFAULT_READOUT_COLUMN_WIDTHS)
-    columns = BASE_COLUMN_COUNT + (1 if readout_show_best_column.value else 0)
-    while len(widths) < columns:
+    widths = widths[:BASE_COLUMN_COUNT]
+    if readout_show_crit_and_kills.value:
+        widths.extend([DEFAULT_CRIT_COLUMN_WIDTH, DEFAULT_KILLS_COLUMN_WIDTH])
+    if readout_show_best_column.value:
         widths.append(DEFAULT_BEST_COLUMN_WIDTH)
+    columns = len(widths)
     return ReadoutLayout(
         x=float(readout_x.value),
         y=float(readout_y.value),
@@ -393,7 +402,14 @@ def _refresh_readout() -> None:
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best = _peak_dps() if readout_show_best_column.value else None
         rows = build_rows(
-            rolling, float(readout_window_minutes.value), _equipped_cache, held.item_id, encounter, best, _hidden_row_kinds()
+            rolling,
+            float(readout_window_minutes.value),
+            _equipped_cache,
+            held.item_id,
+            encounter,
+            best,
+            _hidden_row_kinds(),
+            bool(readout_show_crit_and_kills.value),
         )
         _latest_rows = rows
         readout.render(rows, now)
@@ -977,6 +993,7 @@ mod = build_mod(
         readout_window_minutes,
         readout_show_encounter_row,
         readout_show_best_column,
+        readout_show_crit_and_kills,
         readout_hidden_rows,
         web_host,
         web_port,

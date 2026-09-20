@@ -70,9 +70,12 @@
   tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
   tr.spacer td { padding: 0; height: 8px; }
   tr.header td { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
-  /* A translucent tint, so the stripes stay visible underneath while a row flashes. */
-  @keyframes row-flash { from { background: rgba(245, 197, 66, 0.18); } to { background: transparent; } }
-  tr.flash td { animation: row-flash 0.9s ease-out; }
+  /* The flash animates the row's own background (not the cells: a cell animation leaves a
+     stale layer over the row's stripe in Chrome) and ends exactly at the row's stripe colour. */
+  @keyframes row-flash-odd { from { background-color: rgba(245, 197, 66, 0.2); } to { background-color: transparent; } }
+  @keyframes row-flash-even { from { background-color: rgba(245, 197, 66, 0.24); } to { background-color: rgba(255, 255, 255, 0.04); } }
+  tbody tr.flash { animation: row-flash-odd 0.9s ease-out; }
+  tbody tr.flash:nth-child(even) { animation-name: row-flash-even; }
   td.crit { color: var(--accent); }
   td.kill { color: var(--good); }
   .card.chart { display: flex; flex-direction: column; }
@@ -167,7 +170,7 @@
       <div class="card">
         <h2>Top 10</h2>
         <table id="weapons-top" class="top ranked">
-          <thead><tr><th>#</th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Damage</th><th>In hand</th></tr></thead>
+          <thead><tr><th>#</th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Damage</th><th>Crit %</th><th>Kills</th><th>In hand</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -357,7 +360,7 @@
       drawChart();
     } else if (data.type === "table") {
       renderLive(data.rows);
-      recordSample(data.rows, data.t);
+      recordSample(data.sample || sampleFromRows(data.rows, data.t));
     } else if (data.type === "hits") {
       addFeed(data.events);
     } else if (data.type === "character") {
@@ -371,22 +374,45 @@
   let liveTotals = [];
 
   function renderLive(rows) {
+    // The first table after (re)connecting is a snapshot, not activity: no flash for it.
+    const firstRender = liveTotals.length === 0;
     const totals = rows.map(function (r) { return parseSwiss(r.cells[1]); });
     const trs = rows.map(function (r, index) {
       const cells = r.cells.map(function (text) { return cell(text); });
-      const grew = (r.style === "row" || r.style === "active") && totals[index] > (liveTotals[index] || 0);
+      const grew = !firstRender && (r.style === "row" || r.style === "active") && totals[index] > (liveTotals[index] || 0);
       return row(cells, r.style + (grew ? " flash" : ""));
     });
     liveTotals = totals;
     fill(liveBody, trs);
   }
 
-  function recordSample(rows, t) {
-    const total = rows.find(function (r) { return r.style === "total" && String(r.cells[0]).indexOf("Last") === 0; });
-    if (!total) {
+  // The same sample the server builds, for a mod that does not send one yet (an older
+  // build still running in the game while the page was updated).
+  function sampleFromRows(rows, t) {
+    const sources = [];
+    let windowRow = null;
+    rows.forEach(function (r) {
+      if (r.cells.length < 3) {
+        return;
+      }
+      const label = String(r.cells[0]);
+      if (r.style === "total" && label.indexOf("Last ") === 0) {
+        windowRow = r;
+      } else if ((r.style === "row" || r.style === "active") && label !== "-") {
+        sources.push({ key: sources.length + ":" + label, label: label, dps: parseSwiss(r.cells[2]) });
+      }
+    });
+    if (!windowRow) {
+      return null;
+    }
+    return { t: t, dps: parseSwiss(windowRow.cells[2]), total: parseSwiss(windowRow.cells[1]), sources: sources };
+  }
+
+  function recordSample(sample) {
+    if (!sample) {
       return;
     }
-    samples.push({ t: t, dps: parseSwiss(total.cells[2]), total: parseSwiss(total.cells[1]) });
+    samples.push(sample);
     while (samples.length > MAX_SAMPLES) {
       samples.shift();
     }
@@ -394,11 +420,15 @@
   }
 
   // The chart: one sample per table update while fighting, x by sample (a combat timeline
-  // whose labels show the real clock), y by window DPS, a tooltip for the hovered sample.
-  const CHART_MARGIN = { left: 8, right: 8, top: 16, bottom: 22 };
+  // whose labels show the real clock), y by DPS. One line per source row (each weapon,
+  // Skill, Grenade, ...) and the window total on top; a tooltip lists them for the hovered
+  // sample.
+  const CHART_MARGIN = { left: 8, right: 8, top: 34, bottom: 22 };
   const TIME_LABELS = 5;
   const LABEL_GAP = 12;
   const GRID_STEPS = 3;
+  const TOTAL_COLOR = "#f5c542";
+  const SERIES_COLORS = ["#6fcf7a", "#5aa9e6", "#e06c6c", "#c77dff", "#ff9f43", "#4dd0e1", "#f06292", "#a1887f"];
   let hoverIndex = -1;
 
   function chartGeometry() {
@@ -430,6 +460,28 @@
     return geometry.bottom - (geometry.bottom - geometry.top) * dps / max;
   }
 
+  // The source lines: every key seen in the samples, in order of first appearance, with
+  // its DPS per sample (0 where the row was absent); lines that never rise are left out.
+  function chartSeries() {
+    const byKey = {};
+    const order = [];
+    samples.forEach(function (sample, index) {
+      (sample.sources || []).forEach(function (source) {
+        let series = byKey[source.key];
+        if (!series) {
+          series = { key: source.key, label: source.label, values: new Array(samples.length).fill(0), peak: 0 };
+          byKey[source.key] = series;
+          order.push(series);
+        }
+        series.values[index] = source.dps;
+        series.peak = Math.max(series.peak, source.dps);
+      });
+    });
+    const shown = order.filter(function (series) { return series.peak > 0; });
+    shown.forEach(function (series, index) { series.color = SERIES_COLORS[index % SERIES_COLORS.length]; });
+    return shown;
+  }
+
   function drawChart() {
     const geometry = chartGeometry();
     const context = chart.getContext("2d");
@@ -443,16 +495,32 @@
       context.fillText("waiting for a fight", geometry.left, geometry.top);
       return;
     }
-    const peak = Math.max.apply(null, samples.map(function (s) { return s.dps; }));
+    const series = chartSeries();
+    const totals = samples.map(function (sample) { return sample.dps; });
+    let peak = Math.max.apply(null, totals);
+    series.forEach(function (line) { peak = Math.max(peak, line.peak); });
     const max = peak || 1;
-    drawValueGrid(context, geometry, max, peak > 0);
+    drawGridLines(context, geometry, max);
     drawTimeLabels(context, geometry);
-    context.strokeStyle = "#f5c542";
-    context.lineWidth = 2;
+    series.forEach(function (line) { drawLine(context, geometry, line.values, max, line.color, 1.5); });
+    drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
+    if (peak > 0) {
+      drawValueLabels(context, geometry, max);
+    }
+    drawLegend(context, geometry, series);
+    if (hoverIndex >= 0 && hoverIndex < samples.length) {
+      drawTooltip(context, geometry, hoverIndex, max, series);
+    }
+  }
+
+  function drawLine(context, geometry, values, max, color, width) {
+    context.strokeStyle = color;
+    context.lineWidth = width;
+    context.lineJoin = "round";
     context.beginPath();
-    samples.forEach(function (sample, index) {
+    values.forEach(function (value, index) {
       const x = sampleX(geometry, index);
-      const y = sampleY(geometry, sample.dps, max);
+      const y = sampleY(geometry, value, max);
       if (index === 0) {
         context.moveTo(x, y);
       } else {
@@ -460,28 +528,58 @@
       }
     });
     context.stroke();
-    if (hoverIndex >= 0 && hoverIndex < samples.length) {
-      drawTooltip(context, geometry, hoverIndex, max);
+  }
+
+  function drawLegend(context, geometry, series) {
+    // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
+    const entries = [{ label: "Total", color: TOTAL_COLOR }].concat(series);
+    context.font = "11px sans-serif";
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    const y = 10;
+    let x = geometry.left;
+    entries.forEach(function (entry) {
+      const width = context.measureText(entry.label).width + 20;
+      if (x + width > geometry.right) {
+        return;
+      }
+      context.fillStyle = entry.color;
+      context.beginPath();
+      context.arc(x + 5, y, 4, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#9aa3ad";
+      context.fillText(entry.label, x + 13, y);
+      x += width;
+    });
+  }
+
+  function drawGridLines(context, geometry, max) {
+    context.strokeStyle = "#2f343d";
+    context.lineWidth = 1;
+    for (let step = 1; step <= GRID_STEPS; step++) {
+      const y = sampleY(geometry, max * step / GRID_STEPS, max);
+      context.beginPath();
+      context.moveTo(geometry.left, y);
+      context.lineTo(geometry.right, y);
+      context.stroke();
     }
   }
 
-  function drawValueGrid(context, geometry, max, labelled) {
-    context.strokeStyle = "#2f343d";
-    context.lineWidth = 1;
-    context.fillStyle = "#9aa3ad";
+  // Drawn after the lines, on a patch of card colour, so no line runs through the text.
+  function drawValueLabels(context, geometry, max) {
+    context.font = "11px sans-serif";
     context.textAlign = "left";
     context.textBaseline = "bottom";
     const decimals = max < 10 ? 1 : 0;
     for (let step = 1; step <= GRID_STEPS; step++) {
       const value = max * step / GRID_STEPS;
       const y = sampleY(geometry, value, max);
-      context.beginPath();
-      context.moveTo(geometry.left, y);
-      context.lineTo(geometry.right, y);
-      context.stroke();
-      if (labelled) {
-        context.fillText(formatNumber(value, decimals) + " DPS", geometry.left + 2, y - 2);
-      }
+      const text = formatNumber(value, decimals) + " DPS";
+      const width = context.measureText(text).width;
+      context.fillStyle = "#1d2026";
+      context.fillRect(geometry.left, y - 14, width + 6, 14);
+      context.fillStyle = "#9aa3ad";
+      context.fillText(text, geometry.left + 2, y - 2);
     }
   }
 
@@ -521,10 +619,9 @@
     });
   }
 
-  function drawTooltip(context, geometry, index, max) {
+  function drawTooltip(context, geometry, index, max, series) {
     const sample = samples[index];
     const x = sampleX(geometry, index);
-    const y = sampleY(geometry, sample.dps, max);
     context.strokeStyle = "#9aa3ad";
     context.lineWidth = 1;
     context.setLineDash([3, 3]);
@@ -533,22 +630,36 @@
     context.lineTo(x, geometry.bottom);
     context.stroke();
     context.setLineDash([]);
-    context.fillStyle = "#f5c542";
-    context.beginPath();
-    context.arc(x, y, 4, 0, Math.PI * 2);
-    context.fill();
-    const lines = [formatTime(sample.t), formatNumber(sample.dps, 0) + " DPS", formatNumber(sample.total, 0) + " damage in the window"];
+    // One entry per line: the total first, then the sources with damage at this sample.
+    const entries = [{ label: "Total", color: TOTAL_COLOR, value: sample.dps }];
+    series.forEach(function (line) {
+      if (line.values[index] > 0) {
+        entries.push({ label: line.label, color: line.color, value: line.values[index] });
+      }
+    });
+    entries.forEach(function (entry) {
+      context.fillStyle = entry.color;
+      context.beginPath();
+      context.arc(x, sampleY(geometry, entry.value, max), 4, 0, Math.PI * 2);
+      context.fill();
+    });
+    const header = formatTime(sample.t);
+    const footer = formatNumber(sample.total, 0) + " damage in the window";
     context.font = "12px sans-serif";
-    const textWidth = Math.max.apply(null, lines.map(function (line) { return context.measureText(line).width; }));
+    let textWidth = Math.max(context.measureText(header).width, context.measureText(footer).width);
+    entries.forEach(function (entry) {
+      textWidth = Math.max(textWidth, 14 + context.measureText(entry.label + "  " + formatNumber(entry.value, 0) + " DPS").width);
+    });
+    const lineHeight = 16;
     const boxWidth = textWidth + 16;
-    const boxHeight = lines.length * 16 + 10;
+    const boxHeight = (entries.length + 2) * lineHeight + 10;
     let boxX = x + 12;
     if (boxX + boxWidth > geometry.right) {
       boxX = x - 12 - boxWidth;
     }
-    let boxY = y - boxHeight - 10;
-    if (boxY < geometry.top) {
-      boxY = y + 10;
+    let boxY = geometry.top + 4;
+    if (boxY + boxHeight > geometry.bottom) {
+      boxY = Math.max(0, geometry.bottom - boxHeight);
     }
     context.fillStyle = "rgba(20, 22, 26, 0.95)";
     context.strokeStyle = "#2f343d";
@@ -556,12 +667,21 @@
     context.rect(boxX, boxY, boxWidth, boxHeight);
     context.fill();
     context.stroke();
-    context.fillStyle = "#e8e8e8";
     context.textAlign = "left";
     context.textBaseline = "top";
-    lines.forEach(function (line, lineIndex) {
-      context.fillText(line, boxX + 8, boxY + 5 + lineIndex * 16);
+    context.fillStyle = "#e8e8e8";
+    context.fillText(header, boxX + 8, boxY + 5);
+    entries.forEach(function (entry, row) {
+      const y = boxY + 5 + (row + 1) * lineHeight;
+      context.fillStyle = entry.color;
+      context.beginPath();
+      context.arc(boxX + 12, y + 7, 4, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#e8e8e8";
+      context.fillText(entry.label + "  " + formatNumber(entry.value, 0) + " DPS", boxX + 22, y);
     });
+    context.fillStyle = "#9aa3ad";
+    context.fillText(footer, boxX + 8, boxY + 5 + (entries.length + 1) * lineHeight);
   }
 
   chart.addEventListener("pointermove", function (event) {
@@ -710,6 +830,8 @@
           cell(formatNumber(w.dps_in_hand, 0)),
           cell(formatNumber(w.peak_dps, 0)),
           cell(formatNumber(w.damage, 0)),
+          cell(formatNumber(100 * w.crit_share, 1)),
+          cell(formatNumber(w.kills, 0)),
           cell(formatDuration(w.held_seconds))
         ]);
       }));

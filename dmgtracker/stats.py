@@ -39,7 +39,29 @@ def source_key(event: dict[str, Any]) -> SourceKey:
 
 def kind_damage(by_source: dict[SourceKey, SourceTotals], kind: str) -> float:
     """Damage of every source of one kind (all grenades, all skill hits, ...)."""
-    return sum(totals.damage for totals in by_source.values() if totals.kind == kind)
+    return kind_totals(by_source, kind).damage
+
+
+def kind_totals(by_source: dict[SourceKey, SourceTotals], kind: str) -> SourceTotals:
+    """The sources of one kind summed into one (label and item id of the kind itself)."""
+    return _summed(kind, kind, [totals for totals in by_source.values() if totals.kind == kind])
+
+
+def scope_totals(by_source: dict[SourceKey, SourceTotals]) -> SourceTotals:
+    """Every source summed into one, for a table's total row."""
+    return _summed("all", "all", list(by_source.values()))
+
+
+def _summed(kind: str, label: str, parts: list[SourceTotals]) -> SourceTotals:
+    combined = SourceTotals(kind, label, "")
+    for totals in parts:
+        combined.damage += totals.damage
+        combined.hits += totals.hits
+        combined.direct_hits += totals.direct_hits
+        combined.crits += totals.crits
+        combined.kills += totals.kills
+        combined.held_seconds += totals.held_seconds
+    return combined
 
 
 def target_family(target_name: str) -> str:
@@ -59,6 +81,8 @@ class SourceTotals:
     item_id: str
     damage: float = 0.0
     hits: int = 0
+    # Hits that are not status ticks; only those can be crits, so the crit rate is over them.
+    direct_hits: int = 0
     crits: int = 0
     kills: int = 0
     held_seconds: float = 0.0
@@ -66,6 +90,8 @@ class SourceTotals:
     def add(self, event: dict[str, Any]) -> None:
         self.damage += float(event["dmg"])
         self.hits += 1
+        if event.get("kind") != KIND_DOT:
+            self.direct_hits += 1
         if event.get("crit"):
             self.crits += 1
         if event.get("kill"):
@@ -75,10 +101,18 @@ class SourceTotals:
         """Undo add(); used when an event leaves a rolling window."""
         self.damage -= float(event["dmg"])
         self.hits -= 1
+        if event.get("kind") != KIND_DOT:
+            self.direct_hits -= 1
         if event.get("crit"):
             self.crits -= 1
         if event.get("kill"):
             self.kills -= 1
+
+    def crit_rate(self) -> float:
+        """Crits per direct hit, 0 without any."""
+        if self.direct_hits <= 0:
+            return 0.0
+        return self.crits / self.direct_hits
 
 
 @dataclass

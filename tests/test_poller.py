@@ -459,6 +459,23 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "skill")
 
+    def test_a_sticky_that_detonates_while_no_gun_is_in_hand_goes_to_the_gun_that_stuck_it(self) -> None:
+        torgue = fake_weapon(281, "/Game/Gear/Weapons/Shotguns/TOR/Body_TOR_SG.Body_TOR_SG")
+        self.hold(torgue)
+        self.poller.tick()
+        write_hit(self.controller, 0, 41.2, flags=WEAPON_FLAG, target="Char_StrikerBasic_1")
+        self.poller.tick()
+        self.clock.advance(1.0)
+        self.hold(None)  # mid swap: the active slot is empty for a moment
+        self.clock.advance(2.0)
+        write_hit(self.controller, 1, 1338.5, flags=WEAPON_FLAG | KILL_FLAG, target="Char_StrikerBasic_1")
+        self.poller.tick()
+        self.assertEqual([e["weapon"] for e in self.received], ["Torgue Shotgun", "Torgue Shotgun"])
+        # A flagged hit on a target the gun never touched falls back to the gun swapped away.
+        write_hit(self.controller, 2, 300.0, flags=WEAPON_FLAG, target="Char_Other_2")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["weapon"], "Torgue Shotgun")
+
     # ------------------------------------------------------------------ the swap rule
 
     def test_sticky_detonation_after_a_swap_goes_to_the_previous_gun(self) -> None:

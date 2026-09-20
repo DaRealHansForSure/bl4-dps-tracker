@@ -38,6 +38,20 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertEqual(record.crit_share(), "50.0")
         self.assertEqual((record.first_seen, record.last_seen), (100.0, 101.0))
 
+    def test_crit_rate_is_over_direct_hits(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(1.0, 100.0, crit=True))
+        store.add_event(hit(2.0, 100.0))
+        store.add_event(hit(3.0, 5.0, kind="dot"))
+        record = store.records["277"]
+        self.assertEqual((record.hits, record.direct_hits, record.crits), (3, 2, 1))
+        self.assertEqual(record.crit_rate(), 0.5)
+        self.assertEqual(record.crit_share(), "50.0")
+        self.assertTrue(store.save_if_due(now=100.0, force=True))
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.records["277"].direct_hits, 2)
+
     def test_other_and_healing_are_not_weapon_records(self) -> None:
         store = WeaponStore(self.path)
         store.add_event(hit(100.0, 300.0, wid="", weapon="Other", body="", src="other"))

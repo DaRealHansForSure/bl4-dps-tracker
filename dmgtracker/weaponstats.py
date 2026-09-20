@@ -38,6 +38,7 @@ PEAK_MIN_WINDOW_SECONDS = 10.0
 PEAK_SOURCE_KINDS = (SKILL_SOURCE.kind, GRENADE_SOURCE.kind, MELEE_SOURCE.kind)
 SOURCE_WEAPON = "weapon"
 KIND_HEAL = "heal"
+KIND_DOT = "dot"
 UNKNOWN_LABEL = "Unknown"
 
 
@@ -48,6 +49,8 @@ class WeaponRecord:
     body: str
     damage: float = 0.0
     hits: int = 0
+    # Hits that are not status ticks; only those can be crits, so the crit rate is over them.
+    direct_hits: int = 0
     crits: int = 0
     kills: int = 0
     held_seconds: float = 0.0
@@ -68,6 +71,8 @@ class WeaponRecord:
         """Count one damage event of this weapon."""
         self.damage += float(event["dmg"])
         self.hits += 1
+        if event.get("kind") != KIND_DOT:
+            self.direct_hits += 1
         if event.get("crit"):
             self.crits += 1
         if event.get("kill"):
@@ -83,8 +88,14 @@ class WeaponRecord:
             return 0.0
         return self.damage / self.hits
 
+    def crit_rate(self) -> float:
+        """Crits per direct hit, 0 without any."""
+        if self.direct_hits <= 0:
+            return 0.0
+        return self.crits / self.direct_hits
+
     def crit_share(self) -> str:
-        return format_share(self.crits, self.hits)
+        return format_share(self.crits, self.direct_hits)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WeaponRecord:
@@ -94,6 +105,8 @@ class WeaponRecord:
             body=str(data.get("body", "")),
             damage=float(data.get("damage", 0.0)),
             hits=int(data.get("hits", 0)),
+            # Records written before direct hits were counted: treat every hit as direct.
+            direct_hits=int(data.get("direct_hits", data.get("hits", 0))),
             crits=int(data.get("crits", 0)),
             kills=int(data.get("kills", 0)),
             held_seconds=float(data.get("held_seconds", 0.0)),
