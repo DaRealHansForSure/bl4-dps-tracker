@@ -28,8 +28,8 @@ MAX_PRINTS_PER_FUNC = 40
 
 # Names that smell like "damage is being applied", not "read a damage stat".
 INTERESTING = re.compile(
-    r"(Receive|Apply|Take|Handle|Inflict|Deal|Process|Notify|On|Report|Register)\w*Damage"
-    r"|Damage\w*(Received|Applied|Dealt|Taken|Event|Instance|Callback)",
+    r"(Receive|Apply|Take|Handle|Inflict|Deal|Process|Notify|On|Report|Register|Cause|K2_|OnRep_)\w*Damage"
+    r"|Damage\w*(Received|Applied|Dealt|Taken|Event|Instance|Callback|ConditionMet)",
 )
 BORING = re.compile(r"^(Get|Can|Should|Is|Has|Calc|Compute|Find|Set)")
 
@@ -47,12 +47,12 @@ def out(line: str) -> None:
 
 
 def fmt(value: Any, depth: int = 0) -> str:
-    """Render a hook argument compactly, one level into structs."""
+    """Render a hook argument compactly, three levels into structs."""
     try:
         if isinstance(value, UObject):
             return f"<{value.Class.Name} {value._path_name()}>"
         if isinstance(value, WrappedStruct):
-            if depth >= 1:
+            if depth >= 3:
                 return f"<struct {value._type.Name}>"
             parts = []
             for prop in value._type._properties():
@@ -61,7 +61,7 @@ def fmt(value: Any, depth: int = 0) -> str:
                     parts.append(f"{name}={fmt(getattr(value, name), depth + 1)}")
                 except Exception as ex:  # noqa: BLE001
                     parts.append(f"{name}=<err {ex}>")
-            return "{" + ", ".join(parts) + "}"
+            return f"{value._type.Name}{{" + ", ".join(parts) + "}"
         text = repr(value)
         return text if len(text) < 200 else text[:200] + "..."
     except Exception as ex:  # noqa: BLE001
@@ -103,13 +103,17 @@ def remove_all() -> None:
 
 
 def on_call(obj: UObject, args: WrappedStruct, ret: Any, func: Any) -> None:
-    path = func._path_name() if hasattr(func, "_path_name") else str(func)
+    try:
+        path = func.func._path_name()
+    except Exception:  # noqa: BLE001
+        path = str(func)
     state["counts"][path] = state["counts"].get(path, 0) + 1
     n = state["prints"].get(path, 0)
     if n >= MAX_PRINTS_PER_FUNC:
         return
     state["prints"][path] = n + 1
     try:
+        logging.info(f"[dmgprobe] CALL {path.rsplit(':', 1)[-1]} (#{state['counts'][path]})")
         out(f"{time.time():.3f} CALL {path}")
         out(f"    obj={fmt(obj)}")
         out(f"    args={fmt(args)}")
@@ -122,7 +126,8 @@ def on_call(obj: UObject, args: WrappedStruct, ret: Any, func: Any) -> None:
 
 remove_all()
 out("=" * 78)
-out(f"{time.strftime('%Y-%m-%d %H:%M:%S')} probe start; local={local_player_ids()}")
+say(f"{time.strftime('%H:%M:%S')} step 1/3: listing UFunctions with Damage in the name")
+out(f"local={local_player_ids()}")
 
 # 1. Every UFunction in the game whose name contains Damage. Written once, for the notes.
 all_damage_funcs: list[str] = []
@@ -133,6 +138,7 @@ for fn in unrealsdk.find_all("Function", exact=True):
     except Exception:  # noqa: BLE001
         continue
 all_damage_funcs.sort()
+say(f"step 2/3: {len(all_damage_funcs)} found, picking candidates")
 out(f"-- {len(all_damage_funcs)} UFunctions with 'Damage' in the name:")
 for p in all_damage_funcs:
     out("   " + p)
@@ -144,8 +150,15 @@ for p in all_damage_funcs:
     if INTERESTING.search(short) and not BORING.match(short) and p not in candidates:
         candidates.append(p)
 
+say(f"step 3/3: hooking {len(candidates)} candidates")
 hooked, missing = [], []
 for p in candidates:
+    # add_hook happily returns True for paths that don't exist, so check first.
+    try:
+        unrealsdk.find_object("Function", p)
+    except Exception:  # noqa: BLE001
+        missing.append(p)
+        continue
     try:
         ok = hooks.add_hook(p, hooks.Type.POST, HOOK_ID, on_call)
     except Exception as ex:  # noqa: BLE001
@@ -159,7 +172,4 @@ for p in hooked:
     out("   " + p)
 out(f"-- {len(missing)} candidates not found: {missing[:10]}{' ...' if len(missing) > 10 else ''}")
 
-logging.info(
-    f"[dmgprobe] {len(all_damage_funcs)} damage funcs listed, {len(hooked)} hooked, "
-    f"{len(missing)} missing. Fire ONE shot, then `pyexec probe_stop.py`. Output: {OUT}",
-)
+say(f"hooked {len(hooked)}, {len(missing)} candidates missing. Fire ONE shot, then `pyexec probe_stop.py`.")
