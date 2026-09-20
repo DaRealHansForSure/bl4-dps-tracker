@@ -150,6 +150,10 @@ End-to-end test before any upload: install the zip through Vortex on this machin
 - `docs/hook-notes.md`: the mechanism and everything tried, distilled from `poc/findings.md`, for whoever fixes the next patch breakage.
 - `docs/nexus-page.md`: page text with the SDK requirement, the same-drive Vortex note, single player only, tested game build date.
 
+## Status (2026-09-20)
+
+All five steps below are done and the release gate passed (the Vortex-installed `.sdkmod` loaded in the game). Remaining: the `v1.0.0` tag and the Nexus upload.
+
 ## Order of work and gates
 
 1. Mod core: `poller`, `attribution`, `logwriter`, `formatting`, options, self-check, status line. Deploy to `sdk_mods/`, one 2-minute session. Gate: plausible line count, `weapon` labels correct for the guns used, 0 errors in the status lines, no stutter.
