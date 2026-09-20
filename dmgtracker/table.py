@@ -2,12 +2,13 @@
 The on-screen table as data: which rows, which text in which cell, which style.
 
 Kept apart from the rendering so the layout can be tested without the game. readout.py
-turns these rows into UMG cells; the number of rows is capped so the widget can allocate
-its cells once and hide the unused ones.
+turns these rows into UMG cells.
 
-The table is a rolling view: every number covers the last X minutes (the window), which
-is what matters in the open world. The encounter row is optional and meant for boss
-fights, where "how much did I deal in that fight" is the question.
+The layout is fixed: every row has a permanent position, nothing appears, disappears or
+reorders while playing (a user rule). Four weapon slot rows in slot order, then the four
+non-weapon sources in a fixed order, a spacer, the window total row, and the optional
+encounter row. The table is a rolling view: every number covers the last X minutes of
+fighting. The encounter row is meant for boss fights.
 """
 
 from __future__ import annotations
@@ -15,7 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .attribution import SOURCE_WEAPON, DamageSource
+from .attribution import (
+    GRENADE_SOURCE,
+    MELEE_SOURCE,
+    OTHER_SOURCE,
+    SKILL_SOURCE,
+    SOURCE_WEAPON,
+    DamageSource,
+)
 from .formatting import format_number, format_share
 from .stats import Encounter, SourceKey, SourceTotals
 
@@ -27,9 +35,13 @@ STYLE_SPACER = "spacer"
 
 HEADER_CELLS = ("Weapon", "Total", "DPS", "Share [%]")
 EMPTY_CELLS = ("", "", "", "")
+EMPTY_SLOT_LABEL = "-"
 ENCOUNTER_LABEL = "Encounter"
 
-MAX_SOURCE_ROWS = 8
+WEAPON_SLOT_ROWS = 4
+# Fixed order of the non-weapon rows, always shown.
+NON_WEAPON_SOURCES = (SKILL_SOURCE, GRENADE_SOURCE, MELEE_SOURCE, OTHER_SOURCE)
+MAX_SOURCE_ROWS = WEAPON_SLOT_ROWS + len(NON_WEAPON_SOURCES)
 # header + source rows + spacer + window row + encounter row
 MAX_ROWS = 1 + MAX_SOURCE_ROWS + 1 + 1 + 1
 
@@ -72,15 +84,11 @@ def build_rows(
     held_instance_id: int,
     encounter: Encounter | None = None,
 ) -> list[TableRow]:
-    """The complete table for the current state, at most MAX_ROWS rows.
-
-    Every equipped weapon gets a row (even at zero damage), in slot order, followed by
-    sources that dealt damage in the window but are not equipped any more, then one row per
-    non-weapon source with damage (Grenade, Melee, Other), largest first. The encounter row
-    appears only when an encounter is passed in.
-    """
+    """The complete table for the current state; the row count only depends on whether an
+    encounter row is requested."""
     rows = [TableRow(HEADER_CELLS, STYLE_HEADER)]
-    rows.extend(_source_rows(window, equipped, held_instance_id))
+    rows.extend(_weapon_slot_rows(window, equipped, held_instance_id))
+    rows.extend(_non_weapon_rows(window))
     rows.append(TableRow(EMPTY_CELLS, STYLE_SPACER))
     rows.append(_total_row(window_label(window_minutes), window))
     if encounter is not None:
@@ -88,29 +96,26 @@ def build_rows(
     return rows
 
 
-def _source_rows(scope: DamageScope, equipped: list[DamageSource], held_instance_id: int) -> list[TableRow]:
-    total = scope.total
-    duration = scope.duration()
-    listed_instance_ids: set[int] = set()
+def _weapon_slot_rows(scope: DamageScope, equipped: list[DamageSource], held_instance_id: int) -> list[TableRow]:
     rows: list[TableRow] = []
-
-    for weapon in equipped:
-        listed_instance_ids.add(weapon.instance_id)
+    for slot in range(WEAPON_SLOT_ROWS):
+        if slot >= len(equipped):
+            rows.append(TableRow((EMPTY_SLOT_LABEL, "0", "0", format_share(0.0, 0.0)), STYLE_ROW))
+            continue
+        weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
         style = STYLE_ACTIVE if weapon.instance_id == held_instance_id else STYLE_ROW
         rows.append(_weapon_row(weapon.label, totals, scope, style))
+    return rows
 
-    for totals in scope.by_source.values():
-        if totals.kind != SOURCE_WEAPON or totals.instance_id in listed_instance_ids:
-            continue
-        listed_instance_ids.add(totals.instance_id)
-        rows.append(_weapon_row(totals.label, totals, scope, STYLE_ROW))
 
-    non_weapon = [totals for totals in scope.by_source.values() if totals.kind != SOURCE_WEAPON and totals.damage > 0]
-    for totals in sorted(non_weapon, key=lambda item: item.damage, reverse=True):
-        rows.append(_damage_row(totals.label, totals.damage, duration, total, STYLE_ROW))
-
-    return rows[:MAX_SOURCE_ROWS]
+def _non_weapon_rows(scope: DamageScope) -> list[TableRow]:
+    rows: list[TableRow] = []
+    duration = scope.duration()
+    for source in NON_WEAPON_SOURCES:
+        damage = sum(totals.damage for totals in scope.by_source.values() if totals.kind == source.kind)
+        rows.append(_damage_row(source.label, damage, duration, scope.total, STYLE_ROW))
+    return rows
 
 
 def _totals_for(scope: DamageScope, weapon: DamageSource) -> SourceTotals:

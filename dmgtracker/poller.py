@@ -18,9 +18,9 @@ Attribution, all of it from recorded sessions and probes (findings, section B):
   5. an unflagged hit within a few frames of a projectile explosion whose owner is a weapon
      (the mod reports those from a hook on projectile:Explode) belongs to that weapon;
      an explosion owned by the character is a grenade;
-  6. otherwise the skill window (while action skill tricks run) claims it, then the melee
-     window (after a knife swing) or the grenade window (after a throw), the more recent
-     action first;
+  6. otherwise the melee window (one second after a knife swing starts; the swing's own
+     trick lasts about 0.6 s) claims it, then the skill window (while action skill tricks
+     run), then the grenade window (after a throw);
   7. anything left is Other, held back for a few frames first so a late explosion event can
      still claim it.
 
@@ -78,10 +78,11 @@ EXPLOSION_MATCH_WINDOW_S = 0.25
 PENDING_HOLD_S = 0.1
 MAX_REMEMBERED_EXPLOSIONS = 32
 # Windows after a throw (drone gadgets keep firing for a while), after an explosion owned by
-# the character, and after a knife swing (a combo lands up to 3 s after the swing starts).
+# the character, and after a knife swing (the ATrick_Melee_Hit trick lasts about 0.6 s and
+# the damage lands inside it; the window is short so it takes little from a running skill).
 GRENADE_WINDOW_S = 12.0
 EXPLOSION_WINDOW_S = 3.0
-MELEE_WINDOW_S = 4.0
+MELEE_WINDOW_S = 1.0
 # An action skill chains tricks with gaps of up to about 1.5 s while it runs; each trick
 # start or end keeps the window open this much longer.
 SKILL_WINDOW_S = 3.0
@@ -356,13 +357,11 @@ class DamagePoller:
         exploded_by = self._recent_explosion_source(now)
         if exploded_by is not None:
             return exploded_by
+        if now < self._melee_until:
+            return MELEE_SOURCE
         if now < self._skill_until:
             return SKILL_SOURCE
-        melee_open = now < self._melee_until
-        grenade_open = now < self._grenade_until
-        if melee_open and (not grenade_open or self._last_melee_action >= self._last_grenade_action):
-            return MELEE_SOURCE
-        if grenade_open:
+        if now < self._grenade_until:
             return GRENADE_SOURCE
         return OTHER_SOURCE
 

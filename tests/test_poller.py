@@ -373,18 +373,22 @@ class DamagePollerTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.received[-1]["weapon"], "Other", "the window has passed")
 
-    def test_melee_window_claims_unflagged_hits(self) -> None:
+    def test_melee_window_claims_unflagged_hits_briefly(self) -> None:
         self.poller.tick()
         self.poller.note_melee_swing(self.clock.now)
-        self.clock.advance(2.9)
+        self.clock.advance(0.5)
         write_hit(self.controller, 0, 270.7, flags=0, target="Char_A_1")
         self.poller.tick()
         self.assertEqual((self.received[-1]["src"], self.received[-1]["weapon"]), ("melee", MELEE_SOURCE.label))
+        self.clock.advance(1.0)
+        write_hit(self.controller, 1, 270.7, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.settle()
+        self.assertEqual(self.received[-1]["src"], "other", "the swing window is over")
 
-    def test_skill_window_wins_over_melee_and_grenade(self) -> None:
+    def test_skill_window_claims_hits_while_the_skill_runs(self) -> None:
         self.poller.tick()
         self.poller.note_grenade_thrown(self.clock.now)
-        self.poller.note_melee_swing(self.clock.now)
         self.poller.note_skill_activity(self.clock.now)
         self.clock.advance(1.0)
         write_hit(self.controller, 0, 24.3, flags=0, target="Char_A_1")
@@ -395,17 +399,23 @@ class DamagePollerTests(unittest.TestCase):
         self.clock.advance(2.5)
         write_hit(self.controller, 2, 24.3, flags=0, target="Char_A_1")
         self.poller.tick()
-        self.assertEqual(self.received[-1]["src"], "melee", "the skill window closed, the swing window is still open")
+        self.assertEqual(self.received[-1]["src"], "grenade", "the skill window closed, the throw window is still open")
 
-    def test_the_more_recent_action_wins_when_both_windows_are_open(self) -> None:
+    def test_a_knife_swing_during_a_skill_is_melee_for_one_second(self) -> None:
         self.poller.tick()
-        self.poller.note_grenade_thrown(self.clock.now)
-        self.clock.advance(1.0)
-        self.poller.note_melee_swing(self.clock.now)
+        self.poller.note_skill_activity(self.clock.now)
         self.clock.advance(0.5)
-        write_hit(self.controller, 0, 270.7, flags=0, target="Char_A_1")
+        self.poller.note_melee_swing(self.clock.now)
+        self.clock.advance(0.4)
+        write_hit(self.controller, 0, 7552.1, flags=0, target="Char_A_1")
+        write_hit(self.controller, 1, 7552.1, flags=0, target="Char_B_2")
         self.poller.tick()
-        self.assertEqual(self.received[-1]["src"], "melee")
+        self.assertEqual([e["src"] for e in self.received], ["melee", "melee"])
+        self.clock.advance(0.8)
+        self.poller.note_skill_activity(self.clock.now)
+        write_hit(self.controller, 2, 10136.0, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "skill")
 
     # ------------------------------------------------------------------ the swap rule
 
