@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -147,10 +149,16 @@ class TextTests(unittest.TestCase):
         self.assertEqual(gap_for(self.session, 30.0), 30.0)
 
     def test_main_with_a_file(self) -> None:
-        self.assertEqual(main([str(self.session.path)]), 0)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main([str(self.session.path)]), 0)
+        self.assertIn("BL4 Damage Tracker report", output.getvalue())
 
     def test_main_without_sessions(self) -> None:
-        self.assertEqual(main(["--log-dir", str(self.directory / "nothing")]), 1)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--log-dir", str(self.directory / "nothing")]), 1)
+        self.assertIn("no session file found", output.getvalue())
 
 
 if __name__ == "__main__":
