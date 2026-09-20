@@ -22,6 +22,8 @@ from .table import MAX_ROWS, STYLE_ACTIVE, STYLE_HEADER, STYLE_ROW, STYLE_SPACER
 
 CONTAINER_CLASSES = ("GbxUIUMGUserWidget", "GbxUIUMGListViewItemWidget")
 FONT_PATH = "/Engine/EngineFonts/Roboto.Roboto"
+TYPEFACE_REGULAR = "Regular"
+TYPEFACE_BOLD = "Bold"
 COLUMNS = 4
 Z_ORDER_ABOVE_HUD = 10000
 SPACER_FONT_SIZE = 10
@@ -66,7 +68,7 @@ class Readout:
         self._row_styles: list[str] = []
         self._row_shown: list[bool] = []
         self._visible = True
-        self._fonts: dict[int, Any] = {}
+        self._fonts: dict[tuple[int, str], Any] = {}
         self._colors: dict[str, Any] = {}
 
     def is_created(self) -> bool:
@@ -133,7 +135,9 @@ class Readout:
         if style_changed:
             self._row_styles[row_index] = row.style
             color = self._color(row.style)
-            font = self._font(SPACER_FONT_SIZE if row.style == STYLE_SPACER else self.layout.font_size)
+            size = SPACER_FONT_SIZE if row.style == STYLE_SPACER else self.layout.font_size
+            typeface = TYPEFACE_BOLD if row.style == STYLE_HEADER else TYPEFACE_REGULAR
+            font = self._font(size, typeface)
             for cell in cells:
                 cell.SetColorAndOpacity(color)
                 cell.SetFont(font)
@@ -199,12 +203,12 @@ class Readout:
 
     # ------------------------------------------------------------------ struct helpers
 
-    def _font(self, size: int) -> Any:
-        font_info = self._fonts.get(size)
+    def _font(self, size: int, typeface: str = TYPEFACE_REGULAR) -> Any:
+        font_info = self._fonts.get((size, typeface))
         if font_info is None:
             font_object = unrealsdk.find_object("Font", FONT_PATH)
-            font_info = unrealsdk.make_struct("SlateFontInfo", FontObject=font_object, Size=size, TypefaceFontName="Regular")
-            self._fonts[size] = font_info
+            font_info = unrealsdk.make_struct("SlateFontInfo", FontObject=font_object, Size=size, TypefaceFontName=typeface)
+            self._fonts[(size, typeface)] = font_info
         return font_info
 
     def _color(self, style: str) -> Any:
