@@ -364,6 +364,7 @@ def _refresh_readout() -> None:
             if readout is None:
                 return
         readout.set_visible(_should_show_table(controller, pawn))
+        readout.fade(now)
         if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
             return
         _last_readout_refresh = now
@@ -395,7 +396,7 @@ def _refresh_readout() -> None:
             rolling, float(readout_window_minutes.value), _equipped_cache, held.item_id, encounter, best, _hidden_row_kinds()
         )
         _latest_rows = rows
-        readout.render(rows)
+        readout.render(rows, now)
         if dashboard is not None:
             dashboard.publish_rows(rows)
         _flush_held_lines(wall_now)

@@ -24,6 +24,7 @@ Last 5 min           3'219'066     32'190       100.0
 - `Total` is the window damage, `Share [%]` the share of the window total.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
 - `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character: for a gun with at least 10 s in hand inside the window, for Skill and Grenade over at least 10 s of fighting. It only rises; `dmgreset --weapons` clears it.
+- A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
 - Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
 - The table hides in menus, in vehicles and during tunnel transitions. Vehicle damage is not tracked. Healing is never counted.
 - Numbers use Swiss formatting: `'` for thousands, `.` for decimals.

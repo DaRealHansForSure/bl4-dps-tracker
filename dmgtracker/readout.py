@@ -6,6 +6,10 @@ subclass, since UserWidget itself is abstract) whose root is a translucent Borde
 GridPanel; one TextBlock per cell. All cells are created once, then only their text, colour
 and visibility change, and only when a value differs from what is already on screen.
 
+A row whose Total grows gets a flash: a Border behind the row (one per row, spanning every
+column, on a lower grid layer) is lit and fades out over FLASH_S; fade() runs every frame
+while a flash is active and touches nothing otherwise.
+
 This is the one module besides mod.py that touches the SDK.
 """
 
@@ -30,6 +34,14 @@ ROW_GAP = 2.0
 TEXT_JUSTIFY_RIGHT = 2
 VISIBILITY_COLLAPSED = 1
 VISIBILITY_HIT_TEST_INVISIBLE = 3
+ALIGN_FILL = 0
+# The row flash: white at this alpha, fading to nothing over FLASH_S after new damage.
+FLASH_S = 0.9
+FLASH_RGB = (1.0, 1.0, 1.0)
+FLASH_PEAK_ALPHA = 0.28
+FLASH_STYLES = (STYLE_ROW, STYLE_ACTIVE)
+TOTAL_COLUMN = 1
+BACKGROUND_LAYER = -1
 
 BACKGROUND_RGB = (0.0, 0.0, 0.0)
 SHADOW_COLOR = (0.0, 0.0, 0.0, 0.8)
@@ -70,6 +82,9 @@ class Readout:
         self._cell_texts: list[list[str]] = []
         self._row_styles: list[str] = []
         self._row_shown: list[bool] = []
+        self._row_backgrounds: list[UObject] = []
+        self._flash_started: list[float] = []
+        self._flashing = False
         self._visible = True
         self._widget_path = ""
         self._widget_class_name = ""
@@ -101,6 +116,9 @@ class Readout:
         self._cell_texts = []
         self._row_styles = []
         self._row_shown = []
+        self._row_backgrounds = []
+        self._flash_started = []
+        self._flashing = False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -145,8 +163,9 @@ class Readout:
         visibility = VISIBILITY_HIT_TEST_INVISIBLE if visible else VISIBILITY_COLLAPSED
         self._widget.SetVisibility(visibility)
 
-    def render(self, rows: list[TableRow]) -> None:
-        """Show these rows; unused grid rows collapse. Only changed cells are touched."""
+    def render(self, rows: list[TableRow], now: float = 0.0) -> None:
+        """Show these rows; unused grid rows collapse. Only changed cells are touched. `now`
+        (monotonic seconds) stamps the flash of a row whose Total grew."""
         if self._widget is None:
             return
         if not self.exists():
@@ -154,12 +173,35 @@ class Readout:
             return
         for row_index in range(MAX_ROWS):
             if row_index < len(rows):
-                self._render_row(row_index, rows[row_index])
+                self._render_row(row_index, rows[row_index], now)
             else:
                 self._hide_row(row_index)
 
-    def _render_row(self, row_index: int, row: TableRow) -> None:
+    def fade(self, now: float) -> None:
+        """Advance the running flashes; call every frame. Nothing happens without a flash."""
+        if not self._flashing or self._widget is None:
+            return
+        if not self.exists():
+            self.forget()
+            return
+        still_flashing = False
+        for row_index, started in enumerate(self._flash_started):
+            if started <= 0.0:
+                continue
+            progress = (now - started) / FLASH_S
+            if progress >= 1.0:
+                self._flash_started[row_index] = 0.0
+                alpha = 0.0
+            else:
+                still_flashing = True
+                alpha = FLASH_PEAK_ALPHA * (1.0 - progress)
+            self._row_backgrounds[row_index].SetBrushColor(self._linear_color((*FLASH_RGB, alpha)))
+        self._flashing = still_flashing
+
+    def _render_row(self, row_index: int, row: TableRow, now: float) -> None:
         cells = self._cells[row_index]
+        if row.style in FLASH_STYLES and self._total_grew(row_index, row):
+            self._start_flash(row_index, now)
         style_changed = self._row_styles[row_index] != row.style
         if style_changed:
             self._row_styles[row_index] = row.style
@@ -185,6 +227,23 @@ class Readout:
         self._row_shown[row_index] = False
         for cell in self._cells[row_index]:
             cell.SetVisibility(VISIBILITY_COLLAPSED)
+        if self._flash_started[row_index] > 0.0:
+            self._flash_started[row_index] = 0.0
+            self._row_backgrounds[row_index].SetBrushColor(self._linear_color((*FLASH_RGB, 0.0)))
+
+    def _total_grew(self, row_index: int, row: TableRow) -> bool:
+        """Whether the row's Total is higher than what is on screen: new damage, not the
+        window forgetting old hits (which lowers it) and not a mere refresh."""
+        if len(row.cells) <= TOTAL_COLUMN:
+            return False
+        return _number_in(row.cells[TOTAL_COLUMN]) > _number_in(self._cell_texts[row_index][TOTAL_COLUMN])
+
+    def _start_flash(self, row_index: int, now: float) -> None:
+        if now <= 0.0:
+            return
+        self._flash_started[row_index] = now
+        self._flashing = True
+        self._row_backgrounds[row_index].SetBrushColor(self._linear_color((*FLASH_RGB, FLASH_PEAK_ALPHA)))
 
     # ------------------------------------------------------------------ construction
 
@@ -210,6 +269,7 @@ class Readout:
         shadow_color = self._linear_color(SHADOW_COLOR)
         shadow_offset = self._vector2d(*SHADOW_OFFSET)
         for row_index in range(MAX_ROWS):
+            self._add_row_background(tree, grid, row_index)
             row_cells: list[UObject] = []
             for column in range(self.layout.columns):
                 cell = unrealsdk.construct_object("TextBlock", tree, f"DmgTrackerCell_{row_index}_{column}")
@@ -229,6 +289,24 @@ class Readout:
             self._cell_texts.append([""] * self.layout.columns)
             self._row_styles.append(STYLE_ROW)
             self._row_shown.append(False)
+            self._flash_started.append(0.0)
+
+    def _add_row_background(self, tree: UObject, grid: UObject, row_index: int) -> None:
+        """A transparent Border across the whole row, painted below the cells (added first, and
+        on a lower layer where the slot supports it), lit by the flash."""
+        background = unrealsdk.construct_object("Border", tree, f"DmgTrackerRowBackground_{row_index}")
+        background.SetBrushColor(self._linear_color((*FLASH_RGB, 0.0)))
+        background.SetPadding(self._margin(0.0, 0.0, 0.0, 0.0))
+        background.SetVisibility(VISIBILITY_HIT_TEST_INVISIBLE)
+        slot = grid.AddChildToGrid(background, row_index, 0)
+        slot.SetColumnSpan(self.layout.columns)
+        slot.SetHorizontalAlignment(ALIGN_FILL)
+        slot.SetVerticalAlignment(ALIGN_FILL)
+        try:
+            slot.SetLayer(BACKGROUND_LAYER)
+        except AttributeError:
+            pass  # add order already puts the background behind the cells
+        self._row_backgrounds.append(background)
 
     # ------------------------------------------------------------------ struct helpers
 
@@ -261,3 +339,11 @@ class Readout:
     @staticmethod
     def _vector2d(x: float, y: float) -> Any:
         return unrealsdk.make_struct("Vector2D", X=x, Y=y)
+
+
+def _number_in(text: str) -> float:
+    """The value of a cell as the table formats it (Swiss thousands separators); 0 for text."""
+    try:
+        return float(text.replace("'", ""))
+    except ValueError:
+        return 0.0
