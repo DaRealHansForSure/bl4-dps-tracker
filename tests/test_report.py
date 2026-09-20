@@ -144,6 +144,16 @@ class TextTests(unittest.TestCase):
         self.assertIn("Last 300 s of the log: 6'490 damage, 22 per second", text)
         self.assertNotIn("—", text)
 
+    def test_top_limits_the_encounters_printed(self) -> None:
+        lines = format_report(self.session, 15.0, top_encounters=1)
+        text = "\n".join(lines)
+        self.assertIn("showing the 1 largest of 2 encounters", text)
+        self.assertIn("targets: Boss x2", text, "the largest fight is printed")
+        self.assertNotIn("targets: CatAdult x3", text, "the smaller fight is not")
+        self.assertIn("Session: 2 encounter(s)", text, "the summary still covers every encounter")
+        everything = "\n".join(format_report(self.session, 15.0, top_encounters=None))
+        self.assertIn("targets: CatAdult x3", everything)
+
     def test_gap_override(self) -> None:
         self.assertEqual(gap_for(self.session, None), 15.0)
         self.assertEqual(gap_for(self.session, 30.0), 30.0)

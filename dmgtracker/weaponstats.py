@@ -220,19 +220,23 @@ class WeaponStore:
         with self._lock:
             return {instance_id: record.peak_dps for instance_id, record in self.records.items() if record.peak_dps > 0}
 
-    def ranking(self) -> list[WeaponRecord]:
-        """Records by DPS in hand, best first; weapons never held long enough come last."""
+    def ranking(self, by: str = "dps") -> list[WeaponRecord]:
+        """Records best first: by DPS in hand (default), by peak DPS, or by damage."""
         with self._lock:
             records = list(self.records.values())
+        if by == "peak":
+            return sorted(records, key=lambda record: (record.peak_dps, record.damage), reverse=True)
+        if by == "damage":
+            return sorted(records, key=lambda record: (record.damage, record.dps_in_hand()), reverse=True)
         return sorted(records, key=lambda record: (record.dps_in_hand(), record.damage), reverse=True)
 
-    def format_ranking(self, limit: int = 15) -> list[str]:
+    def format_ranking(self, limit: int = 15, by: str = "dps") -> list[str]:
         """Text lines for the console: one header, one line per weapon."""
         lines = [
             f"{'#':>2}  {'Weapon':24} {'DPS in hand':>12} {'Peak DPS':>10} {'Damage':>14} {'Hits':>6} "
             f"{'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'In hand':>9}"
         ]
-        for position, record in enumerate(self.ranking()[:limit], start=1):
+        for position, record in enumerate(self.ranking(by)[:limit], start=1):
             minutes = record.held_seconds / 60.0
             lines.append(
                 f"{position:>2}  {record.label[:22] + ' #' + str(record.instance_id):24} "

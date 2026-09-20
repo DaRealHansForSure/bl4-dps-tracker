@@ -23,6 +23,7 @@ from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
 from .attribution import UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .character import CharacterIdentity, read_identity
+from .formatting import format_number
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -681,12 +682,13 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
     if weapon_store is None or character is None:
         logging.info(f"{LOG_PREFIX} no character loaded yet (the mod must be enabled and you must be in the world)")
         return
-    logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}):")
-    for line in weapon_store.format_ranking(limit=args.limit):
+    logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}), by {args.by}:")
+    for line in weapon_store.format_ranking(limit=args.limit, by=args.by):
         logging.info(line)
 
 
 dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
+dmgweapons_command.add_argument("--by", choices=("dps", "peak", "damage"), default="dps", help="sort order (default: DPS in hand)")
 
 
 @command("dmgreport", description="Report over the current session: encounters, per-weapon numbers, optionally the last N seconds.")
@@ -696,7 +698,7 @@ def dmgreport_command(args: argparse.Namespace) -> None:
         return
     try:
         session = read_session(session_log.path)
-        lines = format_report(session, gap_for(session, args.gap), args.last)
+        lines = format_report(session, gap_for(session, args.gap), args.last, None if args.all else args.top)
     except Exception as ex:  # noqa: BLE001 - a report failure is worth a line, not a stack in the console
         logging.error(f"{LOG_PREFIX} report failed: {type(ex).__name__}: {ex}")
         return
@@ -706,6 +708,35 @@ def dmgreport_command(args: argparse.Namespace) -> None:
 
 dmgreport_command.add_argument("--last", type=float, default=None, metavar="SECONDS", help="also average the final N seconds")
 dmgreport_command.add_argument("--gap", type=float, default=None, metavar="SECONDS", help="seconds without a hit that end an encounter")
+dmgreport_command.add_argument("--top", type=int, default=10, metavar="N", help="only the N largest encounters per character")
+dmgreport_command.add_argument("--all", action="store_true", help="every encounter")
+
+
+@command("dmgstatus", description="Show the tracker's state: counters, hooks, character, files.")
+def dmgstatus_command(args: argparse.Namespace) -> None:
+    if poller is None:
+        logging.info(f"{LOG_PREFIX} not enabled")
+        return
+    logging.info(f"{LOG_PREFIX} v{_mod_version()}; tick hook on {tick_function.value}")
+    logging.info(
+        f"{LOG_PREFIX} {poller.events} events, {poller.ignored_events} ignored (vehicle), {poller.ignored_heals} heals dropped, "
+        f"{poller.errors} errors, {poller.overflow_frames} overflow-suspect frames, {poller.ticks} ticks, {_tick_errors} hook errors"
+    )
+    if poller.broken_reason:
+        logging.info(f"{LOG_PREFIX} tracking stopped: {poller.broken_reason}")
+    if character is not None:
+        logging.info(f"{LOG_PREFIX} character: {character.display} ({character.class_name}), key {character.key[:8]}")
+    else:
+        logging.info(f"{LOG_PREFIX} character: not known yet")
+    if weapon_store is not None:
+        logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
+    if session_log is not None:
+        logging.info(
+            f"{LOG_PREFIX} session log: {session_log.path} ({session_log.written} written, {session_log.buffered()} buffered, "
+            f"{session_log.write_errors} write errors)"
+        )
+    table_state = "shown" if readout is not None and readout.visible() else ("created, hidden" if readout is not None else "not created")
+    logging.info(f"{LOG_PREFIX} table: {table_state}; combat clock {format_number(_combat_clock)} s; window {readout_window_minutes.value} min")
 
 
 @command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's.")
@@ -772,7 +803,7 @@ mod = build_mod(
     ],
     keybinds=[],
     hooks=[],
-    commands=[dmgweapons_command, dmgreport_command, dmgreset_command],
+    commands=[dmgweapons_command, dmgreport_command, dmgstatus_command, dmgreset_command],
     on_enable=on_enable,
     on_disable=on_disable,
 )

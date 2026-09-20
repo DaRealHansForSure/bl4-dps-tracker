@@ -7,6 +7,8 @@ Runs outside the game with the standard library only:
     python dmgtracker/report.py path/to/session.jsonl
     python dmgtracker/report.py --last 300           average over the final five minutes
     python dmgtracker/report.py --gap 30             end an encounter after 30 s without a hit
+    python dmgtracker/report.py --top 5              only the five largest encounters (default 10)
+    python dmgtracker/report.py --all                every encounter
 
 The in-game `dmgreport` command runs the same functions on the current session and prints
 to the SDK console. Encounters and the per-source split come from stats.py, so the report
@@ -38,6 +40,7 @@ LATEST_POINTER_NAME = "latest-session.txt"
 SESSION_GLOB = "session-*.jsonl"
 TARGET_PREFIX = "Char_"
 TOP_TARGETS = 3
+DEFAULT_TOP_ENCOUNTERS = 10
 SOURCE_WEAPON = "weapon"
 KIND_DOT = "dot"
 
@@ -165,7 +168,15 @@ def last_seconds_average(events: list[dict[str, Any]], seconds: float) -> tuple[
 
 # ------------------------------------------------------------------ text
 
-def format_report(session: Session, gap_s: float, last_seconds: float | None = None) -> list[str]:
+def format_report(
+    session: Session,
+    gap_s: float,
+    last_seconds: float | None = None,
+    top_encounters: int | None = DEFAULT_TOP_ENCOUNTERS,
+) -> list[str]:
+    """The whole report as text lines. `top_encounters` limits the fights printed per
+    character to the largest N (None prints every one); the session summary always covers
+    all of them."""
     lines: list[str] = []
     events = session.all_events()
     started = session.meta.get("started")
@@ -178,7 +189,7 @@ def format_report(session: Session, gap_s: float, last_seconds: float | None = N
             continue
         lines.append("")
         lines.append(section.title())
-        lines.extend(_format_encounters(section.events, gap_s))
+        lines.extend(_format_encounters(section.events, gap_s, top_encounters))
         lines.extend(_format_weapons(section.events))
     if last_seconds:
         total, per_second = last_seconds_average(events, last_seconds)
@@ -187,10 +198,17 @@ def format_report(session: Session, gap_s: float, last_seconds: float | None = N
     return lines
 
 
-def _format_encounters(events: list[dict[str, Any]], gap_s: float) -> list[str]:
+def _format_encounters(events: list[dict[str, Any]], gap_s: float, top: int | None) -> list[str]:
     encounters = encounters_for(events, gap_s)
     lines: list[str] = []
+    shown = set(range(len(encounters)))
+    if top is not None and len(encounters) > top:
+        largest = sorted(range(len(encounters)), key=lambda index: encounters[index].total, reverse=True)[:top]
+        shown = set(largest)
+        lines.append(f"  (showing the {top} largest of {len(encounters)} encounters; --all shows every one)")
     for index, encounter in enumerate(encounters, start=1):
+        if index - 1 not in shown:
+            continue
         started = time.strftime("%H:%M:%S", time.localtime(encounter.started))
         lines.append(
             f"  Encounter {index:>2}  {started}  {format_duration(encounter.duration()):>5}  "
@@ -245,6 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last", type=float, default=None, metavar="SECONDS", help="also average the final N seconds of the log")
     parser.add_argument("--gap", type=float, default=None, metavar="SECONDS", help="seconds without a hit that end an encounter (default: the session's setting)")
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR, help="where the sessions are")
+    parser.add_argument("--top", type=int, default=DEFAULT_TOP_ENCOUNTERS, metavar="N", help="print only the N largest encounters per character")
+    parser.add_argument("--all", action="store_true", help="print every encounter")
     return parser
 
 
@@ -261,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no session file found (looked in {args.log_dir})")
         return 1
     session = read_session(path)
-    for line in format_report(session, gap_for(session, args.gap), args.last):
+    for line in format_report(session, gap_for(session, args.gap), args.last, None if args.all else args.top):
         print(line)
     return 0
 
