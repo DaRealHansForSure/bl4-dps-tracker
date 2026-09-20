@@ -28,8 +28,7 @@ OUT = Path(__file__).parent / "probe_output.txt"
 HOOK_ID = "dmgtricks"
 TRICK_FUNCTIONS = (
     "/Script/GbxGame.GbxTrickScript:OnBegin_Mut",
-    "/Script/GbxGame.GbxTrickScript:OnBegin_Const",
-    "/Script/GbxGame.GbxTrickScript:OnAnimNotify",
+    "/Script/GbxGame.GbxTrickScript:OnEnd_Mut",
 )
 
 state: dict[str, Any] = {"hooked": [], "start": 0.0}
@@ -59,15 +58,36 @@ def is_player_actor(actor: Any) -> bool:
         return False
 
 
+def outer_chain(obj: UObject) -> str:
+    """Class names of the object's outers, innermost first, with a mark on the player's pawn."""
+    names = []
+    current = obj
+    for _ in range(4):
+        try:
+            current = current.Outer
+        except Exception:  # noqa: BLE001
+            break
+        if current is None:
+            break
+        mark = " (player)" if is_player_actor(current) else ""
+        names.append(f"{current.Class.Name}{mark}")
+    return " > ".join(names)
+
+
 def on_trick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     try:
+        class_name = str(obj.Class.Name)
+        if "Melee" not in class_name and "Offhand" not in class_name and "ActionSkill" not in class_name:
+            return
         try:
             actor = obj.GetAssociatedActor()
         except Exception:  # noqa: BLE001
             actor = None
-        if actor is None or not is_player_actor(actor):
-            return
-        say(f"+{time.time() - state['start']:7.2f}s {func.func.Name:14} {obj.Class.Name} <- {obj._path_name().rsplit('.', 1)[-1]}")
+        associated = "none" if actor is None else ("player" if is_player_actor(actor) else "other")
+        say(
+            f"+{time.time() - state['start']:7.2f}s {func.func.Name:14} {class_name[:60]:60} "
+            f"associated={associated} outers={outer_chain(obj)}"
+        )
     except Exception as ex:  # noqa: BLE001
         say(f"trick error: {type(ex).__name__}: {ex}")
 
