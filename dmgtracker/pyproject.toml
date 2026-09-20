@@ -1,0 +1,11 @@
+[project]
+name = "dmgtracker"
+version = "1.0.0"
+description = "Logs every damage instance you deal and shows a per-weapon damage table on screen."
+authors = [{ name = "DaRealHansForSure" }]
+
+[tool.sdkmod]
+name = "BL4 Damage Tracker"
+auto_enable = true
+supported_games = ["BL4"]
+coop_support = "Unknown"

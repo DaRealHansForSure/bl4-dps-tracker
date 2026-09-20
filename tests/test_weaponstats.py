@@ -1,0 +1,135 @@
+"""The lifetime per-weapon record and its JSON persistence."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from dmgtracker.weaponstats import WeaponStore
+
+
+def hit(t: float, dmg: float, wid: int = 277, weapon: str = "Jakobs Sniper", body: str = "Body_JAK_SR",
+        src: str = "weapon", kind: str = "direct", crit: bool = False, kill: bool = False) -> dict:
+    return {"t": t, "dmg": dmg, "kind": kind, "crit": crit, "kill": kill,
+            "src": src, "weapon": weapon, "body": body, "wid": wid}
+
+
+class WeaponStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.path = Path(self._temp.name) / "weapons.json"
+
+    def tearDown(self) -> None:
+        self._temp.cleanup()
+
+    def test_events_and_held_time_build_a_record(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(100.0, 400.0, crit=True))
+        store.add_event(hit(101.0, 600.0, kill=True))
+        store.add_held(277, "Jakobs Sniper", "Body_JAK_SR", 4.0, 101.0)
+        record = store.records[277]
+        self.assertEqual(record.damage, 1000.0)
+        self.assertEqual((record.hits, record.crits, record.kills), (2, 1, 1))
+        self.assertEqual(record.held_seconds, 4.0)
+        self.assertEqual(record.dps_in_hand(), 250.0)
+        self.assertEqual(record.average_hit(), 500.0)
+        self.assertEqual(record.crit_share(), "50.0")
+        self.assertEqual((record.first_seen, record.last_seen), (100.0, 101.0))
+
+    def test_other_and_healing_are_not_weapon_records(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(100.0, 300.0, wid=0, weapon="Other", body="", src="other"))
+        store.add_event(hit(101.0, 30.0, kind="heal"))
+        self.assertEqual(store.records, {})
+
+    def test_unknown_label_is_replaced_by_the_real_one(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_held(5, "Unknown", "", 0.25, 100.0)
+        store.add_event(hit(101.0, 10.0, wid=5, weapon="Bor SMG", body="Body_BOR_SM"))
+        self.assertEqual((store.records[5].label, store.records[5].body), ("Bor SMG", "Body_BOR_SM"))
+
+    def test_save_and_load_round_trip(self) -> None:
+        store = WeaponStore(self.path, save_interval_s=30.0)
+        store.add_event(hit(100.0, 400.0))
+        self.assertTrue(store.save_if_due(now=110.0))
+        self.assertFalse(store.save_if_due(now=111.0), "nothing changed")
+        store.add_held(277, "Jakobs Sniper", "Body_JAK_SR", 2.0, 120.0)
+        self.assertFalse(store.save_if_due(now=120.0), "interval not over")
+        self.assertTrue(store.save_if_due(now=120.0, force=True))
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(data["schema"], 1)
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.load_error, "")
+        self.assertEqual(reloaded.records[277].damage, 400.0)
+        self.assertEqual(reloaded.records[277].held_seconds, 2.0)
+
+    def test_corrupt_file_is_set_aside(self) -> None:
+        self.path.write_text("not json", encoding="utf-8")
+        store = WeaponStore(self.path)
+        store.load()
+        self.assertNotEqual(store.load_error, "")
+        self.assertEqual(store.records, {})
+        self.assertFalse(self.path.exists())
+        self.assertEqual(len(list(self.path.parent.glob("weapons.corrupt-*.json"))), 1)
+
+    def test_ranking_and_text(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(100.0, 1000.0, wid=1, weapon="Slow Gun"))
+        store.add_held(1, "Slow Gun", "", 10.0, 100.0)
+        store.add_event(hit(100.0, 1000.0, wid=2, weapon="Fast Gun"))
+        store.add_held(2, "Fast Gun", "", 2.0, 100.0)
+        store.add_event(hit(100.0, 5.0, wid=3, weapon="Never Held"))
+        self.assertEqual([record.label for record in store.ranking()], ["Fast Gun", "Slow Gun", "Never Held"])
+        lines = store.format_ranking(limit=2)
+        self.assertEqual(len(lines), 3)
+        self.assertIn("Fast Gun #2", lines[1])
+        self.assertIn("500", lines[1])
+
+    def test_peak_dps_needs_enough_time_in_hand_and_only_rises(self) -> None:
+        store = WeaponStore(self.path)
+        store.note_peak(277, "Jakobs Sniper", "Body_JAK_SR", dps=9000.0, held_seconds=3.0, now=100.0)
+        self.assertNotIn(277, store.records, "three seconds in hand is not a peak")
+        store.note_peak(277, "Jakobs Sniper", "Body_JAK_SR", dps=1200.0, held_seconds=12.0, now=101.0)
+        store.note_peak(277, "Jakobs Sniper", "Body_JAK_SR", dps=800.0, held_seconds=30.0, now=102.0)
+        record = store.records[277]
+        self.assertEqual((record.peak_dps, record.peak_dps_at), (1200.0, 101.0))
+        store.save_if_due(now=200.0, force=True)
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.records[277].peak_dps, 1200.0)
+        self.assertIn("Peak DPS", store.format_ranking()[0])
+        self.assertIn("1'200", store.format_ranking()[1])
+
+    def test_records_without_peak_fields_still_load(self) -> None:
+        self.path.write_text(json.dumps({"schema": 1, "weapons": [{"instance_id": 5, "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
+        store = WeaponStore(self.path)
+        store.load()
+        self.assertEqual(store.records[5].peak_dps, 0.0)
+
+    def test_reset_sets_the_file_aside_and_empties_the_records(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(100.0, 400.0))
+        store.save_if_due(now=100.0, force=True)
+        set_aside = store.reset()
+        self.assertEqual(store.records, {})
+        self.assertIsNotNone(set_aside)
+        self.assertTrue(set_aside.exists())
+        self.assertIn("weapons.reset-", set_aside.name)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(store.save_if_due(now=200.0, force=True), "the empty record is saved")
+        self.assertTrue(self.path.exists())
+
+    def test_reset_without_a_file(self) -> None:
+        store = WeaponStore(self.path)
+        self.assertIsNone(store.reset())
+
+    def test_empty_ranking_text(self) -> None:
+        lines = WeaponStore(self.path).format_ranking()
+        self.assertEqual(lines[-1], "no weapon data yet")
+
+
+if __name__ == "__main__":
+    unittest.main()

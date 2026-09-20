@@ -14,11 +14,11 @@ Not in v1: grenade and skill attribution (data is logged so it can be added), it
 ## Decisions carried into the build
 
 - Mechanism: per-frame hook on `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget` (POST), diffing `RepDirtyFlag` across the six `OakPlayerController.RecentlyCausedDamageInstances` slots. Nothing else fires per hit in BL4.
-- Weapon attribution: the weapon in hand at the moment of the hit, `pc.Pawn.ActiveWeapons.Slots[0].Weapon`. Label from the `BodyData` path stem (`Body_JAK_SR` -> "Jakobs Sniper"), identity from `Item.data.InstanceId`.
+- Weapon attribution: gun hits carry flag `0x400`; those go to the weapon in hand at the moment of the hit, `pc.Pawn.ActiveWeapons.Slots[0].Weapon`, labelled from the `BodyData` path stem (`Body_JAK_SR` -> "Jakobs Sniper") and identified by `Item.data.InstanceId`. Hits without that flag (grenades, melee, skills) are source `other`, shown as one "Other" row, never pinned on a gun.
 - On-screen readout: a runtime UMG `UserWidget` with `TextBlock` children, added to the viewport above the Coherent HUD (findings section E).
 - Number formatting everywhere the user reads a number: Swiss style, `'` thousands separator, `.` decimal point (`1'234'567.5`). One shared helper, no ad-hoc `format(x, ",")`.
 - Configuration through mods_base options persisted in `sdk_mods/settings/dmgtracker.json` (a `config.json` inside the `.sdkmod` zip would not be editable). Mechanism knobs and layout knobs such as the readout position are `HiddenOption`s in that file, which is also where future settings go; the file is hand-editable and documented in the README.
-- Logs under `sdk_mods/settings/dmgtracker/logs/session-<YYYYMMDD-HHMMSS>.jsonl`, newest 20 kept.
+- Logs under `%LOCALAPPDATA%\BL4DamageTracker\logs\session-<YYYYMMDD-HHMMSS>.jsonl` (user data stays out of the game folder under Program Files), newest 20 kept; the folder is the `log_dir` setting, environment variables allowed.
 - Release: one zip `dmgtracker-<version>.zip` containing only `sdk_mods/dmgtracker.sdkmod`. Vortex strips the leading folder and drops the `.sdkmod` into `sdk_mods`; manual installers extract to the game root. No loose files next to the `.sdkmod` (the loader logs an error for any file in `sdk_mods` that is not a valid `.sdkmod`).
 - Stdlib only, Python 3.14 syntax level (the SDK's embedded interpreter); the dev machine runs tests with `C:\Development\Python311\python.exe`, so no 3.12+ syntax in code that tests import.
 - Code style: four-space indentation, braces on every block, plain hyphens instead of em dashes.
@@ -39,10 +39,11 @@ One JSON object per line, raw values, no formatting:
 | `dmg` | `TotalDamage` | as the HUD shows it (PoC check C) |
 | `kind` | `DamageType.bIsDoT`, healing flag | `direct`, `dot`, `heal`; the report ignores `heal` |
 | `crit` | `DamageFlags.Flags & 0x2` | |
+| `kill` | `DamageFlags.Flags & 0x4000` | the hit that killed the target (decoded from recorded sessions) |
 | `elem` | `DamageType.ElementalType` | int, mapping documented later |
 | `flags` | `DamageFlags.Flags` | raw, for later decoding |
-| `src` | attribution | `weapon` in v1; `grenade`, `skill`, `unknown` reserved |
-| `weapon` | attribution label | "Manufacturer Type" from the body path |
+| `src` | attribution | `weapon` when `Flags & 0x400` (gun damage), else `other` (grenade, melee, skill); `unknown` when no weapon could be read |
+| `weapon` | attribution label | "Manufacturer Type" from the body path, "Other" for non-gun damage |
 | `body` | `BodyData` path stem | keeps the raw code for a future name lookup |
 | `wid` | `Item.data.InstanceId` | keeps two guns of the same body apart |
 | `dtype` | `repr(DamageType)` name | the hook for classifying grenade and skill damage later |
@@ -78,18 +79,29 @@ Rules that shape the modules:
 
 ## In-game readout
 
-Three lines, monospace-ish, top left under the HUD by default, position adjustable:
+A table, always showing every equipped weapon (the four weapon slots, in slot order, even at zero), rendered as approved with `poc/probe_table.py`. Every number covers the last X minutes **of fighting** (default 5, setting `readout_window_minutes`): the window's clock only runs while an encounter is open, so menus, vehicles, loading and walking between fights freeze the table, and numbers change only when hits happen (a wall-clock window made them drift while nothing happened). In the open world that is what a player wants to see; encounters are for boss fights and appear as an optional extra row (off by default).
 
 ```
-Encounter   2'481'003
-Avg/s          51'687
-Last 60 s      44'120
+Weapon            Total        DPS   Share [%]
+Vladof AR     1'234'567     51'687        62.1      <- weapon in hand, yellow
+Bor SMG         456'789     19'032        23.0
+Jakobs Sniper   296'010     12'334        14.9
+Torgue Shotgun        0          0         0.0
+Other            12'400        413         0.6
+
+Last 5 min    1'999'766      6'666       100.0      <- light blue
+Encounter       987'366     82'807       100.0      <- optional, off by default
 ```
 
-- Encounter total resets when the 5 s gap rule closes the encounter; the closed value stays on screen until the next hit.
-- Avg/s is total divided by wall-clock duration of the encounter (honest, counts reloads).
-- Last 60 s is the raw sum of the rolling window divided by 60.
-- Implementation per findings section E: `WidgetBlueprintLibrary.Create(pc, container_class, pc)`, a `VerticalBox` root with three `TextBlock`s (fallback: one `TextBlock` with newlines if the box does not lay out), `AddToViewport(10000)`, `SetPositionInViewport`. Container class tried in order: `GbxUIUMGUserWidget`, then `GbxUIUMGListViewItemWidget` (the one that worked). Font size and colour through `SetFont`/`SetColorAndOpacity` if they take structs cleanly; otherwise the default 24 pt font stays.
+- Rows, at fixed positions (nothing appears, disappears or reorders while playing, a user rule): header (grey), four weapon slot rows in slot order (an empty slot shows `-`; labels refreshed once a second from `EquippedInventorySlots`, damage keyed by `wid`), then `Skill`, `Grenade`, `Melee`, `Other` always in that order even at zero, a spacer, the `Last X min` row, and the `Encounter` row when enabled. A gun swapped out of the slots drops from the table; its damage stays in the totals and in its lifetime record. Status ticks are credited to the weapon that applied them, so there is no DoT row.
+- The purpose is comparing guns, so a weapon row's `DPS` is damage per second **while that weapon was in hand during a fight** (time in hand is sampled every 250 ms while an encounter is open and the table is visible; carrying a gun around between fights does not count, and a gun that was used for one minute out of five gets its own fair number). `Total` is the window damage, `Share [%]` the share of the window total. The `Last X min` row's DPS is total over the window (or over the time since the first hit while the session is younger than the window).
+- Hidden while `pc.bShowMouseCursor` is set (ESC menu, inventory, map) or there is no pawn; shown again on the same frame the menu closes.
+- Implementation per findings section E: `WidgetBlueprintLibrary.Create(pc, GbxUIUMGUserWidget, pc)`, a `Border` root with a `GridPanel`, one `TextBlock` per cell, styling through `SetFont`, `SetJustification`, `SetMinDesiredWidth`, `SetColorAndOpacity`, `SetShadowOffset`, `SetShadowColorAndOpacity`, `AddToViewport(10000)`, `SetPositionInViewport`. Cells are created once (a fixed capacity of rows, unused rows collapsed) and updated with `SetText` only when their value changed, at most every 250 ms, on the game thread from the tick hook.
+- Recreated when the controller object changes (map load); removed on disable and when the readout option is turned off.
+
+## Lifetime weapon record
+
+`%LOCALAPPDATA%\BL4DamageTracker\characters\<character guid>\weapons.json` keeps, per character and per weapon instance id (stable across game restarts, verified over three restarts): label, body, damage, hits, crits, kills, seconds in hand, first and last seen. The character is identified by `PlayerState.ActiveCharGuid` (probe 2026-09-20), checked once a second in the world; a switch saves the old record, loads the new one, starts the live table from zero and writes a `{"character": ...}` marker line into the session log so the report can split a session by character. Updated from every hit and every held-time sample, saved by the log writer thread every 30 s when changed and at disable (atomic replace; a corrupt file is set aside, not overwritten). The console command `dmgweapons [-n N]` prints the ranking by DPS in hand with damage, hits, average hit, crit share, kills and minutes in hand. This is the "which gun performs best" answer across sessions; the report gets the same section.
 
 ## Options
 
@@ -101,16 +113,17 @@ Visible in the mod menu:
 
 Hidden (persisted, editable in `sdk_mods/settings/dmgtracker.json`):
 
+- `log_dir` (default `%LOCALAPPDATA%\BL4DamageTracker\logs`)
 - `tick_function` (default `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget`)
 - `ring_property` (default `RecentlyCausedDamageInstances`), `ring_size` (6)
-- `flush_interval_s` (1.0), `sessions_to_keep` (20)
-- `readout_x`, `readout_y` (120, 320), `readout_font_size` (24): the readout position and size, changed by editing the settings file (no menu entry; the file is reloaded at enable)
+- `flush_interval_s` (1.0), `sessions_to_keep` (20), `encounter_gap_s` (15.0; the spec's 5 s ended fights during weapon swaps and grenade throws in the first real sessions; also written to the session meta line so the report uses the same gap)
+- `readout_x`, `readout_y` (120, 320), `readout_font_size` (30), `readout_column_gap` (44), `readout_column_widths` ([320, 240, 190, 140]), `readout_background_alpha` (0.6), `readout_window_minutes` (5.0), `readout_show_encounter_row` (false): the readout layout and scope, changed by editing the settings file (no menu entry; the file is reloaded at enable)
 
 ## report.py
 
 Stdlib, `python report.py [session.jsonl] [--last N] [--gap S]`, run from the repo checkout or an unzipped `.sdkmod` (it imports `stats.py` and `formatting.py` from its own folder). With no file argument it picks the session named in `latest-session.txt`, falling back to the newest file in the default log folder.
 
-Per encounter (5 s gap constant at the top of the file): total, duration, honest avg/s, active avg/s (seconds with at least one hit), top targets by hit count (so the boss fight is recognisable), per-weapon split as absolute and percent with DoT held out on its own line and counted in the total, crit share as one number. Session summary: total, encounter count, average encounter, largest encounter. `--last N` averages raw damage over the final N seconds regardless of encounters. All numbers through `format_number`. Text to stdout; no HTML.
+Per character section (split at the character marker lines) and per encounter (the session's own gap from the meta line unless `--gap`): total, duration, honest DPS, active DPS (seconds with at least one hit), top targets by hit count (so the boss fight is recognisable), kills, crit share, and the per-source split (each gun by instance, Skill, Grenade, Melee, Other) as absolute and percent; status ticks count for the gun that applied them. Session summary: total, encounter count, average encounter, largest encounter. A weapons table per character: damage, active DPS (the log has no time in hand), hits, average hit, crit share, kills, status share. `--last N` averages raw damage over the final N seconds of the whole log. All numbers through `format_number`. Text to stdout; no HTML.
 
 The mod registers a console command `dmgreport [--last N]` that runs the same functions on the current session file and prints to the SDK console, so the colleague never needs a Python install; that is the primary way to read a report.
 
@@ -137,10 +150,14 @@ End-to-end test before any upload: install the zip through Vortex on this machin
 - `docs/hook-notes.md`: the mechanism and everything tried, distilled from `poc/findings.md`, for whoever fixes the next patch breakage.
 - `docs/nexus-page.md`: page text with the SDK requirement, the same-drive Vortex note, single player only, tested game build date.
 
+## Status (2026-09-20)
+
+All five steps below are done and the release gate passed (the Vortex-installed `.sdkmod` loaded in the game). Remaining: the `v1.0.0` tag and the Nexus upload.
+
 ## Order of work and gates
 
 1. Mod core: `poller`, `attribution`, `logwriter`, `formatting`, options, self-check, status line. Deploy to `sdk_mods/`, one 2-minute session. Gate: plausible line count, `weapon` labels correct for the guns used, 0 errors in the status lines, no stutter.
-2. Readout: `readout`, `stats`. Session with a map change or respawn. Gate: the three numbers show, update, and survive the controller change; menu toggle hides and shows them.
+2. Readout: `readout`, `stats`. Session with a map change or respawn. Gate: the table shows every equipped weapon, updates during a fight, hides in menus, survives the controller change; the menu toggle hides and shows it.
 3. Report: `report.py`, `dmgreport`, tests, real fixture. Gate: report totals equal the readout's last encounter, `--last 300` sane, all tests green.
 4. Packaging: `build.py`, Vortex end-to-end install. Gate: fresh install works from the zip alone.
 5. Docs and the Nexus page text. Then tag `v1.0.0`.

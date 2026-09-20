@@ -56,4 +56,40 @@ if slot_hooks:
     say(f"   removed {len(slot_hooks)} slot focus hooks")
     slot_hooks.clear()
 
+# probe_menu.py sampler
+menu_stop = getattr(builtins, "_dmgmenu_stop", None)
+if menu_stop is not None:
+    try:
+        menu_stop()
+        say("   menu sampler stopped")
+    except Exception as ex:  # noqa: BLE001
+        say(f"   menu sampler: {type(ex).__name__}: {ex}")
+
+# probe_source.py hooks
+source_stop = getattr(builtins, "_dmgsource_stop", None)
+if source_stop is not None:
+    try:
+        source_stop()
+        say("   source probe stopped")
+    except Exception as ex:  # noqa: BLE001
+        say(f"   source probe: {type(ex).__name__}: {ex}")
+
+# probe_tricks.py hooks
+tricks_stop = getattr(builtins, "_dmgtricks_stop", None)
+if tricks_stop is not None:
+    try:
+        tricks_stop()
+        say("   trick probe stopped")
+    except Exception as ex:  # noqa: BLE001
+        say(f"   trick probe: {type(ex).__name__}: {ex}")
+
+# probe_skills.py hooks
+skills_stop = getattr(builtins, "_dmgskills_stop", None)
+if skills_stop is not None:
+    try:
+        skills_stop()
+        say("   skill probe stopped")
+    except Exception as ex:  # noqa: BLE001
+        say(f"   skill probe: {type(ex).__name__}: {ex}")
+
 say(f"done -> {OUT}")

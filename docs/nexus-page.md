@@ -1,0 +1,48 @@
+# Nexus page text
+
+Name: BL4 Damage Tracker
+Author: DaRealHansForSure
+Category: Gameplay / User Interface
+Requirements (formal requirement field): Borderlands 4 PythonSDK (oak2-mod-manager, https://github.com/bl-sdk/oak2-mod-manager)
+
+## Description
+
+**See what your guns actually do.**
+
+BL4 Damage Tracker records every damage instance you deal and shows a small table on screen: each equipped weapon with its damage, its DPS while it was in your hands, and its share, plus rows for your action skill, grenades and melee, over the last five minutes of fighting. The numbers stand still while you are in a menu, in a vehicle or walking between fights, and change only when hits land.
+
+The point of it: compare a gun you just found against the ones you carry. A weapon's DPS is measured only over the time you actually used it in fights, so one minute with a new gun gives a number you can put next to the old ones. The mod also keeps a lifetime record per weapon and per character (damage, DPS in hand, peak DPS, hits, average hit, crit share, kills, time in hand), shown with the `dmgweapons` console command, and writes every session to a log you can report on with `dmgreport`.
+
+**What it tracks**
+- bullet impacts, elemental damage, splash, explosive rounds (matched to the gun that fired them, even after a swap), sticky detonations, status ticks (credited to the gun that applied them)
+- action skills, grenades, melee, each on its own row
+- kills and crits
+
+**What it does not do**
+- show item names: weapons are labelled by manufacturer and type ("Jakobs Sniper #277"); the game does not expose item names to mods at runtime
+- track vehicle damage or healing
+- work in co-op: untested, single player only
+
+**Console commands** (F6 in the world): `dmgweapons`, `dmgreport`, `dmgreset`, each with `--help`.
+
+## Installation
+
+Requires the Borderlands 4 PythonSDK (oak2-mod-manager). With Vortex: install through the Mod Manager Download button, enable, deploy. Vortex and the game must be on the same drive; the Borderlands 4 Vortex extension does not support symlinks. Manual: extract the zip into the game folder so that `sdk_mods\dmgtracker.sdkmod` exists.
+
+First launch: open the console in the world, type `mods`, enable "BL4 Damage Tracker". It stays enabled.
+
+## Files
+
+Logs and records go to `%LOCALAPPDATA%\BL4DamageTracker\`. The mod writes nothing into the game folder except its settings file under `sdk_mods\settings\`.
+
+## Compatibility
+
+Tested against the game build of 2026-09-19 with oak2-mod-manager v0.3. A game patch can move the internals the mod reads; the mod then logs one clear message and stays idle rather than misbehaving. Source, tests and the notes for fixing it after a patch: (repository link).
+
+## Settings
+
+Three menu entries (logging on/off, table on/off, open log folder). Position, size, window length and the rest are in `sdk_mods\settings\dmgtracker.json`; see the README.
+
+## Changelog
+
+1.0.0: first release.
