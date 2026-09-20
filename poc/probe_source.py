@@ -1,14 +1,13 @@
 """
-Phase 0 probe #13: is there a real link from a damage instance to the weapon that caused it?
+Phase 0 probe #13 (v2): is there a real link from a damage instance to the weapon that caused it?
 
-Bullet impacts carry flag 0x400 and are credited to the gun in hand; explosions, splash and
-elemental damage arrive unflagged, and a projectile can go off after a weapon swap. Two
-places may hold the link: the ring entry's DamageSource container (empty in the one check
-made so far), and the projectile objects whose lifecycle functions fire around detonations.
+v1 established that the ring entry's DamageSource container is always empty, and that the
+Torgue gun's impact rounds are OakProjectile actors whose `projectile:Explode` fires within
+50 ms of the unflagged damage. v1 also crashed the game by reading the hook arguments of
+ThrowGadget (reading arguments of unknown property types inside a hook is unsafe). v2 reads
+no arguments at all: only the object, three no-argument getters and a few struct fields.
 
-    pyexec probe_source.py    start: prints every new ring entry with the decoded
-                              DamageSource container, and every projectile event with the
-                              object's owner/instigator and weapon-ish fields
+    pyexec probe_source.py    start
     pyexec probe_stop.py      stop
 
 Prints to the console and to probe_output.txt. Runs alongside the mod (read-only).
@@ -31,19 +30,17 @@ HOOK_ID = "dmgsource"
 TICK_FUNC = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
 RING_PROPERTY = "RecentlyCausedDamageInstances"
 RING_SIZE = 6
-MAX_VALUE_CHARS = 220
+MAX_VALUE_CHARS = 200
 WEAPON_FLAG = 1 << 10
 EVENT_FUNCTIONS = (
-    "/Script/GbxGame.LightProjectileScript:OnBegin",
-    "/Script/GbxGame.LightProjectileScript:OnImpact",
-    "/Script/GbxGame.LightProjectileScript:OnLifetimeExpired",
     "/Script/GbxGame.projectile:Explode",
     "/Script/OakGame.GrenadeGadget:ExplodeCallback",
     "/Script/OakGame.OakCharacter:ThrowGadget",
-    "/Script/GbxGame.LightProjectileStatics:SpawnLightProjectileAsync",
+    "/Script/GbxGame.LightProjectileScript:OnImpact",
+    "/Game/PlayerCharacters/_Shared/Tricks/Skills/Script_LTrick_HandleOffhand.Script_LTrick_HandleOffhand_C:OnBegin_Const",
 )
-INTERESTING_FRAGMENTS = ("Weapon", "Source", "Inventory", "Spawner", "Causer", "Owner", "Instigator", "Item", "Gadget")
-MAX_FIELDS_PER_OBJECT = 20
+GETTERS = ("GetOwner", "GetInstigator", "GetInstigatorController", "GetAssociatedActor")
+STRUCT_FIELDS = ("ScriptData", "TrickData", "GbxActorData", "SourceActor", "DamageBalanceData", "DamageType")
 
 
 def say(msg: str) -> None:
@@ -62,7 +59,7 @@ def described(fn) -> str:
     return repr(value)[:MAX_VALUE_CHARS]
 
 
-state: dict[str, Any] = {"dirty": [-1] * RING_SIZE, "hooked": [], "statics": None, "dumped_classes": set(), "start": 0.0}
+state: dict[str, Any] = {"dirty": [-1] * RING_SIZE, "hooked": [], "start": 0.0}
 
 
 def stamp() -> str:
@@ -80,14 +77,6 @@ def weapon_in_hand() -> str:
 
 # ------------------------------------------------------------------ ring entries
 
-def describe_damage_source(container: Any) -> str:
-    statics = state["statics"]
-    as_string = described(lambda: statics.Conv_DamageSourceContainer_String(container))
-    tags = described(lambda: statics.GetDamageSourceContainerTags(container))
-    as_source = described(lambda: statics.Conv_DamageSourceContainer_DamageSource(container))
-    return f"str={as_string} tags={tags} src={as_source}"
-
-
 def report_instance(index: int, instance: Any) -> None:
     flags = int(instance.DamageFlags.Flags)
     target = instance.DamagedActor
@@ -96,8 +85,6 @@ def report_instance(index: int, instance: Any) -> None:
         f"gunflag={bool(flags & WEAPON_FLAG)} type={described(lambda: instance.DamageType._name)} "
         f"target={described(lambda: target.Name) if target is not None else 'None'} in-hand={weapon_in_hand()}"
     )
-    say(f"      source: {describe_damage_source(instance.DamageSource)}")
-    say(f"      raw: {described(lambda: repr(instance))}")
 
 
 def on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
@@ -119,37 +106,17 @@ def on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) ->
         say(f"tick error: {type(ex).__name__}: {ex}")
 
 
-# ------------------------------------------------------------------ projectile events
-
-def interesting_fields(obj: UObject) -> list[str]:
-    lines = []
-    for prop in obj.Class._properties():
-        name = str(prop.Name)
-        if not any(fragment in name for fragment in INTERESTING_FRAGMENTS):
-            continue
-        if "Delegate" in str(prop.Class.Name):
-            continue
-        lines.append(f"{name}={described(lambda: getattr(obj, name))}")
-        if len(lines) >= MAX_FIELDS_PER_OBJECT:
-            break
-    return lines
-
+# ------------------------------------------------------------------ events
 
 def on_event(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     try:
         say(f"{stamp()} EVENT {func.func.Name} on {described(lambda: obj)} in-hand={weapon_in_hand()}")
-        class_name = str(obj.Class.Name)
-        if class_name not in state["dumped_classes"]:
-            state["dumped_classes"].add(class_name)
-            names = [str(p.Name) for p in obj.Class._properties()]
-            say(f"      {class_name} props: {', '.join(names)[:1500]}")
-        say(f"      fields: {'; '.join(interesting_fields(obj))[:1500]}")
-        arg_lines = []
-        for prop in args._type._properties():
-            name = str(prop.Name)
-            arg_lines.append(f"{name}={described(lambda: getattr(args, name))}")
-        if arg_lines:
-            say(f"      args: {'; '.join(arg_lines)[:1200]}")
+        for getter in GETTERS:
+            if hasattr(obj, getter):
+                say(f"      {getter}() = {described(lambda: getattr(obj, getter)())}")
+        for field in STRUCT_FIELDS:
+            if hasattr(obj, field):
+                say(f"      .{field} = {described(lambda: getattr(obj, field))}")
     except Exception as ex:  # noqa: BLE001
         say(f"event error: {type(ex).__name__}: {ex}")
 
@@ -175,9 +142,8 @@ builtins._dmgsource_state = state  # type: ignore[attr-defined]
 builtins._dmgsource_stop = stop  # type: ignore[attr-defined]
 
 say("=" * 60)
-say(f"{time.strftime('%H:%M:%S')} source probe")
+say(f"{time.strftime('%H:%M:%S')} source probe v2")
 state["start"] = time.time()
-state["statics"] = unrealsdk.find_class("DamageStatics").ClassDefaultObject
 
 hooks.add_hook(TICK_FUNC, hooks.Type.POST, HOOK_ID, on_tick)
 state["hooked"].append((TICK_FUNC, hooks.Type.POST))
@@ -190,4 +156,4 @@ for path in EVENT_FUNCTIONS:
     hooks.add_hook(path, hooks.Type.PRE, HOOK_ID, on_event)
     state["hooked"].append((path, hooks.Type.PRE))
     say(f"   hooked {path}")
-say("fire impact rounds, then stickies with a swap before they blow, a grenade, a knife swing; then `pyexec probe_stop.py`")
+say("impact rounds, stickies with a swap before they blow, one grenade, one knife swing; then `pyexec probe_stop.py`")
