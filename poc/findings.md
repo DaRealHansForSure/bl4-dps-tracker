@@ -30,6 +30,13 @@ Dev-machine changes outside the repo:
 
 Three controlled comparisons: 394 shown / 393.6 read, 367 / 367.4, 366 / 366.3. Crit flag matched the visual crit each time. One earlier report of 46 shown vs 48.0 read could not be reproduced; treat as unconfirmed.
 
-## D. Buffer + background flush, no stutter: PENDING
+## D. Buffer + background flush, no stutter: PASS
 
-`poc/dmgpoc/` implements the mechanism: per-frame diff -> list append -> daemon thread appends JSONL every second to `sdk_mods/settings/dmgpoc.jsonl`. Test: 2 minute firefight, kill the process from Task Manager, check stutter and how much data the last second lost. First attempt failed on an `UnboundLocalError` (fixed, redeployed, not yet re-run).
+`poc/dmgpoc/` implements the mechanism: per-frame diff -> list append -> daemon thread appends JSONL every second to `sdk_mods/settings/dmgpoc.jsonl`. Run on 2026-09-20 (19:08-19:10 local): user loaded in, fought wildlife for about 45 s of damage, idled, then killed `Borderlands4.exe` from Task Manager.
+
+- Mod counters at the last status line: 35 events, 0 errors, 6537 ticks. The JSONL holds exactly 35 complete lines, none truncated. Zero loss.
+- Last hit at 17:09:42.46Z, file mtime 17:09:43.31Z: the batch reached disk 0.85 s after the hit, i.e. inside the 1 s flush interval. The writer never built a backlog (every status line's event count matched the file).
+- Tick rate stayed at 78-95 hook calls per second for the whole session; the per-frame diff plus `_read_slot` did not show up as a hitch in the numbers. Stutter as felt in play: none, the game felt normal.
+- The kill came 20+ s after the last hit, so it did not exercise the worst case directly; the 1 s flush cadence bounds the loss structurally and the writer thread is a daemon, so a hard kill can only lose the current unflushed second.
+- Side finding: the one-off weapon layout dump ran at controller-resolve time, when `ActiveWeapons.Slots` and `EquippedInventorySlots.items` were both still empty, so every event carries `"weapon": "unknown"`. `poc/probe_weapon.py` repeats that dump on demand once weapons are equipped; run it in the next session before building weapon attribution.
+- Data sanity: 7 of 35 hits flagged crit (flags bit 1), all `elem` 0 and `kind` direct, which matches a non-elemental gun against wildlife. Flag values seen: 1024, 1026, 16384, 17408, 17410 (bits 10, 1, 14 plus combos), still undecoded.
