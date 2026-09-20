@@ -90,6 +90,10 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 
 First launch: open the console in the world, type `mods`, and enable "BL4 Damage Tracker". It stays enabled afterwards.
 
+## How a fight is counted
+
+A fight (encounter) starts with the first damage instance you deal and ends after `encounter_gap_s` seconds (default 15) without any hit; nothing else defines it, not the enemies, not your health. Per fight the mod counts total damage, hits, crits, kills, status damage, the split per source, the targets, and two rates: DPS (total over the fight's length) and active DPS (total over the seconds in which a hit landed). The same rule drives the combat clock behind the table's `Last X min` rows and a gun's time in hand. Details, consequences (two groups within 15 s are one fight, a boss phase longer than the gap splits a fight) and where fights show up: [`docs/encounters.md`](docs/encounters.md).
+
 ## How it works, in one paragraph
 
 BL4 applies damage natively; no Unreal function fires per hit. The local player controller keeps a six-slot ring of the damage instances it caused (the source of the floating damage numbers), so the mod hooks a per-frame UI function, diffs the ring's dirty flags, and records every new instance. Bullet impacts carry a gun flag and go to the gun in hand; explosive rounds are matched to their gun through the projectile that exploded; status ticks go to the last hit on that target; grenades, knife swings and action skills are recognised through the game's own throw, trick and skill events; sticky rounds that detonate on a weapon swap go to the previous gun. Details, evidence and dead ends are in [`docs/hook-notes.md`](docs/hook-notes.md).
