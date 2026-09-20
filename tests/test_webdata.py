@@ -94,6 +94,13 @@ class WebDataTests(unittest.TestCase):
         by_character = hits_page(session, page=1, size=100, query="darksiren")
         self.assertEqual(by_character["total"], 1)
 
+    def test_hits_of_one_frame_keep_their_write_order_when_reversed(self) -> None:
+        path = self.log_dir / "session-20260920-130000.jsonl"
+        burst = [hit(3000.0, 1.0), hit(3000.0, 2.0), hit(3000.0, 3.0, kill=True)]
+        write_session(path, 2900.0, [(ROGUE, burst)])
+        page = hits_page(read_session(path), page=1, size=10, query="")
+        self.assertEqual([event["dmg"] for event in page["events"]], [3.0, 2.0, 1.0], "the kill, written last, comes first")
+
     def test_weapons_payload_ranks_and_takes_the_top(self) -> None:
         store = WeaponStore(self.log_dir / "weapons.json")
         for index in range(12):

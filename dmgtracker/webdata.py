@@ -108,7 +108,11 @@ def hits_page(session: Any, page: int, size: int, query: str) -> dict[str, Any]:
     needle = query.strip().lower()
     if needle:
         events = [event for event in events if _matches(event, needle)]
-    events.sort(key=lambda event: float(event["t"]), reverse=True)
+    # Hits of one frame share a timestamp; the file order is the write order, so the hit
+    # written last (the kill of a burst) comes first once the list is reversed.
+    numbered = list(enumerate(events))
+    numbered.sort(key=lambda pair: (float(pair[1]["t"]), pair[0]), reverse=True)
+    events = [event for _order, event in numbered]
     total = len(events)
     pages = max(1, math.ceil(total / size))
     start = (page - 1) * size

@@ -596,8 +596,9 @@
   }
 
   function addFeed(events) {
-    const newest = events.slice().sort(function (a, b) { return b.t - a.t; });
-    newest.forEach(function (event) {
+    // A batch arrives in the order the hits were written; prepending one by one puts the
+    // last one on top, so the feed reads newest first.
+    events.forEach(function (event) {
       feedBody.insertBefore(hitRow(event, false), feedBody.firstChild);
     });
     while (feedBody.children.length > MAX_FEED) {

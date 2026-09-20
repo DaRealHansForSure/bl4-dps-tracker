@@ -141,6 +141,9 @@ class DamagePoller:
         # Called with the new controller when one is adopted, and with None when it is lost.
         self.on_controller_changed: Callable[[Any], None] | None = None
         self._dirty_flags: list[int] = []
+        # The slot the game wrote last: the ring is filled circularly, so the slots that
+        # changed in one frame are read starting after it, in the order the hits happened.
+        self._last_written_slot = -1
         self._controller_address = 0
         self._idle_until = 0.0
         self._last_hit_by_target: dict[str, tuple[DamageSource, float]] = {}
@@ -261,6 +264,7 @@ class DamagePoller:
             return
         # Baseline the flags so instances from before the resolve are not replayed as new hits.
         self._dirty_flags = [int(ring[index].RepDirtyFlag) for index in range(self._ring_size)]
+        self._last_written_slot = self._ring_size - 1
         self.controller = controller
         self._controller_address = address
         if self.on_controller_changed is not None:
@@ -281,14 +285,14 @@ class DamagePoller:
         # Damage dealt from a vehicle is not the player's gun play; it is dropped, but the
         # flags still advance so those hits are not replayed once the player is on foot.
         tracking = self._resolver.is_character(pawn)
-        changed: list[Any] = []
+        changed_slots: list[int] = []
         for index in range(self._ring_size):
-            instance = ring[index]
-            dirty = int(instance.RepDirtyFlag)
+            dirty = int(ring[index].RepDirtyFlag)
             if dirty == self._dirty_flags[index]:
                 continue
             self._dirty_flags[index] = dirty
-            changed.append(instance)
+            changed_slots.append(index)
+        changed = [ring[index] for index in self._in_write_order(changed_slots)]
         if len(changed) == self._ring_size:
             # Every slot changed within one frame: the ring may have wrapped and dropped hits.
             self.overflow_frames += 1
@@ -314,6 +318,16 @@ class DamagePoller:
             else:
                 ready_now.append(event)
         return ready_now
+
+    def _in_write_order(self, slots: list[int]) -> list[int]:
+        """The changed slots in the order the game filled them: continuing around the ring
+        from the slot after the last one written."""
+        if not slots:
+            return slots
+        start = (self._last_written_slot + 1) % self._ring_size
+        ordered = sorted(slots, key=lambda slot: (slot - start) % self._ring_size)
+        self._last_written_slot = ordered[-1]
+        return ordered
 
     @staticmethod
     def _should_hold(event: dict[str, Any]) -> bool:

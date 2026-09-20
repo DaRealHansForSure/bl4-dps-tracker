@@ -202,6 +202,19 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual(self.received[0]["target"], "")
 
+    def test_slots_changed_in_one_frame_are_read_in_write_order(self) -> None:
+        self.poller.tick()
+        for slot in range(4):
+            write_hit(self.controller, slot, 10.0 + slot, flags=WEAPON_FLAG, target=f"Char_{slot}")
+        self.poller.tick()
+        self.assertEqual([e["dmg"] for e in self.received], [10.0, 11.0, 12.0, 13.0])
+        # The next three hits wrap around: slots 4, 5 and 0, in that order.
+        write_hit(self.controller, 4, 20.0, flags=WEAPON_FLAG, target="Char_4")
+        write_hit(self.controller, 5, 21.0, flags=WEAPON_FLAG | KILL_FLAG, target="Char_5")
+        write_hit(self.controller, 0, 22.0, flags=WEAPON_FLAG, target="Char_0")
+        self.poller.tick()
+        self.assertEqual([e["dmg"] for e in self.received[4:]], [20.0, 21.0, 22.0])
+
     def test_all_slots_changed_counts_as_overflow_suspect(self) -> None:
         self.poller.tick()
         for slot in range(RING_SIZE):
