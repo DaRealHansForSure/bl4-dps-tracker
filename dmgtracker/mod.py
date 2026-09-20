@@ -10,7 +10,6 @@ stats engine, and the readout is refreshed from the same frame.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from pathlib import Path
@@ -89,9 +88,8 @@ MAX_LIVE_ENCOUNTERS = 1000
 WEAPON_STORE_NAME = "weapons.json"
 CHARACTERS_DIR_NAME = "characters"
 READOUT_CREATE_RETRY_S = 1.0
-# The table as the game shows it, published next to the logs once per flush interval for
-# the web dashboard; and time-in-hand lines in the session log, once per second per gun.
-LIVE_FILE_NAME = "live.json"
+# Time-in-hand lines in the session log, once per second per gun, so the report and the
+# dashboard can compute DPS in hand from the log.
 HELD_LINE_INTERVAL_S = 1.0
 
 # ------------------------------------------------------------------ options
@@ -442,22 +440,6 @@ def _flush_held_lines(now: float) -> None:
     _held_pending.clear()
 
 
-def _publish_live() -> None:
-    """Writer thread: drop the table as the game shows it into live.json (atomic replace)."""
-    payload = {
-        "t": time.time(),
-        "character": character.to_json() if character is not None else None,
-        "window_minutes": float(readout_window_minutes.value),
-        "combat_clock": _combat_clock,
-        "rows": [{"cells": list(row.cells), "style": row.style} for row in _latest_rows],
-        "table_visible": readout is not None and readout.visible(),
-        "events": poller.events if poller is not None else 0,
-        "errors": poller.errors if poller is not None else 0,
-    }
-    target = _log_dir() / LIVE_FILE_NAME
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(payload), encoding="utf-8")
-    temporary.replace(target)
 
 
 def _give_up_readout_if_needed() -> None:
@@ -659,10 +641,8 @@ def on_enable() -> None:
     poller.on_controller_changed = _on_controller_changed
     session_log = _start_session_log()
     if session_log is not None:
-        # The writer thread wakes every flush interval; let it save the weapon record and
-        # publish the live table too.
+        # The writer thread wakes every flush interval; let it save the weapon record too.
         session_log.add_flush_listener(_save_weapon_store_if_due)
-        session_log.add_tick_listener(_publish_live)
     if not _install_tick_hook():
         return
     _install_source_hooks()
