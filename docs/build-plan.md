@@ -79,24 +79,29 @@ Rules that shape the modules:
 
 ## In-game readout
 
-A table, always showing every equipped weapon (the four weapon slots, in slot order, even at zero), rendered as approved with `poc/probe_table.py`:
+A table, always showing every equipped weapon (the four weapon slots, in slot order, even at zero), rendered as approved with `poc/probe_table.py`. Every number covers the last X minutes (default 5, setting `readout_window_minutes`): in the open world that is what a player wants to see; encounters are for boss fights and appear as an optional extra row (off by default).
 
 ```
 Weapon            Total        DPS   Share [%]
 Vladof AR     1'234'567     51'687        62.1      <- weapon in hand, yellow
-Borg SMG        456'789     19'032        23.0
+Bor SMG         456'789     19'032        23.0
 Jakobs Sniper   296'010     12'334        14.9
 Torgue Shotgun        0          0         0.0
+Other            12'400        413         0.6
 
-Encounter     1'987'366     82'807       100.0      <- light blue
-Last 60 s                   44'120
+Last 5 min    1'999'766      6'666       100.0      <- light blue
+Encounter       987'366     82'807       100.0      <- optional, off by default
 ```
 
-- Rows: header (grey), one row per equipped weapon slot (labels refreshed once a second from `EquippedInventorySlots`, damage keyed by `wid`), a `DoT` row and an `Other` row only when they have damage, a spacer, the `Encounter` total row, and a `Last 60 s` row with the rolling DPS. Weapons that were used in the encounter but are no longer equipped stay listed until the encounter closes.
-- Numbers are for the current encounter (5 s gap rule); when an encounter closes the table keeps showing it until the next hit starts a new one. `Total` is damage, `DPS` is total divided by the encounter's wall-clock duration, `Share [%]` is the row's share of the encounter total with one decimal.
+- Rows: header (grey), one row per equipped weapon slot (labels refreshed once a second from `EquippedInventorySlots`, damage keyed by `wid`), then weapons used in the window but no longer equipped, an `Other` row (grenade, melee, skills) and a `DoT` row when they have damage, a spacer, the `Last X min` row, and the `Encounter` row when enabled.
+- The purpose is comparing guns, so a weapon row's `DPS` is damage per second **while that weapon was in hand** (time in hand is sampled every 250 ms while the table is visible; a gun that was used for one minute out of five gets its own fair number). `Total` is the window damage, `Share [%]` the share of the window total. The `Last X min` row's DPS is total over the window (or over the time since the first hit while the session is younger than the window).
 - Hidden while `pc.bShowMouseCursor` is set (ESC menu, inventory, map) or there is no pawn; shown again on the same frame the menu closes.
-- Implementation per findings section E: `WidgetBlueprintLibrary.Create(pc, GbxUIUMGUserWidget, pc)`, a `Border` root with a `GridPanel`, one `TextBlock` per cell, styling through `SetFont`, `SetJustification`, `SetMinDesiredWidth`, `SetColorAndOpacity`, `SetShadowOffset`, `SetShadowColorAndOpacity`, `AddToViewport(10000)`, `SetPositionInViewport`. Cells are created once and updated with `SetText` only when their value changed, at most every 250 ms, on the game thread from the tick hook. Row count changes (DoT/Other appearing) rebuild the grid.
+- Implementation per findings section E: `WidgetBlueprintLibrary.Create(pc, GbxUIUMGUserWidget, pc)`, a `Border` root with a `GridPanel`, one `TextBlock` per cell, styling through `SetFont`, `SetJustification`, `SetMinDesiredWidth`, `SetColorAndOpacity`, `SetShadowOffset`, `SetShadowColorAndOpacity`, `AddToViewport(10000)`, `SetPositionInViewport`. Cells are created once (a fixed capacity of rows, unused rows collapsed) and updated with `SetText` only when their value changed, at most every 250 ms, on the game thread from the tick hook.
 - Recreated when the controller object changes (map load); removed on disable and when the readout option is turned off.
+
+## Lifetime weapon record
+
+`%LOCALAPPDATA%\BL4DamageTracker\weapons.json` keeps, per weapon instance id (stable across game restarts, verified over three restarts): label, body, damage, hits, crits, kills, seconds in hand, first and last seen. Updated from every hit and every held-time sample, saved by the log writer thread every 30 s when changed and at disable (atomic replace; a corrupt file is set aside, not overwritten). The console command `dmgweapons [-n N]` prints the ranking by DPS in hand with damage, hits, average hit, crit share, kills and minutes in hand. This is the "which gun performs best" answer across sessions; the report gets the same section.
 
 ## Options
 
@@ -112,7 +117,7 @@ Hidden (persisted, editable in `sdk_mods/settings/dmgtracker.json`):
 - `tick_function` (default `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget`)
 - `ring_property` (default `RecentlyCausedDamageInstances`), `ring_size` (6)
 - `flush_interval_s` (1.0), `sessions_to_keep` (20), `encounter_gap_s` (15.0; the spec's 5 s ended fights during weapon swaps and grenade throws in the first real sessions; also written to the session meta line so the report uses the same gap)
-- `readout_x`, `readout_y` (120, 320), `readout_font_size` (30), `readout_column_gap` (44), `readout_column_widths` ([320, 240, 190, 140]), `readout_background_alpha` (0.6), `readout_show_rolling_row` (true): the readout layout, changed by editing the settings file (no menu entry; the file is reloaded at enable)
+- `readout_x`, `readout_y` (120, 320), `readout_font_size` (30), `readout_column_gap` (44), `readout_column_widths` ([320, 240, 190, 140]), `readout_background_alpha` (0.6), `readout_window_minutes` (5.0), `readout_show_encounter_row` (false): the readout layout and scope, changed by editing the settings file (no menu entry; the file is reloaded at enable)
 
 ## report.py
 

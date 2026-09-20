@@ -9,13 +9,14 @@ stats engine, and the readout is refreshed from the same frame.
 
 from __future__ import annotations
 
+import argparse
 import os
 import time
 from pathlib import Path
 from typing import Any
 
 import unrealsdk
-from mods_base import SETTINGS_DIR, BoolOption, ButtonOption, HiddenOption, build_mod, get_pc
+from mods_base import SETTINGS_DIR, BoolOption, ButtonOption, HiddenOption, build_mod, command, get_pc
 from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
@@ -24,8 +25,9 @@ from .attribution import UNKNOWN_SOURCE, WeaponResolver
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
-from .stats import KIND_HEAL, EncounterTracker, RollingWindow
+from .stats import EncounterTracker, RollingStats, source_key
 from .table import build_rows
+from .weaponstats import WeaponStore
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
@@ -52,10 +54,14 @@ DEFAULT_READOUT_FONT_SIZE = 30
 DEFAULT_READOUT_COLUMN_GAP = 44.0
 DEFAULT_READOUT_COLUMN_WIDTHS = [320.0, 240.0, 190.0, 140.0]
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
+DEFAULT_READOUT_WINDOW_MINUTES = 5.0
 READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
+# A held-time sample longer than this means the game was paused or loading, not playing.
+MAX_HELD_SAMPLE_S = 1.0
 READOUT_ERRORS_BEFORE_GIVING_UP = 5
 MAX_LIVE_ENCOUNTERS = 1000
+WEAPON_STORE_NAME = "weapons.json"
 
 # ------------------------------------------------------------------ options
 
@@ -92,7 +98,8 @@ readout_font_size = HiddenOption("readout_font_size", DEFAULT_READOUT_FONT_SIZE)
 readout_column_gap = HiddenOption("readout_column_gap", DEFAULT_READOUT_COLUMN_GAP)
 readout_column_widths = HiddenOption("readout_column_widths", DEFAULT_READOUT_COLUMN_WIDTHS)
 readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READOUT_BACKGROUND_ALPHA)
-readout_show_rolling_row = HiddenOption("readout_show_rolling_row", True)
+readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
+readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 
 # ------------------------------------------------------------------ state
 
@@ -100,13 +107,15 @@ resolver = WeaponResolver()
 poller: DamagePoller | None = None
 session_log: SessionLog | None = None
 tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
-rolling = RollingWindow()
+rolling = RollingStats(DEFAULT_READOUT_WINDOW_MINUTES * 60.0)
+weapon_store: WeaponStore | None = None
 readout: Readout | None = None
 _last_status_time = 0.0
 _broken_reported = False
 _readout_errors = 0
 _last_readout_refresh = 0.0
 _last_equipment_refresh = 0.0
+_last_held_sample = 0.0
 _equipped_cache: list = []
 
 
@@ -142,8 +151,9 @@ def _on_new_events(events: list[dict[str, Any]]) -> None:
         session_log.append(events)
     for event in events:
         tracker.add(event)
-        if event["kind"] != KIND_HEAL:
-            rolling.add(float(event["t"]), float(event["dmg"]))
+        rolling.add(event)
+        if weapon_store is not None:
+            weapon_store.add_event(event)
 
 
 def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
@@ -231,19 +241,31 @@ def _refresh_readout() -> None:
             _last_equipment_refresh = now
             _equipped_cache = resolver.equipped_weapons(pawn)
         held = resolver.weapon_in_hand(pawn) if pawn is not None else UNKNOWN_SOURCE
-        rows = build_rows(
-            tracker.latest(),
-            _equipped_cache,
-            held.instance_id,
-            rolling.dps_at(now),
-            bool(readout_show_rolling_row.value),
-        )
+        _sample_held_time(held, now)
+        rolling.prune(now)
+        encounter = tracker.latest() if readout_show_encounter_row.value else None
+        rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter)
         readout.render(rows)
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
         _readout_errors += 1
         _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
         _destroy_readout()
         _give_up_readout_if_needed()
+
+
+def _sample_held_time(held: Any, now: float) -> None:
+    """Credit the weapon in hand with the time since the last sample, so its DPS can be
+    measured over the time it was actually used. Menus do not count: this runs only while
+    the table is shown, and a long gap (pause, loading) is dropped."""
+    global _last_held_sample
+    elapsed = now - _last_held_sample
+    _last_held_sample = now
+    if not readout.visible() or held.instance_id == 0 or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+        return
+    key = source_key({"src": held.kind, "weapon": held.label, "wid": held.instance_id})
+    rolling.add_held(now, key, elapsed)
+    if weapon_store is not None:
+        weapon_store.add_held(held.instance_id, held.label, held.body, elapsed, now)
 
 
 def _give_up_readout_if_needed() -> None:
@@ -304,12 +326,15 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, _last_status_time, _broken_reported, _readout_errors
+    global poller, session_log, tracker, rolling, weapon_store
+    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample
     _broken_reported = False
     _readout_errors = 0
     _last_status_time = time.time()
+    _last_held_sample = time.time()
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
-    rolling = RollingWindow()
+    rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
+    weapon_store = _load_weapon_store()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
         ring_property=str(ring_property.value),
@@ -319,10 +344,21 @@ def on_enable() -> None:
     )
     poller.on_controller_changed = _on_controller_changed
     session_log = _start_session_log()
+    if session_log is not None and weapon_store is not None:
+        # The writer thread wakes every flush interval; let it save the weapon record too.
+        session_log.add_flush_listener(lambda _batch: weapon_store.save_if_due(time.time()))
     if not _install_tick_hook():
         return
     log_path = session_log.path if session_log is not None else "nothing (log unavailable)"
     _say(f"v{_mod_version()} enabled, logging to {log_path}")
+
+
+def _load_weapon_store() -> WeaponStore:
+    store = WeaponStore(_log_dir().parent / WEAPON_STORE_NAME)
+    store.load()
+    if store.load_error:
+        logging.error(f"{LOG_PREFIX} weapon record {store.path} could not be read ({store.load_error}); starting a new one")
+    return store
 
 
 def _start_session_log() -> SessionLog | None:
@@ -344,9 +380,14 @@ def _start_session_log() -> SessionLog | None:
 
 
 def on_disable() -> None:
-    global poller, session_log
+    global poller, session_log, weapon_store
     _remove_tick_hook()
     _destroy_readout()
+    if weapon_store is not None:
+        weapon_store.save_if_due(time.time(), force=True)
+        if weapon_store.save_error:
+            logging.error(f"{LOG_PREFIX} weapon record not saved: {weapon_store.save_error}")
+        weapon_store = None
     if session_log is not None:
         session_log.stop()
         _say(f"disabled; {session_log.written} events written to {session_log.path}")
@@ -354,6 +395,20 @@ def on_disable() -> None:
         _say(f"{poller.events} events seen, {poller.errors} errors, {poller.ticks} ticks")
     poller = None
     session_log = None
+
+
+# ------------------------------------------------------------------ console commands
+
+@command("dmgweapons", description="Rank your weapons by damage per second in hand, over all sessions.")
+def dmgweapons_command(args: argparse.Namespace) -> None:
+    if weapon_store is None:
+        logging.info(f"{LOG_PREFIX} the mod is not enabled")
+        return
+    for line in weapon_store.format_ranking(limit=args.limit):
+        logging.info(line)
+
+
+dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
 
 
 mod = build_mod(
@@ -376,11 +431,12 @@ mod = build_mod(
         readout_column_gap,
         readout_column_widths,
         readout_background_alpha,
-        readout_show_rolling_row,
+        readout_window_minutes,
+        readout_show_encounter_row,
     ],
     keybinds=[],
     hooks=[],
-    commands=[],
+    commands=[dmgweapons_command],
     on_enable=on_enable,
     on_disable=on_disable,
 )

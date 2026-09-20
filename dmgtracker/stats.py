@@ -55,6 +55,7 @@ class SourceTotals:
     hits: int = 0
     crits: int = 0
     kills: int = 0
+    held_seconds: float = 0.0
 
     def add(self, event: dict[str, Any]) -> None:
         self.damage += float(event["dmg"])
@@ -63,6 +64,15 @@ class SourceTotals:
             self.crits += 1
         if event.get("kill"):
             self.kills += 1
+
+    def remove(self, event: dict[str, Any]) -> None:
+        """Undo add(); used when an event leaves a rolling window."""
+        self.damage -= float(event["dmg"])
+        self.hits -= 1
+        if event.get("crit"):
+            self.crits -= 1
+        if event.get("kill"):
+            self.kills -= 1
 
 
 @dataclass
@@ -188,27 +198,107 @@ class EncounterTracker:
             del self.closed[: len(self.closed) - self.max_closed]
 
 
-class RollingWindow:
-    """Sum of damage over the last window_s seconds, kept in O(1) per event."""
+class RollingStats:
+    """Damage over the last window_s seconds, split by source like an encounter.
 
-    def __init__(self, window_s: float = ROLLING_WINDOW_S) -> None:
+    Events are kept in a deque and evicted as they age out, so memory is bounded by the
+    window and every update is O(1) amortized. Offers the same fields as Encounter (total,
+    dot_damage, by_source, duration(), dps(), other_damage()) so the table can show either.
+    """
+
+    def __init__(self, window_s: float) -> None:
         self.window_s = window_s
-        self._hits: deque[tuple[float, float]] = deque()
-        self._sum = 0.0
+        self.total = 0.0
+        self.dot_damage = 0.0
+        self.hits = 0
+        self.by_source: dict[SourceKey, SourceTotals] = {}
+        self._events: deque[dict[str, Any]] = deque()
+        self._held_samples: deque[tuple[float, SourceKey, float]] = deque()
+        self._first_hit: float | None = None
+        self._now = 0.0
 
-    def add(self, timestamp: float, damage: float) -> None:
-        self._hits.append((timestamp, damage))
-        self._sum += damage
+    def add(self, event: dict[str, Any]) -> None:
+        if event.get("kind") == KIND_HEAL:
+            return
+        self._events.append(event)
+        if self._first_hit is None:
+            self._first_hit = float(event["t"])
+        damage = float(event["dmg"])
+        self.total += damage
+        self.hits += 1
+        if event.get("kind") == KIND_DOT:
+            self.dot_damage += damage
+            return
+        key = source_key(event)
+        totals = self.by_source.get(key)
+        if totals is None:
+            totals = SourceTotals(key[0], key[1], key[2])
+            self.by_source[key] = totals
+        totals.add(event)
 
-    def total_at(self, now: float) -> float:
-        """Damage in the window ending at now; drops what fell out of it."""
+    def add_held(self, timestamp: float, source: SourceKey, seconds: float) -> None:
+        """Record that the source (a weapon) was in hand for this many seconds ending at
+        timestamp. Feeds the per-weapon DPS-in-hand; a source with no damage yet still
+        gets an entry so its held time is not lost."""
+        self._held_samples.append((timestamp, source, seconds))
+        totals = self.by_source.get(source)
+        if totals is None:
+            totals = SourceTotals(source[0], source[1], source[2])
+            self.by_source[source] = totals
+        totals.held_seconds += seconds
+
+    def prune(self, now: float) -> None:
+        """Drop everything older than the window; call before reading the numbers."""
+        self._now = now
         cutoff = now - self.window_s
-        while self._hits and self._hits[0][0] < cutoff:
-            _, damage = self._hits.popleft()
-            self._sum -= damage
-        if not self._hits:
-            self._sum = 0.0
-        return self._sum
+        while self._events and float(self._events[0]["t"]) < cutoff:
+            self._remove(self._events.popleft())
+        while self._held_samples and self._held_samples[0][0] < cutoff:
+            _, source, seconds = self._held_samples.popleft()
+            totals = self.by_source.get(source)
+            if totals is None:
+                continue
+            totals.held_seconds -= seconds
+            if totals.hits <= 0 and totals.held_seconds <= 1e-6:
+                del self.by_source[source]
+        if not self._events and not self._held_samples:
+            # Avoid float drift showing up as -0.0 on an empty window.
+            self.total = 0.0
+            self.dot_damage = 0.0
+            self.by_source.clear()
 
-    def dps_at(self, now: float) -> float:
-        return self.total_at(now) / self.window_s
+    def _remove(self, event: dict[str, Any]) -> None:
+        damage = float(event["dmg"])
+        self.total -= damage
+        self.hits -= 1
+        if event.get("kind") == KIND_DOT:
+            self.dot_damage -= damage
+            return
+        key = source_key(event)
+        totals = self.by_source.get(key)
+        if totals is None:
+            return
+        totals.remove(event)
+        if totals.hits <= 0 and totals.held_seconds <= 1e-6:
+            del self.by_source[key]
+
+    def duration(self) -> float:
+        """The window length, or the time since the first hit while the session is younger
+        than the window, so early numbers are not diluted; at least MIN_DURATION_S."""
+        if self._first_hit is None:
+            return self.window_s
+        since_first_hit = self._now - self._first_hit
+        return max(min(self.window_s, since_first_hit), MIN_DURATION_S)
+
+    def dps(self) -> float:
+        return self.total / self.duration()
+
+    def source_dps(self, totals: SourceTotals) -> float:
+        """Damage per second while the weapon was in hand, which is the number that compares
+        two guns fairly. Sources without held time (Other, DoT) use the window duration."""
+        if totals.held_seconds >= MIN_DURATION_S:
+            return totals.damage / totals.held_seconds
+        return totals.damage / self.duration()
+
+    def other_damage(self) -> float:
+        return sum(totals.damage for totals in self.by_source.values() if totals.kind != "weapon")

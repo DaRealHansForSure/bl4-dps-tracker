@@ -1,4 +1,4 @@
-"""Encounter segmentation, per-source split, rolling window."""
+"""Encounter segmentation, per-source split, rolling window with time in hand."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from dmgtracker.stats import (
     ENCOUNTER_GAP_S,
     MIN_DURATION_S,
     EncounterTracker,
-    RollingWindow,
+    RollingStats,
+    source_key,
     target_family,
 )
 
@@ -60,6 +61,12 @@ class EncounterTrackerTests(unittest.TestCase):
         self.tracker.add(hit(100.0, 10.0))
         self.tracker.add(hit(100.0 + ENCOUNTER_GAP_S, 5.0))
         self.assertEqual(len(self.tracker.all_encounters()), 1)
+
+    def test_custom_gap(self) -> None:
+        tracker = EncounterTracker(gap_s=15.0)
+        tracker.add(hit(100.0, 10.0))
+        tracker.add(hit(112.0, 5.0))
+        self.assertEqual(len(tracker.all_encounters()), 1)
 
     def test_single_hit_has_minimum_duration(self) -> None:
         self.tracker.add(hit(100.0, 400.0))
@@ -120,21 +127,65 @@ class EncounterTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.closed[-1].started, 500.0)
 
 
-class RollingWindowTests(unittest.TestCase):
-    def test_sum_and_dps_over_the_window(self) -> None:
-        window = RollingWindow(window_s=60.0)
-        window.add(100.0, 600.0)
-        window.add(130.0, 600.0)
-        self.assertEqual(window.total_at(150.0), 1200.0)
-        self.assertEqual(window.dps_at(150.0), 20.0)
+class RollingStatsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.window = RollingStats(window_s=60.0)
 
-    def test_old_hits_fall_out(self) -> None:
-        window = RollingWindow(window_s=60.0)
-        window.add(100.0, 600.0)
-        window.add(130.0, 600.0)
-        self.assertEqual(window.total_at(161.0), 600.0)
-        self.assertEqual(window.total_at(200.0), 0.0)
-        self.assertEqual(window.dps_at(200.0), 0.0)
+    def test_sum_and_dps_over_the_window(self) -> None:
+        self.window.add(hit(100.0, 600.0))
+        self.window.add(hit(130.0, 600.0))
+        self.window.prune(150.0)
+        self.assertEqual(self.window.total, 1200.0)
+        # 50 s since the first hit is shorter than the window, so that is the divisor.
+        self.assertEqual(self.window.duration(), 50.0)
+        self.assertEqual(self.window.dps(), 24.0)
+        self.window.prune(200.0)
+        self.assertEqual(self.window.duration(), 60.0)
+
+    def test_old_hits_fall_out_with_their_source_totals(self) -> None:
+        self.window.add(hit(100.0, 600.0))
+        self.window.add(hit(130.0, 600.0, weapon="Vladof Assault Rifle", wid=280))
+        self.window.prune(161.0)
+        self.assertEqual(self.window.total, 600.0)
+        self.assertEqual([totals.label for totals in self.window.by_source.values()], ["Vladof Assault Rifle"])
+        self.window.prune(200.0)
+        self.assertEqual(self.window.total, 0.0)
+        self.assertEqual(self.window.by_source, {})
+        self.assertEqual(self.window.dps(), 0.0)
+
+    def test_healing_is_ignored_and_dot_is_held_out(self) -> None:
+        self.window.add(hit(100.0, 50.0, kind="heal"))
+        self.window.add(hit(101.0, 7.0, kind="dot"))
+        self.window.add(hit(102.0, 100.0))
+        self.window.prune(110.0)
+        self.assertEqual(self.window.total, 107.0)
+        self.assertEqual(self.window.dot_damage, 7.0)
+        self.assertEqual(len(self.window.by_source), 1)
+
+    def test_dps_in_hand_uses_held_time(self) -> None:
+        sniper = source_key(hit(0.0, 0.0))
+        self.window.add(hit(100.0, 1000.0))
+        for step in range(8):
+            self.window.add_held(100.0 + step * 0.25, sniper, 0.25)
+        self.window.prune(110.0)
+        totals = self.window.by_source[sniper]
+        self.assertAlmostEqual(totals.held_seconds, 2.0)
+        self.assertAlmostEqual(self.window.source_dps(totals), 500.0)
+
+    def test_held_time_alone_keeps_a_source_and_ages_out(self) -> None:
+        rifle = ("weapon", "Vladof Assault Rifle", 280)
+        self.window.add_held(100.0, rifle, 0.25)
+        self.window.prune(101.0)
+        self.assertIn(rifle, self.window.by_source)
+        self.assertEqual(self.window.by_source[rifle].damage, 0.0)
+        self.window.prune(200.0)
+        self.assertNotIn(rifle, self.window.by_source)
+
+    def test_source_without_held_time_falls_back_to_window_duration(self) -> None:
+        self.window.add(hit(100.0, 300.0, weapon="Other", wid=0, src="other"))
+        self.window.prune(130.0)
+        totals = self.window.by_source[("other", "Other", 0)]
+        self.assertAlmostEqual(self.window.source_dps(totals), 10.0)
 
 
 if __name__ == "__main__":

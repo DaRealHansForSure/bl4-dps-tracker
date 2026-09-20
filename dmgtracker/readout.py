@@ -72,6 +72,10 @@ class Readout:
     def is_created(self) -> bool:
         return self._widget is not None
 
+    def visible(self) -> bool:
+        """True while the table is on screen (not hidden for a menu)."""
+        return self._widget is not None and self._visible
+
     # ------------------------------------------------------------------ lifecycle
 
     def create(self, player_controller: UObject) -> None:
