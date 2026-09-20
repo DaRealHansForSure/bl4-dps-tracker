@@ -59,8 +59,12 @@ GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
 # in their name (probes 2026-09-20, three characters).
 TRICK_BEGIN_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnBegin_Mut"
 TRICK_END_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnEnd_Mut"
-# The action skill token mechanic: called about once a second while a token-based action
-# skill runs (the Rogue's tokens, the Siren's Reaper), one to two seconds before the hits.
+# Every skill script action (a revolver volley, a dice throw, a Reaper swing) starts through
+# this native function on the script object, whose GetOwner() is the player controller
+# (probe #17, 2026-09-20). Traits and passives fire skill events but no actions.
+SKILL_ACTION_FUNCTION = "/Script/GbxGame.GbxSkillScript:K2_StartSkillAction"
+# The token stack: tokens spawned by a skill are added when they return, and other skills
+# consume them; adding tokens is skill activity as well.
 SKILL_TOKEN_FUNCTION = "/Script/OakGame.GbxSkillTokenProviderStatics:AddToTokenStack"
 SHARED_PLAYER_TRICK_PREFIX = "ATrick_"
 ENEMY_TRICK_PREFIX = "TRAnim_"
@@ -601,6 +605,20 @@ def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunc
         pass
 
 
+def _on_skill_action(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    """A skill script of some actor starts an action; only the local player's scripts count.
+    The script's owner is the player controller, read through its no-argument getter."""
+    try:
+        if poller is None or poller.controller is None:
+            return
+        owner = obj.GetOwner()
+        if owner is None or int(owner._get_address()) != int(poller.controller._get_address()):
+            return
+        poller.note_skill_activity(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
 def _on_skill_token(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     """A static call with no owner; only the local player's skills run this code here."""
     try:
@@ -629,6 +647,7 @@ SOURCE_HOOKS = (
     (GRENADE_EXPLODE_FUNCTION, "grenade-explode", _on_grenade_exploded, "grenade"),
     (TRICK_BEGIN_FUNCTION, "trick-begin", _on_trick_begin, "melee and skill"),
     (TRICK_END_FUNCTION, "trick-end", _on_trick_end, "skill"),
+    (SKILL_ACTION_FUNCTION, "skill-action", _on_skill_action, "skill"),
     (SKILL_TOKEN_FUNCTION, "skill-token", _on_skill_token, "skill"),
 )
 

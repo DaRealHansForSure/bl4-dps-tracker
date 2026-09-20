@@ -92,4 +92,13 @@ if skills_stop is not None:
     except Exception as ex:  # noqa: BLE001
         say(f"   skill probe: {type(ex).__name__}: {ex}")
 
+# probe_actionskill.py hooks
+actionskill_stop = getattr(builtins, "_dmgactionskill_stop", None)
+if actionskill_stop is not None:
+    try:
+        actionskill_stop()
+        say("   action skill probe stopped")
+    except Exception as ex:  # noqa: BLE001
+        say(f"   action skill probe: {type(ex).__name__}: {ex}")
+
 say(f"done -> {OUT}")

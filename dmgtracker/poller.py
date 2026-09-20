@@ -86,9 +86,14 @@ MELEE_WINDOW_S = 1.0
 # When the swing trick ends, the melee window closes a few frames later: skill hits landing
 # in the same second as a knife swing are otherwise indistinguishable from the knife's hit.
 MELEE_END_GRACE_S = 0.15
-# An action skill chains tricks with gaps of up to about 1.5 s while it runs; each trick
-# start or end keeps the window open this much longer.
+# An action skill chains tricks and script actions with gaps of up to about 1.5 s while it
+# runs; each trick start or end and each script action keeps the window open this much longer.
 SKILL_WINDOW_S = 3.0
+# A running skill keeps hitting long after its last script action (the Rogue's tokens attack
+# for six seconds after the dice are thrown), so every hit credited to the skill keeps the
+# window open this much longer: the window follows the skill's own damage and closes once
+# the hits stop.
+SKILL_HIT_GRACE_S = 1.5
 
 # The swap rule: a sticky detonates when its gun is swapped away, and the ring shows the hit
 # with the new gun already in hand, within about 0.3 s of the swap being observed. The grace
@@ -181,8 +186,9 @@ class DamagePoller:
         self._melee_until = min(self._melee_until, now + MELEE_END_GRACE_S)
 
     def note_skill_activity(self, now: float) -> None:
-        """An action skill trick started or ended; the skill is running."""
-        self._skill_until = now + SKILL_WINDOW_S
+        """A skill script started an action, or an action skill trick started or ended: the
+        skill is running."""
+        self._skill_until = max(self._skill_until, now + SKILL_WINDOW_S)
 
     def note_weapon_in_hand(self, now: float, held: DamageSource) -> None:
         """Called by the refresh loop; a change of the held weapon starts the swap grace."""
@@ -333,6 +339,8 @@ class DamagePoller:
             kind = KIND_DIRECT
             source = self._direct_source(flags, target_name, flagged_targets, pawn, now)
             self._remember_hit(target_name, source, now)
+            if source is SKILL_SOURCE:
+                self._skill_until = max(self._skill_until, now + SKILL_HIT_GRACE_S)
         event = {
             "t": now,
             "dmg": float(instance.TotalDamage),

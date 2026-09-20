@@ -401,6 +401,21 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "grenade", "the skill window closed, the throw window is still open")
 
+    def test_skill_hits_keep_the_skill_window_open(self) -> None:
+        """Tokens attack for seconds after the last script action: the window follows the hits."""
+        self.poller.tick()
+        self.poller.note_skill_activity(self.clock.now)
+        for step in range(12):
+            self.clock.advance(0.5)
+            write_hit(self.controller, step % 6, 239.7, flags=0, target="Char_A_1")
+            self.poller.tick()
+        self.assertEqual({event["src"] for event in self.received}, {"skill"}, "hits up to 6 s after the action")
+        self.clock.advance(2.0)
+        write_hit(self.controller, 0, 239.7, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.settle()
+        self.assertEqual(self.received[-1]["src"], "other", "1.5 s without a skill hit closes the window")
+
     def test_the_swing_end_closes_the_melee_window_early(self) -> None:
         self.poller.tick()
         self.poller.note_skill_activity(self.clock.now)
