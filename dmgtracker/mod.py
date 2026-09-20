@@ -346,6 +346,7 @@ def _refresh_readout() -> None:
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
         rolling.prune(_combat_clock)
+        _record_peaks(wall_now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter)
         readout.render(rows)
@@ -364,6 +365,16 @@ def _should_show_table(controller: UObject, pawn: Any) -> bool:
     if not resolver.is_character(pawn) or controller.bShowMouseCursor or _transition_hidden:
         return False
     return not pawn.bHidden
+
+
+def _record_peaks(now: float) -> None:
+    """Offer every gun's current window DPS in hand to the lifetime record as a peak."""
+    if weapon_store is None:
+        return
+    for totals in rolling.by_source.values():
+        if totals.kind != "weapon" or totals.instance_id == 0:
+            continue
+        weapon_store.note_peak(totals.instance_id, totals.label, "", rolling.source_dps(totals), totals.held_seconds, now)
 
 
 def _advance_combat_clock(now: float) -> None:

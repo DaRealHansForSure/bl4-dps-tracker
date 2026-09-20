@@ -88,6 +88,27 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Fast Gun #2", lines[1])
         self.assertIn("500", lines[1])
 
+    def test_peak_dps_needs_enough_time_in_hand_and_only_rises(self) -> None:
+        store = WeaponStore(self.path)
+        store.note_peak(277, "Jakobs Sniper", "Body_JAK_SR", dps=9000.0, held_seconds=3.0, now=100.0)
+        self.assertNotIn(277, store.records, "three seconds in hand is not a peak")
+        store.note_peak(277, "Jakobs Sniper", "Body_JAK_SR", dps=1200.0, held_seconds=12.0, now=101.0)
+        store.note_peak(277, "Jakobs Sniper", "Body_JAK_SR", dps=800.0, held_seconds=30.0, now=102.0)
+        record = store.records[277]
+        self.assertEqual((record.peak_dps, record.peak_dps_at), (1200.0, 101.0))
+        store.save_if_due(now=200.0, force=True)
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.records[277].peak_dps, 1200.0)
+        self.assertIn("Peak DPS", store.format_ranking()[0])
+        self.assertIn("1'200", store.format_ranking()[1])
+
+    def test_records_without_peak_fields_still_load(self) -> None:
+        self.path.write_text(json.dumps({"schema": 1, "weapons": [{"instance_id": 5, "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
+        store = WeaponStore(self.path)
+        store.load()
+        self.assertEqual(store.records[5].peak_dps, 0.0)
+
     def test_reset_sets_the_file_aside_and_empties_the_records(self) -> None:
         store = WeaponStore(self.path)
         store.add_event(hit(100.0, 400.0))
