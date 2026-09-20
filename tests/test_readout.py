@@ -17,7 +17,8 @@ sys.modules.setdefault("unrealsdk", SimpleNamespace(make_struct=lambda name, **f
 sys.modules.setdefault("unrealsdk.unreal", SimpleNamespace(UObject=object))
 sys.modules.setdefault("mods_base", SimpleNamespace(ObjectFlags=SimpleNamespace(KEEP_ALIVE=0x80)))
 
-from dmgtracker.readout import FLASH_PEAK_ALPHA, FLASH_S, Readout, ReadoutLayout, _number_in  # noqa: E402
+from dmgtracker.formatting import parse_number  # noqa: E402
+from dmgtracker.readout import FLASH_PEAK_ALPHA, FLASH_S, Readout, ReadoutLayout  # noqa: E402
 from dmgtracker.table import STYLE_ACTIVE, STYLE_ROW, STYLE_TOTAL, TableRow  # noqa: E402
 
 LAYOUT = ReadoutLayout(x=0, y=0, font_size=20, column_gap=10, column_widths=(100, 80, 80, 80), background_alpha=0.5)
@@ -46,10 +47,10 @@ def readout_with_rows(rows: int = 3) -> tuple[Readout, list[FakeBackground]]:
 
 class NumberTests(unittest.TestCase):
     def test_swiss_numbers_and_text(self) -> None:
-        self.assertEqual(_number_in("12'345.5"), 12345.5)
-        self.assertEqual(_number_in("0"), 0.0)
-        self.assertEqual(_number_in("-"), 0.0)
-        self.assertEqual(_number_in(""), 0.0)
+        self.assertEqual(parse_number("12'345.5"), 12345.5)
+        self.assertEqual(parse_number("0"), 0.0)
+        self.assertEqual(parse_number("-"), 0.0)
+        self.assertEqual(parse_number(""), 0.0)
 
 
 class FlashTests(unittest.TestCase):

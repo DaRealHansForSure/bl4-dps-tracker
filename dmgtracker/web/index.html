@@ -65,12 +65,13 @@
   th:first-child, td:first-child { text-align: left; }
   th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
   .ranked th:nth-child(2), .ranked td:nth-child(2) { text-align: left; }
-  tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.025); }
+  tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.04); }
   tr.active td { color: var(--accent); font-weight: 600; }
   tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
   tr.spacer td { padding: 0; height: 8px; }
   tr.header td { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
-  @keyframes row-flash { from { background: rgba(255, 255, 255, 0.28); } to { background: transparent; } }
+  /* A translucent tint, so the stripes stay visible underneath while a row flashes. */
+  @keyframes row-flash { from { background: rgba(245, 197, 66, 0.18); } to { background: transparent; } }
   tr.flash td { animation: row-flash 0.9s ease-out; }
   td.crit { color: var(--accent); }
   td.kill { color: var(--good); }
@@ -351,6 +352,9 @@
       setStatus(true, "live, " + characterText());
       renderLive(data.rows);
       fill(feedBody, (data.recent || []).map(function (event) { return hitRow(event, false); }));
+      samples.length = 0;
+      (data.history || []).forEach(function (sample) { samples.push(sample); });
+      drawChart();
     } else if (data.type === "table") {
       renderLive(data.rows);
       recordSample(data.rows, data.t);

@@ -22,6 +22,7 @@ import unrealsdk
 from mods_base import ObjectFlags
 from unrealsdk.unreal import UObject
 
+from .formatting import parse_number
 from .table import MAX_ROWS, STYLE_ACTIVE, STYLE_HEADER, STYLE_ROW, STYLE_SPACER, STYLE_TOTAL, TableRow
 
 CONTAINER_CLASSES = ("GbxUIUMGUserWidget", "GbxUIUMGListViewItemWidget")
@@ -236,7 +237,7 @@ class Readout:
         window forgetting old hits (which lowers it) and not a mere refresh."""
         if len(row.cells) <= TOTAL_COLUMN:
             return False
-        return _number_in(row.cells[TOTAL_COLUMN]) > _number_in(self._cell_texts[row_index][TOTAL_COLUMN])
+        return parse_number(row.cells[TOTAL_COLUMN]) > parse_number(self._cell_texts[row_index][TOTAL_COLUMN])
 
     def _start_flash(self, row_index: int, now: float) -> None:
         if now <= 0.0:
@@ -340,10 +341,3 @@ class Readout:
     def _vector2d(x: float, y: float) -> Any:
         return unrealsdk.make_struct("Vector2D", X=x, Y=y)
 
-
-def _number_in(text: str) -> float:
-    """The value of a cell as the table formats it (Swiss thousands separators); 0 for text."""
-    try:
-        return float(text.replace("'", ""))
-    except ValueError:
-        return 0.0

@@ -23,6 +23,7 @@ import socket
 import threading
 import time
 import urllib.parse
+from collections import deque
 from dataclasses import dataclass
 from http import HTTPStatus
 from importlib import resources
@@ -38,8 +39,9 @@ from websockets.exceptions import ConnectionClosed  # noqa: E402
 from websockets.http11 import Request, Response  # noqa: E402
 from websockets.sync.server import Server, ServerConnection, serve  # noqa: E402
 
+from .formatting import parse_number  # noqa: E402
 from .report import default_session_path  # noqa: E402
-from .table import TableRow  # noqa: E402
+from .table import STYLE_TOTAL, TableRow  # noqa: E402
 from .webdata import (  # noqa: E402
     DEFAULT_PAGE_SIZE,
     SessionCache,
@@ -67,6 +69,11 @@ THREAD_JOIN_TIMEOUT_S = 3.0
 MAX_PENDING_HITS = 5000
 # The newest hits of the session sent to a client on connect, so the feed is not empty after a reload.
 RECENT_HITS = 50
+# Window samples (time, DPS, damage) kept for the chart, one per table change, sent on connect.
+CHART_HISTORY = 300
+WINDOW_ROW_PREFIX = "Last "
+TOTAL_CELL = 1
+DPS_CELL = 2
 
 Message = dict[str, Any]
 
@@ -105,6 +112,7 @@ class Dashboard:
         self._last_rows: list[TableRow] = []
         self._pending_hits: list[Message] = []
         self._pending_character: dict[str, str] | None = None
+        self._history: deque[Message] = deque(maxlen=CHART_HISTORY)
         self._clients: set[ServerConnection] = set()
         self._clients_lock = threading.Lock()
         self._sessions = SessionCache()
@@ -186,9 +194,12 @@ class Dashboard:
             return
         self._last_rows = rows
         rows_json = [{"cells": list(row.cells), "style": row.style} for row in rows]
+        sample = _window_sample(rows, time.time())
         with self._wake:
             self._rows_json = rows_json
             self._rows_dirty = True
+            if sample is not None:
+                self._history.append(sample)
             self._wake.notify()
 
     def publish_lines(self, lines: list[Message]) -> None:
@@ -203,8 +214,10 @@ class Dashboard:
             self._wake.notify()
 
     def publish_character(self, identity: dict[str, str]) -> None:
+        """A character switch starts the live numbers from zero; the chart follows."""
         with self._wake:
             self._pending_character = dict(identity)
+            self._history.clear()
             self._wake.notify()
 
     # ------------------------------------------------------------------ server threads
@@ -276,6 +289,7 @@ class Dashboard:
     def _hello(self) -> Message:
         with self._state_lock:
             rows = self._rows_json
+            history = list(self._history)
         return {
             "type": "hello",
             "version": self.sources.version,
@@ -283,6 +297,7 @@ class Dashboard:
             "window_minutes": self.sources.window_minutes(),
             "rows": rows,
             "recent": self._recent_hits(),
+            "history": history,
         }
 
     def _recent_hits(self) -> list[Message]:
@@ -374,6 +389,16 @@ class Dashboard:
 
 
 # ------------------------------------------------------------------ helpers
+
+def _window_sample(rows: list[TableRow], now: float) -> Message | None:
+    """The window row's DPS and damage as a chart sample, or None without a window row."""
+    for row in rows:
+        if row.style == STYLE_TOTAL and row.cells and str(row.cells[0]).startswith(WINDOW_ROW_PREFIX):
+            if len(row.cells) <= DPS_CELL:
+                return None
+            return {"t": now, "dps": parse_number(row.cells[DPS_CELL]), "total": parse_number(row.cells[TOTAL_CELL])}
+    return None
+
 
 def _page_bytes() -> bytes:
     """The dashboard page, read on every request so edits show up without a restart. Works

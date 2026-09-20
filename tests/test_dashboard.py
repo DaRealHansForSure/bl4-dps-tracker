@@ -105,12 +105,13 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(hello["type"], "hello")
             self.assertEqual((hello["version"], hello["character"], hello["window_minutes"], hello["rows"]), ("1.2.3", ROGUE, 5.0, []))
             self.assertEqual([event["dmg"] for event in hello["recent"]], [50.0, 100.0], "the session's newest hits, newest first")
-            rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "1'000"), "active")]
+            self.assertEqual(hello["history"], [])
+            rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "1'000"), "active"), TableRow(("Last 5 min", "1'000", "12'345.6", "100.0"), "total")]
             self.dashboard.publish_rows(rows)
             self.dashboard.publish_rows(rows)
             table = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(table["type"], "table")
-            self.assertEqual(table["rows"], [{"cells": ["Weapon", "Total"], "style": "header"}, {"cells": ["Jakobs Sniper", "1'000"], "style": "active"}])
+            self.assertEqual(table["rows"][:2], [{"cells": ["Weapon", "Total"], "style": "header"}, {"cells": ["Jakobs Sniper", "1'000"], "style": "active"}])
             self.dashboard.publish_lines([{"t": 5.0, "held": "seed277", "weapon": "Jakobs Sniper", "s": 1.0}, hit(6.0, 42.0)])
             hits = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual((hits["type"], len(hits["events"]), hits["events"][0]["dmg"]), ("hits", 1, 42.0))
@@ -121,6 +122,12 @@ class DashboardTests(unittest.TestCase):
             with connect(self.url.replace("http://", "ws://") + "ws") as second:
                 second_hello = json.loads(second.recv(RECV_TIMEOUT_S))
                 self.assertEqual(second_hello["rows"][1]["cells"][0], "Jakobs Sniper", "a new client gets the latest table at once")
+                self.assertEqual(second_hello["history"], [], "the character switch above emptied the chart history")
+            self.dashboard.publish_rows(rows[:2] + [TableRow(("Last 5 min", "2'000", "500", "100.0"), "total")])
+            with connect(self.url.replace("http://", "ws://") + "ws") as third:
+                history = json.loads(third.recv(RECV_TIMEOUT_S))["history"]
+                self.assertEqual([(sample["dps"], sample["total"]) for sample in history], [(500.0, 2000.0)])
+                self.assertGreater(history[0]["t"], 0)
 
     def test_foreign_origin_is_refused(self) -> None:
         with self.assertRaises(InvalidStatus) as refused:
