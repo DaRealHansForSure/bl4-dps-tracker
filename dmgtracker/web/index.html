@@ -393,6 +393,7 @@
   // whose labels show the real clock), y by window DPS, a tooltip for the hovered sample.
   const CHART_MARGIN = { left: 8, right: 8, top: 16, bottom: 22 };
   const TIME_LABELS = 5;
+  const LABEL_GAP = 12;
   const GRID_STEPS = 3;
   let hoverIndex = -1;
 
@@ -438,8 +439,9 @@
       context.fillText("waiting for a fight", geometry.left, geometry.top);
       return;
     }
-    const max = Math.max.apply(null, samples.map(function (s) { return s.dps; })) || 1;
-    drawValueGrid(context, geometry, max);
+    const peak = Math.max.apply(null, samples.map(function (s) { return s.dps; }));
+    const max = peak || 1;
+    drawValueGrid(context, geometry, max, peak > 0);
     drawTimeLabels(context, geometry);
     context.strokeStyle = "#f5c542";
     context.lineWidth = 2;
@@ -459,12 +461,13 @@
     }
   }
 
-  function drawValueGrid(context, geometry, max) {
+  function drawValueGrid(context, geometry, max, labelled) {
     context.strokeStyle = "#2f343d";
     context.lineWidth = 1;
     context.fillStyle = "#9aa3ad";
     context.textAlign = "left";
     context.textBaseline = "bottom";
+    const decimals = max < 10 ? 1 : 0;
     for (let step = 1; step <= GRID_STEPS; step++) {
       const value = max * step / GRID_STEPS;
       const y = sampleY(geometry, value, max);
@@ -472,25 +475,46 @@
       context.moveTo(geometry.left, y);
       context.lineTo(geometry.right, y);
       context.stroke();
-      context.fillText(formatNumber(value, 0) + " DPS", geometry.left + 2, y - 2);
+      if (labelled) {
+        context.fillText(formatNumber(value, decimals) + " DPS", geometry.left + 2, y - 2);
+      }
     }
   }
 
   function drawTimeLabels(context, geometry) {
+    // First and last sample always; the labels between only where they fit without
+    // touching a neighbour, which with few samples means none.
     context.fillStyle = "#9aa3ad";
     context.strokeStyle = "#2f343d";
     context.textBaseline = "top";
     const last = samples.length - 1;
-    for (let k = 0; k < TIME_LABELS; k++) {
+    const labelWidth = context.measureText("00:00:00").width;
+    const firstEnd = geometry.left + labelWidth;
+    const lastStart = geometry.right - labelWidth;
+    let previousEnd = firstEnd;
+    const chosen = [{ index: 0, x: geometry.left, align: "left" }];
+    for (let k = 1; k < TIME_LABELS - 1; k++) {
       const index = Math.round(k / (TIME_LABELS - 1) * last);
       const x = sampleX(geometry, index);
-      context.beginPath();
-      context.moveTo(x, geometry.bottom);
-      context.lineTo(x, geometry.bottom + 4);
-      context.stroke();
-      context.textAlign = k === 0 ? "left" : (k === TIME_LABELS - 1 ? "right" : "center");
-      context.fillText(formatTime(samples[index].t), x, geometry.bottom + 6);
+      const start = x - labelWidth / 2;
+      const fits = index > 0 && index < last && start >= previousEnd + LABEL_GAP && x + labelWidth / 2 <= lastStart - LABEL_GAP;
+      if (fits) {
+        chosen.push({ index: index, x: x, align: "center" });
+        previousEnd = x + labelWidth / 2;
+      }
     }
+    if (last > 0 && lastStart >= previousEnd + LABEL_GAP) {
+      chosen.push({ index: last, x: geometry.right, align: "right" });
+    }
+    chosen.forEach(function (label) {
+      const tickX = sampleX(geometry, label.index);
+      context.beginPath();
+      context.moveTo(tickX, geometry.bottom);
+      context.lineTo(tickX, geometry.bottom + 4);
+      context.stroke();
+      context.textAlign = label.align;
+      context.fillText(formatTime(samples[label.index].t), label.x, geometry.bottom + 6);
+    });
   }
 
   function drawTooltip(context, geometry, index, max) {
