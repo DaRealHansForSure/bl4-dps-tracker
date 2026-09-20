@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 
 from dmgtracker.attribution import WeaponResolver
-from dmgtracker.poller import CRIT_FLAG, HEALING_FLAG, DamagePoller
+from dmgtracker.poller import CRIT_FLAG, HEALING_FLAG, KILL_FLAG, WEAPON_FLAG, DamagePoller
 
 RING_PROPERTY = "RecentlyCausedDamageInstances"
 RING_SIZE = 6
@@ -89,19 +89,32 @@ class DamagePollerTests(unittest.TestCase):
 
     def test_new_hits_become_events(self) -> None:
         self.poller.tick()
-        write_hit(self.controller, 1, 48.04, flags=CRIT_FLAG | 0x400, target="Char_CatYoung_9", dtype="Corrosive")
+        write_hit(self.controller, 1, 48.04, flags=CRIT_FLAG | WEAPON_FLAG, target="Char_CatYoung_9", dtype="Corrosive")
         self.poller.tick()
         self.assertEqual(len(self.received), 1)
         event = self.received[0]
         self.assertEqual(event["dmg"], 48.04)
         self.assertTrue(event["crit"])
+        self.assertFalse(event["kill"])
         self.assertEqual(event["kind"], "direct")
+        self.assertEqual(event["src"], "weapon")
         self.assertEqual(event["weapon"], "Jakobs Sniper")
         self.assertEqual(event["wid"], 277)
         self.assertEqual(event["target"], "Char_CatYoung_9")
         self.assertEqual(event["dtype"], "Corrosive")
         self.assertEqual(event["t"], self.clock.now)
         self.assertEqual(self.poller.events, 1)
+
+    def test_hits_without_the_weapon_flag_are_other_damage(self) -> None:
+        self.poller.tick()
+        write_hit(self.controller, 0, 333.0, flags=KILL_FLAG)
+        write_hit(self.controller, 1, 333.0, flags=0)
+        self.poller.tick()
+        first, second = self.received
+        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", 0))
+        self.assertTrue(first["kill"])
+        self.assertEqual(second["src"], "other")
+        self.assertFalse(second["kill"])
 
     def test_unchanged_slots_produce_nothing(self) -> None:
         self.poller.tick()
@@ -113,15 +126,15 @@ class DamagePollerTests(unittest.TestCase):
 
     def test_dot_and_heal_kinds(self) -> None:
         self.poller.tick()
-        write_hit(self.controller, 0, 5.0, is_dot=True)
-        write_hit(self.controller, 1, 30.0, flags=HEALING_FLAG)
-        write_hit(self.controller, 2, 30.0, is_heal_type=True)
+        write_hit(self.controller, 0, 5.0, flags=WEAPON_FLAG, is_dot=True)
+        write_hit(self.controller, 1, 30.0, flags=WEAPON_FLAG | HEALING_FLAG)
+        write_hit(self.controller, 2, 30.0, flags=WEAPON_FLAG, is_heal_type=True)
         self.poller.tick()
         self.assertEqual([event["kind"] for event in self.received], ["dot", "heal", "heal"])
 
     def test_unresolved_damage_type_handle_is_tolerated(self) -> None:
         self.poller.tick()
-        write_hit(self.controller, 0, 250.0)
+        write_hit(self.controller, 0, 250.0, flags=WEAPON_FLAG)
         # An unresolved FGameDataHandle raises AttributeError for every field except _name.
         getattr(self.controller, RING_PROPERTY)[0].DamageType = SimpleNamespace(_name="None")
         self.poller.tick()
@@ -166,9 +179,10 @@ class DamagePollerTests(unittest.TestCase):
         self.assertIs(self.poller.controller, replacement)
         # The hit from before the adoption is baseline, not replayed.
         self.assertEqual(self.received, [])
-        write_hit(replacement, 0, 8.0)
+        write_hit(replacement, 0, 8.0, flags=WEAPON_FLAG)
         self.poller.tick()
         self.assertEqual([event["dmg"] for event in self.received], [8.0])
+        self.assertEqual(self.received[0]["weapon"], "Jakobs Sniper")
 
     def test_controller_change_callback(self) -> None:
         seen = []

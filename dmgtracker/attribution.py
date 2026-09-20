@@ -17,8 +17,10 @@ from dataclasses import dataclass
 from typing import Any
 
 SOURCE_WEAPON = "weapon"
+SOURCE_OTHER = "other"
 SOURCE_UNKNOWN = "unknown"
 UNKNOWN_LABEL = "Unknown"
+OTHER_LABEL = "Other"
 WEAPON_CLASS_NAME = "OakWeapon"
 MAX_CACHED_LABELS = 256
 
@@ -59,6 +61,9 @@ class DamageSource:
 
 
 UNKNOWN_SOURCE = DamageSource(SOURCE_UNKNOWN, UNKNOWN_LABEL, "", 0)
+# Damage that did not come from the gun in hand: grenades, melee, skills. Not split further
+# yet; the record keeps the flags and damage type name so a later version can.
+OTHER_SOURCE = DamageSource(SOURCE_OTHER, OTHER_LABEL, "", 0)
 
 
 def body_stem(body_path: str) -> str:

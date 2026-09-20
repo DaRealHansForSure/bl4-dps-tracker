@@ -14,7 +14,7 @@ Not in v1: grenade and skill attribution (data is logged so it can be added), it
 ## Decisions carried into the build
 
 - Mechanism: per-frame hook on `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget` (POST), diffing `RepDirtyFlag` across the six `OakPlayerController.RecentlyCausedDamageInstances` slots. Nothing else fires per hit in BL4.
-- Weapon attribution: the weapon in hand at the moment of the hit, `pc.Pawn.ActiveWeapons.Slots[0].Weapon`. Label from the `BodyData` path stem (`Body_JAK_SR` -> "Jakobs Sniper"), identity from `Item.data.InstanceId`.
+- Weapon attribution: gun hits carry flag `0x400`; those go to the weapon in hand at the moment of the hit, `pc.Pawn.ActiveWeapons.Slots[0].Weapon`, labelled from the `BodyData` path stem (`Body_JAK_SR` -> "Jakobs Sniper") and identified by `Item.data.InstanceId`. Hits without that flag (grenades, melee, skills) are source `other`, shown as one "Other" row, never pinned on a gun.
 - On-screen readout: a runtime UMG `UserWidget` with `TextBlock` children, added to the viewport above the Coherent HUD (findings section E).
 - Number formatting everywhere the user reads a number: Swiss style, `'` thousands separator, `.` decimal point (`1'234'567.5`). One shared helper, no ad-hoc `format(x, ",")`.
 - Configuration through mods_base options persisted in `sdk_mods/settings/dmgtracker.json` (a `config.json` inside the `.sdkmod` zip would not be editable). Mechanism knobs and layout knobs such as the readout position are `HiddenOption`s in that file, which is also where future settings go; the file is hand-editable and documented in the README.
@@ -39,10 +39,11 @@ One JSON object per line, raw values, no formatting:
 | `dmg` | `TotalDamage` | as the HUD shows it (PoC check C) |
 | `kind` | `DamageType.bIsDoT`, healing flag | `direct`, `dot`, `heal`; the report ignores `heal` |
 | `crit` | `DamageFlags.Flags & 0x2` | |
+| `kill` | `DamageFlags.Flags & 0x4000` | the hit that killed the target (decoded from recorded sessions) |
 | `elem` | `DamageType.ElementalType` | int, mapping documented later |
 | `flags` | `DamageFlags.Flags` | raw, for later decoding |
-| `src` | attribution | `weapon` in v1; `grenade`, `skill`, `unknown` reserved |
-| `weapon` | attribution label | "Manufacturer Type" from the body path |
+| `src` | attribution | `weapon` when `Flags & 0x400` (gun damage), else `other` (grenade, melee, skill); `unknown` when no weapon could be read |
+| `weapon` | attribution label | "Manufacturer Type" from the body path, "Other" for non-gun damage |
 | `body` | `BodyData` path stem | keeps the raw code for a future name lookup |
 | `wid` | `Item.data.InstanceId` | keeps two guns of the same body apart |
 | `dtype` | `repr(DamageType)` name | the hook for classifying grenade and skill damage later |

@@ -16,14 +16,19 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .attribution import WeaponResolver
+from .attribution import OTHER_SOURCE, WeaponResolver
 
 CONTROLLER_RETRY_INTERVAL_S = 1.0
 ERRORS_TO_REMEMBER = 3
 
 # ERecentPlayerDamageFlags values are bit indexes, not masks: CriticalHit=1 -> 0x2, Healing=2 -> 0x4.
+# Bits 10 and 14 are not in the reflected enum; their meaning was established from recorded
+# sessions (poc/findings.md, section B): 0x400 is set on every gun hit and on nothing else,
+# 0x4000 is set on exactly the hit that kills the target.
 CRIT_FLAG = 1 << 1
 HEALING_FLAG = 1 << 2
+WEAPON_FLAG = 1 << 10
+KILL_FLAG = 1 << 14
 
 KIND_DIRECT = "direct"
 KIND_DOT = "dot"
@@ -142,7 +147,10 @@ class DamagePoller:
         flags = int(instance.DamageFlags.Flags)
         damage_type = instance.DamageType
         target = instance.DamagedActor
-        source = self._resolver.weapon_in_hand(pawn)
+        if flags & WEAPON_FLAG:
+            source = self._resolver.weapon_in_hand(pawn)
+        else:
+            source = OTHER_SOURCE
         # Some instances (grenades, cleared slots) carry an unresolved damage type handle whose
         # fields raise on access; those hits are still damage, so read the fields with defaults.
         is_heal = bool(flags & HEALING_FLAG) or bool(getattr(damage_type, "bIsHealingType", False))
@@ -157,6 +165,7 @@ class DamagePoller:
             "dmg": float(instance.TotalDamage),
             "kind": kind,
             "crit": bool(flags & CRIT_FLAG),
+            "kill": bool(flags & KILL_FLAG),
             "elem": int(getattr(damage_type, "ElementalType", 0) or 0),
             "flags": flags,
             "src": source.kind,
