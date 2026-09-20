@@ -111,15 +111,15 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(event["t"], self.clock.now)
         self.assertEqual(self.poller.events, 1)
 
-    def test_unflagged_hits_belong_to_the_gun_in_hand_by_default(self) -> None:
+    def test_unflagged_hits_are_other_by_default(self) -> None:
         self.poller.tick()
         write_hit(self.controller, 0, 300.9, flags=KILL_FLAG, target="Char_A_1")
         write_hit(self.controller, 1, 300.9, flags=0, target="Char_B_2")
         self.poller.tick()
         first, second = self.received
-        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("weapon", "Jakobs Sniper", 277))
+        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", 0))
         self.assertTrue(first["kill"])
-        self.assertEqual(second["src"], "weapon")
+        self.assertEqual(second["src"], "other")
         self.assertFalse(second["kill"])
 
     def test_grenade_window_claims_unflagged_hits(self) -> None:
@@ -135,7 +135,7 @@ class DamagePollerTests(unittest.TestCase):
         self.clock.advance(7.0)
         write_hit(self.controller, 3, 300.9, flags=0, target="Char_D_4")
         self.poller.tick()
-        self.assertEqual(self.received[-1]["weapon"], "Jakobs Sniper", "the window has passed")
+        self.assertEqual(self.received[-1]["weapon"], "Other", "the window has passed")
 
     def test_explosion_extends_the_grenade_window(self) -> None:
         self.poller.tick()

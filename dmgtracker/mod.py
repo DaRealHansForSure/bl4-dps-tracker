@@ -437,7 +437,7 @@ def _install_source_hooks() -> None:
         try:
             unrealsdk.find_object("Function", path)
         except ValueError:
-            _say(f"{name} hook target {path!r} not found; {damage_kind} damage will count for the gun in hand")
+            _say(f"{name} hook target {path!r} not found; {damage_kind} damage will count as Other")
             continue
         unrealsdk.hooks.add_hook(path, Type.POST, f"{HOOK_ID}:{name}", callback)
 

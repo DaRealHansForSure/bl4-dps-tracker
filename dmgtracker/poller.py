@@ -14,10 +14,11 @@ Attribution, in this order (all from recorded sessions, see the findings):
   4. an unflagged hit inside a grenade window (after ThrowGadget, extended by a gadget
      explosion) is grenade damage;
   5. an unflagged hit shortly after a melee swing is melee damage;
-  6. every other unflagged hit is splash, explosive rounds or elemental damage of the gun in
-     hand, which the data shows is the common case.
+  6. every other unflagged hit is "Other". Much of it is splash, explosive rounds and
+     elemental damage of a gun, but a projectile can go off after a weapon swap, so the gun
+     in hand is not a safe guess; a probe for a real link is pending (findings, section B).
 The mod feeds the grenade and melee windows from hooks; without them nothing breaks, the
-grenade and melee damage then lands on the gun in hand.
+grenade and melee damage then lands in Other.
 
 This module never imports the SDK: the controller is obtained through a callable and only
 its attributes are read, so the whole path can be exercised with fakes in the tests.
@@ -258,7 +259,7 @@ class DamagePoller:
             return GRENADE_SOURCE
         if now < self._melee_until:
             return MELEE_SOURCE
-        return self._resolver.weapon_in_hand(pawn)
+        return OTHER_SOURCE
 
     def _remember_hit(self, target_name: str, source: DamageSource, now: float) -> None:
         if not target_name:
