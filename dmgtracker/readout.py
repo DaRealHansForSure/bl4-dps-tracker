@@ -68,6 +68,8 @@ class Readout:
         self._row_styles: list[str] = []
         self._row_shown: list[bool] = []
         self._visible = True
+        self._widget_path = ""
+        self._widget_class_name = ""
         self._fonts: dict[tuple[int, str], Any] = {}
         self._colors: dict[str, Any] = {}
 
@@ -77,6 +79,25 @@ class Readout:
     def visible(self) -> bool:
         """True while the table is on screen (not hidden for a menu)."""
         return self._widget is not None and self._visible
+
+    def exists(self) -> bool:
+        """Whether the widget object still exists in the game. A world teardown destroys it
+        behind our back; the lookup goes by name and never touches the old wrapper."""
+        if self._widget is None:
+            return False
+        try:
+            unrealsdk.find_object(self._widget_class_name, self._widget_path)
+        except ValueError:
+            return False
+        return True
+
+    def forget(self) -> None:
+        """Drop every reference without calling into the game, for a widget that is gone."""
+        self._widget = None
+        self._cells = []
+        self._cell_texts = []
+        self._row_styles = []
+        self._row_shown = []
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -92,15 +113,14 @@ class Readout:
         widget.SetVisibility(VISIBILITY_HIT_TEST_INVISIBLE)
         self._visible = True
         self._widget = widget
+        self._widget_path = str(widget._path_name())
+        self._widget_class_name = str(widget.Class.Name)
 
     def destroy(self) -> None:
         widget = self._widget
-        self._widget = None
-        self._cells = []
-        self._cell_texts = []
-        self._row_styles = []
-        self._row_shown = []
-        if widget is None:
+        alive = self.exists()
+        self.forget()
+        if widget is None or not alive:
             return
         try:
             # After a world teardown the engine has already pulled the widget off the screen;
@@ -115,6 +135,9 @@ class Readout:
     def set_visible(self, visible: bool) -> None:
         if self._widget is None or visible == self._visible:
             return
+        if not self.exists():
+            self.forget()
+            return
         self._visible = visible
         visibility = VISIBILITY_HIT_TEST_INVISIBLE if visible else VISIBILITY_COLLAPSED
         self._widget.SetVisibility(visibility)
@@ -122,6 +145,9 @@ class Readout:
     def render(self, rows: list[TableRow]) -> None:
         """Show these rows; unused grid rows collapse. Only changed cells are touched."""
         if self._widget is None:
+            return
+        if not self.exists():
+            self.forget()
             return
         for row_index in range(MAX_ROWS):
             if row_index < len(rows):

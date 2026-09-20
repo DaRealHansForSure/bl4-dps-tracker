@@ -22,6 +22,7 @@ from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
 from .attribution import UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
+from .character import CharacterIdentity, read_identity
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -75,6 +76,8 @@ READOUT_ERRORS_BEFORE_GIVING_UP = 20
 READOUT_ERRORS_TO_LOG = 3
 MAX_LIVE_ENCOUNTERS = 1000
 WEAPON_STORE_NAME = "weapons.json"
+CHARACTERS_DIR_NAME = "characters"
+READOUT_CREATE_RETRY_S = 1.0
 
 # ------------------------------------------------------------------ options
 
@@ -122,7 +125,9 @@ session_log: SessionLog | None = None
 tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
 rolling = RollingStats(DEFAULT_READOUT_WINDOW_MINUTES * 60.0)
 weapon_store: WeaponStore | None = None
+character: CharacterIdentity | None = None
 readout: Readout | None = None
+_last_readout_create = 0.0
 _last_status_time = 0.0
 _broken_reported = False
 _readout_errors = 0
@@ -213,12 +218,47 @@ def _readout_layout() -> ReadoutLayout:
 def _on_controller_changed(controller: UObject | None) -> None:
     """A new controller means a new world: the old widget is gone with it, build a fresh one.
     None means the controller is gone (main menu, loading): the widget goes with it, so
-    nothing of ours outlives the world it was made for."""
+    nothing of ours outlives the world it was made for. The character is checked on the
+    refresh loop, once the player state is ready."""
     global _equipped_cache
     _equipped_cache = []
     _destroy_readout()
     if controller is not None and show_readout.value:
         _create_readout(controller)
+
+
+# ------------------------------------------------------------------ characters
+
+def _character_store_path(identity: CharacterIdentity) -> Path:
+    return _log_dir().parent / CHARACTERS_DIR_NAME / identity.key / WEAPON_STORE_NAME
+
+
+def _check_character(controller: UObject, pawn: Any) -> None:
+    """Adopt the character behind this controller; switching saves the old record, loads the
+    new one, and starts the live table from zero. Called once a second while in the world."""
+    global character, weapon_store
+    try:
+        identity = read_identity(controller.PlayerState, pawn)
+    except Exception:  # noqa: BLE001 - no player state yet
+        identity = None
+    if identity is None or (character is not None and identity.key == character.key):
+        return
+    if weapon_store is not None:
+        weapon_store.save_if_due(time.time(), force=True)
+    character = identity
+    weapon_store = _load_weapon_store(_character_store_path(identity))
+    _reset_live_stats()
+    if session_log is not None:
+        session_log.append([{"character": identity.to_json(), "t": time.time()}])
+    _say(f"character: {identity.display} ({identity.class_name}), key {identity.key[:8]}, record {weapon_store.path}")
+
+
+def _reset_live_stats() -> None:
+    global tracker, rolling, _combat_clock, _equipped_cache
+    tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
+    rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
+    _combat_clock = 0.0
+    _equipped_cache = []
 
 
 def _create_readout(controller: UObject) -> None:
@@ -260,13 +300,21 @@ def _refresh_readout() -> None:
     """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S.
     Uses only this frame's controller wrapper; nothing is kept across frames."""
     global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors, _transition_hidden
-    if readout is None or poller is None or poller.controller is None:
+    global _last_readout_create
+    if poller is None or poller.controller is None:
         return
     try:
         controller = poller.controller
         pawn = controller.Pawn
-        readout.set_visible(_should_show_table(controller, pawn))
         now = time.monotonic()
+        if readout is None or not readout.is_created():
+            # The widget died with its world, or creation failed earlier: try again, slowly.
+            if show_readout.value and resolver.is_character(pawn) and now - _last_readout_create >= READOUT_CREATE_RETRY_S:
+                _last_readout_create = now
+                _create_readout(controller)
+            if readout is None:
+                return
+        readout.set_visible(_should_show_table(controller, pawn))
         if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
             return
         _last_readout_refresh = now
@@ -283,6 +331,7 @@ def _refresh_readout() -> None:
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
+            _check_character(controller, pawn)
             equipped = resolver.equipped_weapons(pawn)
             if equipped is not None:
                 _equipped_cache = equipped
@@ -458,12 +507,9 @@ def _install_tick_hook() -> bool:
 
 
 def _install_source_hooks() -> None:
-    for path, name, callback, damage_kind in SOURCE_HOOKS:
-        try:
-            unrealsdk.find_object("Function", path)
-        except ValueError:
-            _say(f"{name} hook target {path!r} not found; {damage_kind} damage will count as Other")
-            continue
+    # No existence check here: Blueprint functions (the melee trick) load with the world,
+    # long after the mod enables, and unrealsdk matches hooks by name when they are called.
+    for path, name, callback, _damage_kind in SOURCE_HOOKS:
         unrealsdk.hooks.add_hook(path, Type.POST, f"{HOOK_ID}:{name}", callback)
 
 
@@ -480,7 +526,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store
+    global poller, session_log, tracker, rolling, weapon_store, character
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _combat_clock
     _broken_reported = False
     _readout_errors = 0
@@ -489,7 +535,8 @@ def on_enable() -> None:
     _combat_clock = 0.0
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
-    weapon_store = _load_weapon_store()
+    character = None
+    weapon_store = None
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
         ring_property=str(ring_property.value),
@@ -499,9 +546,9 @@ def on_enable() -> None:
     )
     poller.on_controller_changed = _on_controller_changed
     session_log = _start_session_log()
-    if session_log is not None and weapon_store is not None:
+    if session_log is not None:
         # The writer thread wakes every flush interval; let it save the weapon record too.
-        session_log.add_flush_listener(lambda _batch: weapon_store.save_if_due(time.time()))
+        session_log.add_flush_listener(_save_weapon_store_if_due)
     if not _install_tick_hook():
         return
     _install_source_hooks()
@@ -509,12 +556,18 @@ def on_enable() -> None:
     _say(f"v{_mod_version()} enabled, logging to {log_path}")
 
 
-def _load_weapon_store() -> WeaponStore:
-    store = WeaponStore(_log_dir().parent / WEAPON_STORE_NAME)
+def _load_weapon_store(path: Path) -> WeaponStore:
+    store = WeaponStore(path)
     store.load()
     if store.load_error:
         logging.error(f"{LOG_PREFIX} weapon record {store.path} could not be read ({store.load_error}); starting a new one")
     return store
+
+
+def _save_weapon_store_if_due(_batch: list[dict[str, Any]]) -> None:
+    store = weapon_store
+    if store is not None:
+        store.save_if_due(time.time())
 
 
 def _start_session_log() -> SessionLog | None:
@@ -555,11 +608,12 @@ def on_disable() -> None:
 
 # ------------------------------------------------------------------ console commands
 
-@command("dmgweapons", description="Rank your weapons by damage per second in hand, over all sessions.")
+@command("dmgweapons", description="Rank the current character's weapons by damage per second in hand, over all sessions.")
 def dmgweapons_command(args: argparse.Namespace) -> None:
-    if weapon_store is None:
-        logging.info(f"{LOG_PREFIX} the mod is not enabled")
+    if weapon_store is None or character is None:
+        logging.info(f"{LOG_PREFIX} no character loaded yet (the mod must be enabled and you must be in the world)")
         return
+    logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}):")
     for line in weapon_store.format_ranking(limit=args.limit):
         logging.info(line)
 

@@ -101,7 +101,7 @@ Encounter       987'366     82'807       100.0      <- optional, off by default
 
 ## Lifetime weapon record
 
-`%LOCALAPPDATA%\BL4DamageTracker\weapons.json` keeps, per weapon instance id (stable across game restarts, verified over three restarts): label, body, damage, hits, crits, kills, seconds in hand, first and last seen. Updated from every hit and every held-time sample, saved by the log writer thread every 30 s when changed and at disable (atomic replace; a corrupt file is set aside, not overwritten). The console command `dmgweapons [-n N]` prints the ranking by DPS in hand with damage, hits, average hit, crit share, kills and minutes in hand. This is the "which gun performs best" answer across sessions; the report gets the same section.
+`%LOCALAPPDATA%\BL4DamageTracker\characters\<character guid>\weapons.json` keeps, per character and per weapon instance id (stable across game restarts, verified over three restarts): label, body, damage, hits, crits, kills, seconds in hand, first and last seen. The character is identified by `PlayerState.ActiveCharGuid` (probe 2026-09-20), checked once a second in the world; a switch saves the old record, loads the new one, starts the live table from zero and writes a `{"character": ...}` marker line into the session log so the report can split a session by character. Updated from every hit and every held-time sample, saved by the log writer thread every 30 s when changed and at disable (atomic replace; a corrupt file is set aside, not overwritten). The console command `dmgweapons [-n N]` prints the ranking by DPS in hand with damage, hits, average hit, crit share, kills and minutes in hand. This is the "which gun performs best" answer across sessions; the report gets the same section.
 
 ## Options
 
