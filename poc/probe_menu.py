@@ -29,9 +29,12 @@ from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 OUT = Path(__file__).parent / "probe_output.txt"
 HOOK_ID = "dmgmenu"
 TICK_FUNC = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
-SAMPLE_SECONDS = 60.0
-SAMPLE_INTERVAL_S = 1.0
-CANDIDATE_NAME_PATTERN = re.compile(r"Menu|Pause|Cursor|Input|Modal|Overlay|Focus", re.IGNORECASE)
+SAMPLE_SECONDS = 120.0
+SAMPLE_INTERVAL_S = 0.5
+CANDIDATE_NAME_PATTERN = re.compile(
+    r"Menu|Pause|Cursor|Input|Modal|Overlay|Focus|Cinematic|HUD|Hidden|Transition|Travel|Loading|Tunnel|Teleport|Streaming|Fade",
+    re.IGNORECASE,
+)
 
 
 def say(msg: str) -> None:
@@ -79,9 +82,18 @@ def engine_readers(pc: UObject) -> dict[str, Any]:
     statics = unrealsdk.find_class("GameplayStatics").ClassDefaultObject
     return {
         "GameplayStatics.IsGamePaused": lambda: statics.IsGamePaused(pc),
-        "pc.IsPaused()": lambda: pc.IsPaused(),
         "pc.bShowMouseCursor": lambda: pc.bShowMouseCursor,
+        "pc.bCinematicMode": lambda: pc.bCinematicMode,
+        "pc.IsMoveInputIgnored()": lambda: pc.IsMoveInputIgnored(),
+        "pc.IsLookInputIgnored()": lambda: pc.IsLookInputIgnored(),
         "pc.Pawn is None": lambda: pc.Pawn is None,
+        "pc.Pawn.bHidden": lambda: pc.Pawn.bHidden,
+        "pc.GetViewTarget() is pawn": lambda: pc.GetViewTarget()._path_name() == pc.Pawn._path_name(),
+        "hud.bShowHUD": lambda: pc.MyHUD.bShowHUD,
+        "hud.bHidden": lambda: pc.MyHUD.bHidden,
+        "pc.PlayerCameraManager.bGameCameraCutThisFrame": lambda: pc.PlayerCameraManager.bGameCameraCutThisFrame,
+        "pc.Class.Name": lambda: str(pc.Class.Name),
+        "world.Name": lambda: str(pc.Pawn.Outer.Name) if pc.Pawn is not None else "no pawn",
     }
 
 

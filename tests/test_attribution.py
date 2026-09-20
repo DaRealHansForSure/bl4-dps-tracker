@@ -97,6 +97,12 @@ class WeaponResolverTests(unittest.TestCase):
         self.assertEqual(source.label, "Unknown")
         self.assertEqual(source.instance_id, 5)
 
+    def test_missing_body_data_is_not_cached(self) -> None:
+        self.resolver.resolve_weapon(fake_weapon(5, body_path=None))
+        source = self.resolver.resolve_weapon(fake_weapon(5))
+        self.assertEqual(source.label, "Jakobs Sniper")
+        self.assertIs(self.resolver.resolve_weapon(fake_weapon(5)), source)
+
     def test_equipped_weapons_skip_other_gear(self) -> None:
         pawn = fake_pawn(equipped=[
             fake_weapon(1, "/Game/Body_VLA_AR.Body_VLA_AR"),

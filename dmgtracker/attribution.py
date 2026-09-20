@@ -105,6 +105,10 @@ class WeaponResolver:
         except Exception:  # noqa: BLE001 - a weapon without body data is still a weapon
             stem = ""
         source = DamageSource(SOURCE_WEAPON, label_for_body(stem), stem, instance_id)
+        if stem == "":
+            # Right after a world load the body data is not set yet; the weapon is real, so
+            # attribute to it, but do not cache the missing label. The next read gets it.
+            return source
         if len(self._sources_by_instance) >= MAX_CACHED_LABELS:
             self._sources_by_instance.clear()
         self._sources_by_instance[instance_id] = source
