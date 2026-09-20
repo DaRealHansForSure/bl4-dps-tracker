@@ -119,6 +119,19 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual([event["kind"] for event in self.received], ["dot", "heal", "heal"])
 
+    def test_unresolved_damage_type_handle_is_tolerated(self) -> None:
+        self.poller.tick()
+        write_hit(self.controller, 0, 250.0)
+        # An unresolved FGameDataHandle raises AttributeError for every field except _name.
+        getattr(self.controller, RING_PROPERTY)[0].DamageType = SimpleNamespace(_name="None")
+        self.poller.tick()
+        self.assertEqual(self.poller.errors, 0)
+        event = self.received[0]
+        self.assertEqual(event["dmg"], 250.0)
+        self.assertEqual(event["kind"], "direct")
+        self.assertEqual(event["elem"], 0)
+        self.assertEqual(event["dtype"], "None")
+
     def test_target_gone_is_empty_string(self) -> None:
         self.poller.tick()
         write_hit(self.controller, 0, 5.0, target=None)

@@ -18,7 +18,7 @@ Not in v1: grenade and skill attribution (data is logged so it can be added), it
 - On-screen readout: a runtime UMG `UserWidget` with `TextBlock` children, added to the viewport above the Coherent HUD (findings section E).
 - Number formatting everywhere the user reads a number: Swiss style, `'` thousands separator, `.` decimal point (`1'234'567.5`). One shared helper, no ad-hoc `format(x, ",")`.
 - Configuration through mods_base options persisted in `sdk_mods/settings/dmgtracker.json` (a `config.json` inside the `.sdkmod` zip would not be editable). Mechanism knobs and layout knobs such as the readout position are `HiddenOption`s in that file, which is also where future settings go; the file is hand-editable and documented in the README.
-- Logs under `sdk_mods/settings/dmgtracker/logs/session-<YYYYMMDD-HHMMSS>.jsonl`, newest 20 kept.
+- Logs under `%LOCALAPPDATA%\BL4DamageTracker\logs\session-<YYYYMMDD-HHMMSS>.jsonl` (user data stays out of the game folder under Program Files), newest 20 kept; the folder is the `log_dir` setting, environment variables allowed.
 - Release: one zip `dmgtracker-<version>.zip` containing only `sdk_mods/dmgtracker.sdkmod`. Vortex strips the leading folder and drops the `.sdkmod` into `sdk_mods`; manual installers extract to the game root. No loose files next to the `.sdkmod` (the loader logs an error for any file in `sdk_mods` that is not a valid `.sdkmod`).
 - Stdlib only, Python 3.14 syntax level (the SDK's embedded interpreter); the dev machine runs tests with `C:\Development\Python311\python.exe`, so no 3.12+ syntax in code that tests import.
 - Code style: four-space indentation, braces on every block, plain hyphens instead of em dashes.
@@ -107,6 +107,7 @@ Visible in the mod menu:
 
 Hidden (persisted, editable in `sdk_mods/settings/dmgtracker.json`):
 
+- `log_dir` (default `%LOCALAPPDATA%\BL4DamageTracker\logs`)
 - `tick_function` (default `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget`)
 - `ring_property` (default `RecentlyCausedDamageInstances`), `ring_size` (6)
 - `flush_interval_s` (1.0), `sessions_to_keep` (20)

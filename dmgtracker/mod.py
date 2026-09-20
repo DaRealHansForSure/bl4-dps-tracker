@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import unrealsdk
@@ -26,7 +27,10 @@ LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
 LOG_SCHEMA_VERSION = 1
 SETTINGS_FILE = SETTINGS_DIR / "dmgtracker.json"
-LOG_DIR = SETTINGS_DIR / "dmgtracker" / "logs"
+
+# User data belongs under the user's profile, not in the game folder under Program Files.
+DEFAULT_LOG_DIR = r"%LOCALAPPDATA%\BL4DamageTracker\logs"
+FALLBACK_LOG_DIR = Path.home() / "AppData" / "Local" / "BL4DamageTracker" / "logs"
 
 DEFAULT_TICK_FUNCTION = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
 DEFAULT_RING_PROPERTY = "RecentlyCausedDamageInstances"
@@ -44,12 +48,13 @@ logging_enabled = BoolOption(
 )
 open_log_folder = ButtonOption(
     "Open log folder",
-    description=f"Opens {LOG_DIR} in Explorer.",
+    description="Opens the session log folder in Explorer.",
     on_press=lambda _button: _open_log_folder(),
 )
 
 # Mechanism and layout knobs. Hidden from the menu, persisted in the settings file, editable
 # by hand: after a game patch the fix should be a settings edit, not a code change.
+log_dir = HiddenOption("log_dir", DEFAULT_LOG_DIR)
 tick_function = HiddenOption("tick_function", DEFAULT_TICK_FUNCTION)
 ring_property = HiddenOption("ring_property", DEFAULT_RING_PROPERTY)
 ring_size = HiddenOption("ring_size", DEFAULT_RING_SIZE)
@@ -76,9 +81,19 @@ def _mod_version() -> str:
     return str(globals().get("__version__", "0.0.0"))
 
 
+def _log_dir() -> Path:
+    """The log folder from the settings, environment variables expanded. If a variable did
+    not expand (a stripped-down environment), fall back to the profile folder directly."""
+    configured = os.path.expandvars(str(log_dir.value))
+    if "%" in configured:
+        return FALLBACK_LOG_DIR
+    return Path(configured)
+
+
 def _open_log_folder() -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    os.startfile(str(LOG_DIR))  # noqa: S606 - Windows only, and that is the only platform BL4 runs on
+    folder = _log_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(folder))  # noqa: S606 - Windows only, and that is the only platform BL4 runs on
 
 
 # ------------------------------------------------------------------ per frame
@@ -172,11 +187,12 @@ def _start_session_log() -> SessionLog | None:
         "schema": LOG_SCHEMA_VERSION,
         "started": time.time(),
     }
-    log = SessionLog(LOG_DIR, float(flush_interval_s.value), int(sessions_to_keep.value), meta)
+    folder = _log_dir()
+    log = SessionLog(folder, float(flush_interval_s.value), int(sessions_to_keep.value), meta)
     try:
         log.start()
     except OSError as ex:
-        logging.error(f"{LOG_PREFIX} cannot create the session log in {LOG_DIR}: {ex}. Running without a log.")
+        logging.error(f"{LOG_PREFIX} cannot create the session log in {folder}: {ex}. Running without a log.")
         return None
     return log
 
@@ -198,6 +214,7 @@ mod = build_mod(
     options=[
         logging_enabled,
         open_log_folder,
+        log_dir,
         tick_function,
         ring_property,
         ring_size,

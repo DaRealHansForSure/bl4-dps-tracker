@@ -143,10 +143,12 @@ class DamagePoller:
         damage_type = instance.DamageType
         target = instance.DamagedActor
         source = self._resolver.weapon_in_hand(pawn)
-        is_heal = bool(flags & HEALING_FLAG) or bool(damage_type.bIsHealingType)
+        # Some instances (grenades, cleared slots) carry an unresolved damage type handle whose
+        # fields raise on access; those hits are still damage, so read the fields with defaults.
+        is_heal = bool(flags & HEALING_FLAG) or bool(getattr(damage_type, "bIsHealingType", False))
         if is_heal:
             kind = KIND_HEAL
-        elif bool(damage_type.bIsDoT):
+        elif bool(getattr(damage_type, "bIsDoT", False)):
             kind = KIND_DOT
         else:
             kind = KIND_DIRECT
@@ -155,13 +157,13 @@ class DamagePoller:
             "dmg": float(instance.TotalDamage),
             "kind": kind,
             "crit": bool(flags & CRIT_FLAG),
-            "elem": int(damage_type.ElementalType),
+            "elem": int(getattr(damage_type, "ElementalType", 0) or 0),
             "flags": flags,
             "src": source.kind,
             "weapon": source.label,
             "body": source.body,
             "wid": source.instance_id,
-            "dtype": str(damage_type._name),
+            "dtype": str(getattr(damage_type, "_name", "None")),
             "target": str(target.Name) if target is not None else "",
         }
 
