@@ -78,18 +78,24 @@ Rules that shape the modules:
 
 ## In-game readout
 
-Three lines, monospace-ish, top left under the HUD by default, position adjustable:
+A table, always showing every equipped weapon (the four weapon slots, in slot order, even at zero), rendered as approved with `poc/probe_table.py`:
 
 ```
-Encounter   2'481'003
-Avg/s          51'687
-Last 60 s      44'120
+Weapon            Total        DPS   Share [%]
+Vladof AR     1'234'567     51'687        62.1      <- weapon in hand, yellow
+Borg SMG        456'789     19'032        23.0
+Jakobs Sniper   296'010     12'334        14.9
+Torgue Shotgun        0          0         0.0
+
+Encounter     1'987'366     82'807       100.0      <- light blue
+Last 60 s                   44'120
 ```
 
-- Encounter total resets when the 5 s gap rule closes the encounter; the closed value stays on screen until the next hit.
-- Avg/s is total divided by wall-clock duration of the encounter (honest, counts reloads).
-- Last 60 s is the raw sum of the rolling window divided by 60.
-- Implementation per findings section E: `WidgetBlueprintLibrary.Create(pc, container_class, pc)`, a `VerticalBox` root with three `TextBlock`s (fallback: one `TextBlock` with newlines if the box does not lay out), `AddToViewport(10000)`, `SetPositionInViewport`. Container class tried in order: `GbxUIUMGUserWidget`, then `GbxUIUMGListViewItemWidget` (the one that worked). Font size and colour through `SetFont`/`SetColorAndOpacity` if they take structs cleanly; otherwise the default 24 pt font stays.
+- Rows: header (grey), one row per equipped weapon slot (labels refreshed once a second from `EquippedInventorySlots`, damage keyed by `wid`), a `DoT` row and an `Other` row only when they have damage, a spacer, the `Encounter` total row, and a `Last 60 s` row with the rolling DPS. Weapons that were used in the encounter but are no longer equipped stay listed until the encounter closes.
+- Numbers are for the current encounter (5 s gap rule); when an encounter closes the table keeps showing it until the next hit starts a new one. `Total` is damage, `DPS` is total divided by the encounter's wall-clock duration, `Share [%]` is the row's share of the encounter total with one decimal.
+- Hidden while `pc.bShowMouseCursor` is set (ESC menu, inventory, map) or there is no pawn; shown again on the same frame the menu closes.
+- Implementation per findings section E: `WidgetBlueprintLibrary.Create(pc, GbxUIUMGUserWidget, pc)`, a `Border` root with a `GridPanel`, one `TextBlock` per cell, styling through `SetFont`, `SetJustification`, `SetMinDesiredWidth`, `SetColorAndOpacity`, `SetShadowOffset`, `SetShadowColorAndOpacity`, `AddToViewport(10000)`, `SetPositionInViewport`. Cells are created once and updated with `SetText` only when their value changed, at most every 250 ms, on the game thread from the tick hook. Row count changes (DoT/Other appearing) rebuild the grid.
+- Recreated when the controller object changes (map load); removed on disable and when the readout option is turned off.
 
 ## Options
 
@@ -104,7 +110,7 @@ Hidden (persisted, editable in `sdk_mods/settings/dmgtracker.json`):
 - `tick_function` (default `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget`)
 - `ring_property` (default `RecentlyCausedDamageInstances`), `ring_size` (6)
 - `flush_interval_s` (1.0), `sessions_to_keep` (20)
-- `readout_x`, `readout_y` (120, 320), `readout_font_size` (24): the readout position and size, changed by editing the settings file (no menu entry; the file is reloaded at enable)
+- `readout_x`, `readout_y` (120, 320), `readout_font_size` (30), `readout_column_gap` (44), `readout_column_widths` ([320, 240, 190, 140]), `readout_background_alpha` (0.6), `readout_show_rolling_row` (true): the readout layout, changed by editing the settings file (no menu entry; the file is reloaded at enable)
 
 ## report.py
 
@@ -140,7 +146,7 @@ End-to-end test before any upload: install the zip through Vortex on this machin
 ## Order of work and gates
 
 1. Mod core: `poller`, `attribution`, `logwriter`, `formatting`, options, self-check, status line. Deploy to `sdk_mods/`, one 2-minute session. Gate: plausible line count, `weapon` labels correct for the guns used, 0 errors in the status lines, no stutter.
-2. Readout: `readout`, `stats`. Session with a map change or respawn. Gate: the three numbers show, update, and survive the controller change; menu toggle hides and shows them.
+2. Readout: `readout`, `stats`. Session with a map change or respawn. Gate: the table shows every equipped weapon, updates during a fight, hides in menus, survives the controller change; the menu toggle hides and shows it.
 3. Report: `report.py`, `dmgreport`, tests, real fixture. Gate: report totals equal the readout's last encounter, `--last 300` sane, all tests green.
 4. Packaging: `build.py`, Vortex end-to-end install. Gate: fresh install works from the zip alone.
 5. Docs and the Nexus page text. Then tag `v1.0.0`.
