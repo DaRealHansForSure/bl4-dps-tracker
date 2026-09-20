@@ -18,8 +18,9 @@ Attribution, all of it from recorded sessions and probes (findings, section B):
   5. an unflagged hit within a few frames of a projectile explosion whose owner is a weapon
      (the mod reports those from a hook on projectile:Explode) belongs to that weapon;
      an explosion owned by the character is a grenade;
-  6. otherwise the melee window (after a knife swing) or the grenade window (after a throw)
-     claims it, the more recent action first;
+  6. otherwise the skill window (while action skill tricks run) claims it, then the melee
+     window (after a knife swing) or the grenade window (after a throw), the more recent
+     action first;
   7. anything left is Other, held back for a few frames first so a late explosion event can
      still claim it.
 
@@ -38,7 +39,15 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-from .attribution import GRENADE_SOURCE, MELEE_SOURCE, OTHER_SOURCE, SOURCE_WEAPON, DamageSource, WeaponResolver
+from .attribution import (
+    GRENADE_SOURCE,
+    MELEE_SOURCE,
+    OTHER_SOURCE,
+    SKILL_SOURCE,
+    SOURCE_WEAPON,
+    DamageSource,
+    WeaponResolver,
+)
 
 ERRORS_TO_REMEMBER = 3
 # Outside the world (main menu, loading) there is nothing to poll; look again once a second.
@@ -73,6 +82,9 @@ MAX_REMEMBERED_EXPLOSIONS = 32
 GRENADE_WINDOW_S = 12.0
 EXPLOSION_WINDOW_S = 3.0
 MELEE_WINDOW_S = 4.0
+# An action skill chains tricks with gaps of up to about 1.5 s while it runs; each trick
+# start or end keeps the window open this much longer.
+SKILL_WINDOW_S = 3.0
 
 # The swap rule: a sticky detonates when its gun is swapped away, and the ring shows the hit
 # with the new gun already in hand, within about 0.3 s of the swap being observed. The grace
@@ -127,6 +139,7 @@ class DamagePoller:
         self._pending: list[tuple[float, dict[str, Any]]] = []
         self._grenade_until = 0.0
         self._melee_until = 0.0
+        self._skill_until = 0.0
         self._last_grenade_action = 0.0
         self._last_melee_action = 0.0
         self._current_held: DamageSource | None = None
@@ -158,6 +171,10 @@ class DamagePoller:
     def note_melee_swing(self, now: float) -> None:
         self._melee_until = now + MELEE_WINDOW_S
         self._last_melee_action = now
+
+    def note_skill_activity(self, now: float) -> None:
+        """An action skill trick started or ended; the skill is running."""
+        self._skill_until = now + SKILL_WINDOW_S
 
     def note_weapon_in_hand(self, now: float, held: DamageSource) -> None:
         """Called by the refresh loop; a change of the held weapon starts the swap grace."""
@@ -339,6 +356,8 @@ class DamagePoller:
         exploded_by = self._recent_explosion_source(now)
         if exploded_by is not None:
             return exploded_by
+        if now < self._skill_until:
+            return SKILL_SOURCE
         melee_open = now < self._melee_until
         grenade_open = now < self._grenade_until
         if melee_open and (not grenade_open or self._last_melee_action >= self._last_grenade_action):

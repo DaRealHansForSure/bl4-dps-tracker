@@ -381,6 +381,22 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual((self.received[-1]["src"], self.received[-1]["weapon"]), ("melee", MELEE_SOURCE.label))
 
+    def test_skill_window_wins_over_melee_and_grenade(self) -> None:
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.poller.note_melee_swing(self.clock.now)
+        self.poller.note_skill_activity(self.clock.now)
+        self.clock.advance(1.0)
+        write_hit(self.controller, 0, 24.3, flags=0, target="Char_A_1")
+        write_hit(self.controller, 1, 9.1, flags=0, target="Char_A_1", dtype="Fire")
+        self.poller.tick()
+        self.assertEqual([e["src"] for e in self.received], ["skill", "skill"])
+        self.assertEqual(self.received[0]["weapon"], "Skill")
+        self.clock.advance(2.5)
+        write_hit(self.controller, 2, 24.3, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "melee", "the skill window closed, the swing window is still open")
+
     def test_the_more_recent_action_wins_when_both_windows_are_open(self) -> None:
         self.poller.tick()
         self.poller.note_grenade_thrown(self.clock.now)

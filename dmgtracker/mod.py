@@ -46,10 +46,14 @@ DEFAULT_TICK_FUNCTION = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
 PROJECTILE_EXPLODE_FUNCTION = "/Script/GbxGame.projectile:Explode"
 GRENADE_THROW_FUNCTION = "/Script/OakGame.OakCharacter:ThrowGadget"
 GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
-# Every trick (melee swings included) starts through this native function; the melee trick
-# is recognised by its script class, shared by all characters (probe 2026-09-20).
+# Every trick starts and ends through these native functions. The player's melee tricks are
+# the ATrick_Melee_* scripts (shared, stateless objects, so they cannot say whose swing it
+# is, but enemy melee tricks are named differently); action skill tricks carry "ActionSkill"
+# in their name (probes 2026-09-20, three characters).
 TRICK_BEGIN_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnBegin_Mut"
-MELEE_TRICK_CLASS_FRAGMENT = "HandleOffhand"
+TRICK_END_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnEnd_Mut"
+MELEE_TRICK_CLASS_PREFIX = "ATrick_Melee"
+SKILL_TRICK_CLASS_FRAGMENT = "ActionSkill"
 DEFAULT_RING_PROPERTY = "RecentlyCausedDamageInstances"
 DEFAULT_RING_SIZE = 6
 DEFAULT_FLUSH_INTERVAL_S = 1.0
@@ -467,16 +471,23 @@ def _on_grenade_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: Boun
 
 
 def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
-    """Fires for every trick of every actor; only the player's own melee trick counts."""
+    """Fires for every trick of every actor; the class name says what it is."""
     try:
-        if poller is None or MELEE_TRICK_CLASS_FRAGMENT not in str(obj.Class.Name):
+        if poller is None:
             return
-        try:
-            actor = obj.GetAssociatedActor()
-        except Exception:  # noqa: BLE001 - if the script cannot say whose it is, assume ours
-            actor = None
-        if actor is None or _is_player_pawn(actor):
+        class_name = str(obj.Class.Name)
+        if class_name.startswith(MELEE_TRICK_CLASS_PREFIX):
             poller.note_melee_swing(time.time())
+        elif SKILL_TRICK_CLASS_FRAGMENT in class_name:
+            poller.note_skill_activity(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
+def _on_trick_end(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    try:
+        if poller is not None and SKILL_TRICK_CLASS_FRAGMENT in str(obj.Class.Name):
+            poller.note_skill_activity(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 
@@ -485,7 +496,8 @@ SOURCE_HOOKS = (
     (PROJECTILE_EXPLODE_FUNCTION, "projectile-explode", _on_projectile_exploded, "explosive round"),
     (GRENADE_THROW_FUNCTION, "grenade-throw", _on_grenade_thrown, "grenade"),
     (GRENADE_EXPLODE_FUNCTION, "grenade-explode", _on_grenade_exploded, "grenade"),
-    (TRICK_BEGIN_FUNCTION, "trick-begin", _on_trick_begin, "melee"),
+    (TRICK_BEGIN_FUNCTION, "trick-begin", _on_trick_begin, "melee and skill"),
+    (TRICK_END_FUNCTION, "trick-end", _on_trick_end, "skill"),
 )
 
 

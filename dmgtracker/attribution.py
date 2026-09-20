@@ -19,11 +19,13 @@ from typing import Any
 SOURCE_WEAPON = "weapon"
 SOURCE_GRENADE = "grenade"
 SOURCE_MELEE = "melee"
+SOURCE_SKILL = "skill"
 SOURCE_OTHER = "other"
 SOURCE_UNKNOWN = "unknown"
 UNKNOWN_LABEL = "Unknown"
 GRENADE_LABEL = "Grenade"
 MELEE_LABEL = "Melee"
+SKILL_LABEL = "Skill"
 OTHER_LABEL = "Other"
 WEAPON_CLASS_NAME = "OakWeapon"
 # The player's character has equipment slots; a vehicle pawn (OakVehicle) does not.
@@ -69,6 +71,7 @@ class DamageSource:
 UNKNOWN_SOURCE = DamageSource(SOURCE_UNKNOWN, UNKNOWN_LABEL, "", 0)
 GRENADE_SOURCE = DamageSource(SOURCE_GRENADE, GRENADE_LABEL, "", 0)
 MELEE_SOURCE = DamageSource(SOURCE_MELEE, MELEE_LABEL, "", 0)
+SKILL_SOURCE = DamageSource(SOURCE_SKILL, SKILL_LABEL, "", 0)
 # Status ticks whose target is already gone, and healing: nothing to credit them to.
 OTHER_SOURCE = DamageSource(SOURCE_OTHER, OTHER_LABEL, "", 0)
 
