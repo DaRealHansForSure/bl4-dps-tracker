@@ -74,7 +74,8 @@
   tr.flash td { animation: row-flash 0.9s ease-out; }
   td.crit { color: var(--accent); }
   td.kill { color: var(--good); }
-  canvas { width: 100%; height: 180px; display: block; }
+  .card.chart { display: flex; flex-direction: column; }
+  canvas { flex: 1; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
   .muted { color: var(--muted); }
   .rank { color: var(--muted); }
   .top { font-size: 16px; }
@@ -114,9 +115,9 @@
         <h2>Table <span id="live-window" class="muted"></span></h2>
         <table id="live-table"><tbody></tbody></table>
       </div>
-      <div class="card">
+      <div class="card chart">
         <h2>Window DPS over time</h2>
-        <canvas id="chart" width="800" height="180"></canvas>
+        <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
         <h2>Latest hits</h2>
@@ -295,6 +296,7 @@
       section.classList.toggle("active", section.id === name);
     });
     try { localStorage.setItem("dmgtracker.tab", name); } catch (e) { /* private mode */ }
+    if (name === "live") { drawChart(); }
     if (name === "hits") { loadHits(); }
     if (name === "weapons") { loadWeapons(); }
     if (name === "encounters") { loadEncounters(); }
@@ -380,40 +382,71 @@
     if (!total) {
       return;
     }
-    samples.push({ t: t, dps: parseSwiss(total.cells[2]) });
+    samples.push({ t: t, dps: parseSwiss(total.cells[2]), total: parseSwiss(total.cells[1]) });
     while (samples.length > MAX_SAMPLES) {
       samples.shift();
     }
     drawChart();
   }
 
+  // The chart: one sample per table update while fighting, x by sample (a combat timeline
+  // whose labels show the real clock), y by window DPS, a tooltip for the hovered sample.
+  const CHART_MARGIN = { left: 8, right: 8, top: 16, bottom: 22 };
+  const TIME_LABELS = 5;
+  const GRID_STEPS = 3;
+  let hoverIndex = -1;
+
+  function chartGeometry() {
+    const rect = chart.getBoundingClientRect();
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.max(rect.width, 60);
+    const height = Math.max(rect.height, 60);
+    if (chart.width !== Math.round(width * ratio) || chart.height !== Math.round(height * ratio)) {
+      chart.width = Math.round(width * ratio);
+      chart.height = Math.round(height * ratio);
+    }
+    return {
+      ratio: ratio,
+      width: width,
+      height: height,
+      left: CHART_MARGIN.left,
+      right: width - CHART_MARGIN.right,
+      top: CHART_MARGIN.top,
+      bottom: height - CHART_MARGIN.bottom
+    };
+  }
+
+  function sampleX(geometry, index) {
+    const span = Math.max(samples.length - 1, 1);
+    return geometry.left + index / span * (geometry.right - geometry.left);
+  }
+
+  function sampleY(geometry, dps, max) {
+    return geometry.bottom - (geometry.bottom - geometry.top) * dps / max;
+  }
+
   function drawChart() {
+    const geometry = chartGeometry();
     const context = chart.getContext("2d");
-    const width = chart.width;
-    const height = chart.height;
-    context.clearRect(0, 0, width, height);
+    context.setTransform(geometry.ratio, 0, 0, geometry.ratio, 0, 0);
+    context.clearRect(0, 0, geometry.width, geometry.height);
+    context.font = "11px sans-serif";
     if (samples.length < 2) {
+      context.fillStyle = "#9aa3ad";
+      context.textAlign = "left";
+      context.textBaseline = "top";
+      context.fillText("waiting for a fight", geometry.left, geometry.top);
       return;
     }
     const max = Math.max.apply(null, samples.map(function (s) { return s.dps; })) || 1;
-    context.strokeStyle = "#2f343d";
-    context.beginPath();
-    for (let i = 1; i <= 3; i++) {
-      const y = height - (height - 20) * i / 3 - 5;
-      context.moveTo(0, y);
-      context.lineTo(width, y);
-    }
-    context.stroke();
-    context.fillStyle = "#9aa3ad";
-    context.font = "12px sans-serif";
-    context.fillText(formatNumber(max, 0) + " DPS", 6, 14);
+    drawValueGrid(context, geometry, max);
+    drawTimeLabels(context, geometry);
     context.strokeStyle = "#f5c542";
     context.lineWidth = 2;
     context.beginPath();
-    const span = Math.max(samples.length - 1, 1);
     samples.forEach(function (sample, index) {
-      const x = index / span * width;
-      const y = height - 5 - (height - 25) * sample.dps / max;
+      const x = sampleX(geometry, index);
+      const y = sampleY(geometry, sample.dps, max);
       if (index === 0) {
         context.moveTo(x, y);
       } else {
@@ -421,7 +454,104 @@
       }
     });
     context.stroke();
+    if (hoverIndex >= 0 && hoverIndex < samples.length) {
+      drawTooltip(context, geometry, hoverIndex, max);
+    }
   }
+
+  function drawValueGrid(context, geometry, max) {
+    context.strokeStyle = "#2f343d";
+    context.lineWidth = 1;
+    context.fillStyle = "#9aa3ad";
+    context.textAlign = "left";
+    context.textBaseline = "bottom";
+    for (let step = 1; step <= GRID_STEPS; step++) {
+      const value = max * step / GRID_STEPS;
+      const y = sampleY(geometry, value, max);
+      context.beginPath();
+      context.moveTo(geometry.left, y);
+      context.lineTo(geometry.right, y);
+      context.stroke();
+      context.fillText(formatNumber(value, 0) + " DPS", geometry.left + 2, y - 2);
+    }
+  }
+
+  function drawTimeLabels(context, geometry) {
+    context.fillStyle = "#9aa3ad";
+    context.strokeStyle = "#2f343d";
+    context.textBaseline = "top";
+    const last = samples.length - 1;
+    for (let k = 0; k < TIME_LABELS; k++) {
+      const index = Math.round(k / (TIME_LABELS - 1) * last);
+      const x = sampleX(geometry, index);
+      context.beginPath();
+      context.moveTo(x, geometry.bottom);
+      context.lineTo(x, geometry.bottom + 4);
+      context.stroke();
+      context.textAlign = k === 0 ? "left" : (k === TIME_LABELS - 1 ? "right" : "center");
+      context.fillText(formatTime(samples[index].t), x, geometry.bottom + 6);
+    }
+  }
+
+  function drawTooltip(context, geometry, index, max) {
+    const sample = samples[index];
+    const x = sampleX(geometry, index);
+    const y = sampleY(geometry, sample.dps, max);
+    context.strokeStyle = "#9aa3ad";
+    context.lineWidth = 1;
+    context.setLineDash([3, 3]);
+    context.beginPath();
+    context.moveTo(x, geometry.top);
+    context.lineTo(x, geometry.bottom);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = "#f5c542";
+    context.beginPath();
+    context.arc(x, y, 4, 0, Math.PI * 2);
+    context.fill();
+    const lines = [formatTime(sample.t), formatNumber(sample.dps, 0) + " DPS", formatNumber(sample.total, 0) + " damage in the window"];
+    context.font = "12px sans-serif";
+    const textWidth = Math.max.apply(null, lines.map(function (line) { return context.measureText(line).width; }));
+    const boxWidth = textWidth + 16;
+    const boxHeight = lines.length * 16 + 10;
+    let boxX = x + 12;
+    if (boxX + boxWidth > geometry.right) {
+      boxX = x - 12 - boxWidth;
+    }
+    let boxY = y - boxHeight - 10;
+    if (boxY < geometry.top) {
+      boxY = y + 10;
+    }
+    context.fillStyle = "rgba(20, 22, 26, 0.95)";
+    context.strokeStyle = "#2f343d";
+    context.beginPath();
+    context.rect(boxX, boxY, boxWidth, boxHeight);
+    context.fill();
+    context.stroke();
+    context.fillStyle = "#e8e8e8";
+    context.textAlign = "left";
+    context.textBaseline = "top";
+    lines.forEach(function (line, lineIndex) {
+      context.fillText(line, boxX + 8, boxY + 5 + lineIndex * 16);
+    });
+  }
+
+  chart.addEventListener("pointermove", function (event) {
+    if (samples.length < 2) {
+      return;
+    }
+    const geometry = chartGeometry();
+    const x = event.clientX - chart.getBoundingClientRect().left;
+    const span = Math.max(samples.length - 1, 1);
+    const index = Math.round((x - geometry.left) / (geometry.right - geometry.left) * span);
+    hoverIndex = Math.min(Math.max(index, 0), samples.length - 1);
+    drawChart();
+  });
+  chart.addEventListener("pointerleave", function () {
+    hoverIndex = -1;
+    drawChart();
+  });
+  window.addEventListener("resize", drawChart);
 
   function hitRow(event, withCharacter) {
     const cells = [cell(formatTime(event.t))];
