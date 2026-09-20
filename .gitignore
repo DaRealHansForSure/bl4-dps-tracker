@@ -4,3 +4,6 @@ build/
 poc/probe_output.txt
 poc/*.jsonl
 *.log
+
+# IDE state (PyCharm / IntelliJ)
+.idea/

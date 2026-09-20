@@ -44,4 +44,16 @@ if poll is not None and poll.get("hooked"):
     poll["hooked"] = False
     say(f"   poller removed: {poll['ticks']} ticks, {poll['events']} damage instances seen")
 
+# probe_slotfocus.py inventory hooks
+slot_hooks = getattr(builtins, "_dmgslotfocus_hooks", None)
+if slot_hooks:
+    for path in slot_hooks:
+        try:
+            if hooks.has_hook(path, hooks.Type.PRE, "dmgslotfocus"):
+                hooks.remove_hook(path, hooks.Type.PRE, "dmgslotfocus")
+        except Exception:  # noqa: BLE001
+            pass
+    say(f"   removed {len(slot_hooks)} slot focus hooks")
+    slot_hooks.clear()
+
 say(f"done -> {OUT}")
