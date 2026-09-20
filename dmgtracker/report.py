@@ -47,10 +47,12 @@ KIND_DOT = "dot"
 
 @dataclass
 class CharacterSection:
-    """The events played with one character; identity is None before the first marker."""
+    """The events played with one character; identity is None before the first marker.
+    `held` holds the time-in-hand lines ({"t", "held": instance id, "weapon", "s"})."""
 
     identity: dict[str, str] | None
     events: list[dict[str, Any]] = field(default_factory=list)
+    held: list[dict[str, Any]] = field(default_factory=list)
 
     def title(self) -> str:
         if self.identity is None:
@@ -117,6 +119,8 @@ def read_session(path: Path) -> Session:
                     sections[-1].identity = record["character"]
             elif "dmg" in record:
                 sections[-1].events.append(record)
+            elif "held" in record:
+                sections[-1].held.append(record)
     for section in sections:
         section.events.sort(key=lambda event: float(event["t"]))
     return Session(path, meta, sections)
@@ -132,11 +136,16 @@ def encounters_for(events: list[dict[str, Any]], gap_s: float) -> list[Encounter
     return tracker.closed
 
 
-def weapon_records_for(events: list[dict[str, Any]]) -> list[SessionWeapon]:
-    """Per-weapon totals for the session, ranked by damage. The log has no time in hand, so
-    held_seconds is the number of seconds in which the weapon landed a hit (active time)."""
+def weapon_records_for(events: list[dict[str, Any]], held: list[dict[str, Any]] | None = None) -> list[SessionWeapon]:
+    """Per-weapon totals for the session, ranked by damage. Time in hand comes from the
+    held lines; a log without them (older versions) falls back to active time, the number
+    of seconds in which the weapon landed a hit."""
     weapons: dict[int, SessionWeapon] = {}
     active_seconds: dict[int, set[int]] = {}
+    held_seconds: dict[int, float] = {}
+    for line in held or []:
+        instance_id = int(line.get("held", 0))
+        held_seconds[instance_id] = held_seconds.get(instance_id, 0.0) + float(line.get("s", 0.0))
     for event in events:
         if event.get("src") != SOURCE_WEAPON:
             continue
@@ -153,7 +162,7 @@ def weapon_records_for(events: list[dict[str, Any]]) -> list[SessionWeapon]:
         if event.get("kind") == KIND_DOT:
             weapon.status_damage += float(event["dmg"])
     for instance_id, weapon in weapons.items():
-        weapon.record.held_seconds = float(len(active_seconds[instance_id]))
+        weapon.record.held_seconds = held_seconds.get(instance_id, float(len(active_seconds[instance_id])))
     return sorted(weapons.values(), key=lambda weapon: weapon.record.damage, reverse=True)
 
 
@@ -190,7 +199,7 @@ def format_report(
         lines.append("")
         lines.append(section.title())
         lines.extend(_format_encounters(section.events, gap_s, top_encounters))
-        lines.extend(_format_weapons(section.events))
+        lines.extend(_format_weapons(section.events, section.held))
     if last_seconds:
         total, per_second = last_seconds_average(events, last_seconds)
         lines.append("")
@@ -233,12 +242,15 @@ def _format_encounters(events: list[dict[str, Any]], gap_s: float, top: int | No
     return lines
 
 
-def _format_weapons(events: list[dict[str, Any]]) -> list[str]:
-    weapons = weapon_records_for(events)
+def _format_weapons(events: list[dict[str, Any]], held: list[dict[str, Any]]) -> list[str]:
+    weapons = weapon_records_for(events, held)
     if not weapons:
         return []
-    lines = ["  Weapons (active DPS = damage over the seconds in which the gun landed hits):"]
-    lines.append(f"    {'Weapon':26} {'Damage':>12} {'Active DPS':>11} {'Hits':>6} {'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'Status %':>9}")
+    if held:
+        lines = ["  Weapons (DPS in hand = damage over the fighting time the gun was in hand):"]
+    else:
+        lines = ["  Weapons (no time-in-hand data in this log; DPS = damage over the seconds in which the gun landed hits):"]
+    lines.append(f"    {'Weapon':26} {'Damage':>12} {'DPS':>11} {'Hits':>6} {'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'Status %':>9}")
     for weapon in weapons:
         record = weapon.record
         lines.append(

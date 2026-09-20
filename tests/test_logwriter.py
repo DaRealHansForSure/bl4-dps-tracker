@@ -55,6 +55,19 @@ class SessionLogTests(unittest.TestCase):
         lines = read_lines(log.path)
         self.assertEqual(lines[1:], [{"t": 1.0, "dmg": 10.0}, {"t": 1.1, "dmg": 20.0}])
 
+    def test_tick_listeners_run_every_interval(self) -> None:
+        log = SessionLog(self.log_dir, FAST_FLUSH_S, sessions_to_keep=20, meta=META)
+        ticks: list[int] = []
+        log.add_tick_listener(lambda: ticks.append(1))
+        log.start()
+        try:
+            deadline = time.time() + 2.0
+            while len(ticks) < 2 and time.time() < deadline:
+                time.sleep(FAST_FLUSH_S)
+            self.assertGreaterEqual(len(ticks), 2, "runs without any batch written")
+        finally:
+            log.stop()
+
     def test_stop_flushes_what_is_left(self) -> None:
         log = SessionLog(self.log_dir, flush_interval_s=60.0, sessions_to_keep=20, meta=META)
         log.start()

@@ -10,6 +10,7 @@ stats engine, and the readout is refreshed from the same frame.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from pathlib import Path
@@ -88,6 +89,10 @@ MAX_LIVE_ENCOUNTERS = 1000
 WEAPON_STORE_NAME = "weapons.json"
 CHARACTERS_DIR_NAME = "characters"
 READOUT_CREATE_RETRY_S = 1.0
+# The table as the game shows it, published next to the logs once per flush interval for
+# the web dashboard; and time-in-hand lines in the session log, once per second per gun.
+LIVE_FILE_NAME = "live.json"
+HELD_LINE_INTERVAL_S = 1.0
 
 # ------------------------------------------------------------------ options
 
@@ -154,6 +159,9 @@ _equipped_cache: list = []
 # timestamps and everything persisted use time.time(), which is comparable across sessions.
 _combat_clock = 0.0
 _last_combat_step = 0.0
+_latest_rows: list = []
+_held_pending: dict[int, tuple[str, float]] = {}
+_last_held_flush = 0.0
 
 
 def _say(message: str) -> None:
@@ -314,7 +322,7 @@ def _refresh_readout() -> None:
     """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S.
     Uses only this frame's controller wrapper; nothing is kept across frames."""
     global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors, _transition_hidden
-    global _last_readout_create
+    global _last_readout_create, _latest_rows
     if poller is None or poller.controller is None:
         return
     try:
@@ -357,7 +365,9 @@ def _refresh_readout() -> None:
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best_dps = _best_dps_by_weapon() if readout_show_best_column.value else None
         rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter, best_dps)
+        _latest_rows = rows
         readout.render(rows)
+        _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
         _readout_errors += 1
@@ -415,6 +425,39 @@ def _sample_held_time(held: Any) -> None:
     rolling.add_held(_combat_clock, key, _last_combat_step)
     if weapon_store is not None:
         weapon_store.add_held(held.instance_id, held.label, held.body, _last_combat_step, time.time())
+    _label, seconds = _held_pending.get(held.instance_id, (held.label, 0.0))
+    _held_pending[held.instance_id] = (held.label, seconds + _last_combat_step)
+
+
+def _flush_held_lines(now: float) -> None:
+    """Write the accumulated time in hand as one compact line per gun, once a second, so the
+    report and the dashboard can compute DPS in hand from the log."""
+    global _last_held_flush
+    if not _held_pending or now - _last_held_flush < HELD_LINE_INTERVAL_S:
+        return
+    _last_held_flush = now
+    if session_log is not None and logging_enabled.value:
+        lines = [{"t": now, "held": instance_id, "weapon": label, "s": round(seconds, 3)} for instance_id, (label, seconds) in _held_pending.items()]
+        session_log.append(lines)
+    _held_pending.clear()
+
+
+def _publish_live() -> None:
+    """Writer thread: drop the table as the game shows it into live.json (atomic replace)."""
+    payload = {
+        "t": time.time(),
+        "character": character.to_json() if character is not None else None,
+        "window_minutes": float(readout_window_minutes.value),
+        "combat_clock": _combat_clock,
+        "rows": [{"cells": list(row.cells), "style": row.style} for row in _latest_rows],
+        "table_visible": readout is not None and readout.visible(),
+        "events": poller.events if poller is not None else 0,
+        "errors": poller.errors if poller is not None else 0,
+    }
+    target = _log_dir() / LIVE_FILE_NAME
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.replace(target)
 
 
 def _give_up_readout_if_needed() -> None:
@@ -616,8 +659,10 @@ def on_enable() -> None:
     poller.on_controller_changed = _on_controller_changed
     session_log = _start_session_log()
     if session_log is not None:
-        # The writer thread wakes every flush interval; let it save the weapon record too.
+        # The writer thread wakes every flush interval; let it save the weapon record and
+        # publish the live table too.
         session_log.add_flush_listener(_save_weapon_store_if_due)
+        session_log.add_tick_listener(_publish_live)
     if not _install_tick_hook():
         return
     _install_source_hooks()

@@ -46,6 +46,7 @@ def write_session(directory: Path, name: str = "session-20260920-220000.jsonl", 
     path = directory / name
     lines = [json.dumps(META), json.dumps(ROGUE)]
     lines += [json.dumps(event, separators=(",", ":")) for event in ROGUE_EVENTS]
+    lines.append(json.dumps({"t": 1002.0, "held": 277, "weapon": "Jakobs Sniper", "s": 2.0}))
     lines.append(json.dumps(SIREN))
     lines += [json.dumps(event, separators=(",", ":")) for event in SIREN_EVENTS]
     text = "\n".join(lines) + "\n"
@@ -70,6 +71,7 @@ class ReadSessionTests(unittest.TestCase):
         self.assertEqual(len(session.sections[0].events), 6)
         self.assertEqual(len(session.sections[1].events), 1)
         self.assertEqual(len(session.all_events()), 7)
+        self.assertEqual(len(session.sections[0].held), 1)
 
     def test_partial_last_line_is_skipped(self) -> None:
         session = read_session(write_session(self.directory, trailing_garbage=True))
@@ -110,6 +112,15 @@ class NumbersTests(unittest.TestCase):
         self.assertEqual(sniper.status_damage, 7.0)
         self.assertEqual(sniper.record.held_seconds, 4.0, "four distinct seconds with a hit")
         self.assertAlmostEqual(sniper.record.dps_in_hand(), 1107.0 / 4.0)
+
+    def test_held_lines_give_dps_in_hand(self) -> None:
+        held = [{"t": 1002.0, "held": 277, "weapon": "Jakobs Sniper", "s": 1.0}, {"t": 1003.0, "held": 277, "weapon": "Jakobs Sniper", "s": 0.5}]
+        weapons = weapon_records_for(ROGUE_EVENTS, held)
+        sniper = weapons[0]
+        self.assertEqual(sniper.record.held_seconds, 1.5)
+        self.assertAlmostEqual(sniper.record.dps_in_hand(), 1107.0 / 1.5)
+        rifle = weapons[1]
+        self.assertEqual(rifle.record.held_seconds, 1.0, "no held line: active seconds")
 
     def test_last_seconds_average(self) -> None:
         total, per_second = last_seconds_average(ROGUE_EVENTS, 5.0)
