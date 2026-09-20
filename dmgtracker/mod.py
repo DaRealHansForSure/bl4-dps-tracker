@@ -293,12 +293,16 @@ def _should_show_table(controller: UObject, pawn: Any) -> bool:
 
 def _sample_held_time(held: Any, now: float) -> None:
     """Credit the weapon in hand with the time since the last sample, so its DPS can be
-    measured over the time it was actually used. Menus do not count: this runs only while
-    the table is shown, and a long gap (pause, loading) is dropped."""
+    measured over the time it was actually used. Only fighting time counts: while an
+    encounter is open (a hit within the encounter gap), the table is shown (no menus,
+    vehicles or transitions) and the sample is not a gap from a pause or a loading screen.
+    Carrying a gun around between fights would otherwise dilute its number, and the idle
+    time ageing out of the window would make the number drift with nothing happening."""
     global _last_held_sample
     elapsed = now - _last_held_sample
     _last_held_sample = now
-    if not readout.visible() or held.instance_id == 0 or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+    fighting = tracker.current is not None
+    if not fighting or not readout.visible() or held.instance_id == 0 or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
         return
     key = source_key({"src": held.kind, "weapon": held.label, "wid": held.instance_id})
     rolling.add_held(now, key, elapsed)
