@@ -36,10 +36,10 @@
     z-index: 2;
   }
   header h1 { font-size: 18px; margin: 0; letter-spacing: 0.5px; }
-  #status { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  #status { color: var(--muted); display: flex; align-items: center; gap: 8px; margin-left: auto; }
   #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); display: inline-block; }
   #dot.on { background: var(--good); }
-  nav { margin-left: auto; display: flex; gap: 4px; }
+  nav { display: flex; gap: 4px; }
   nav button, .controls button, .controls select, .controls input {
     background: var(--panel-2);
     color: var(--text);
@@ -55,8 +55,10 @@
   section { display: none; }
   section.active { display: block; }
   .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; color: var(--muted); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; }
+  /* Two columns, the main table wider than the side card; a wide card spans both. */
+  .cards { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+  .cards > .wide { grid-column: 1 / -1; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; min-width: 0; }
   .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { padding: 4px 10px; text-align: right; white-space: nowrap; }
@@ -80,9 +82,13 @@
   .encounter .head { display: flex; gap: 16px; flex-wrap: wrap; }
   .encounter .head b { color: var(--accent); }
   .pager { display: flex; gap: 8px; align-items: center; }
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: minmax(0, 1fr); }
+  }
   @media (max-width: 700px) {
     header { gap: 10px; }
-    nav { margin-left: 0; width: 100%; }
+    nav { width: 100%; }
+    #status { margin-left: 0; }
     main { padding: 10px; }
     th, td { padding: 4px 6px; }
   }
@@ -91,13 +97,13 @@
 <body>
 <header>
   <h1>BL4 Damage Tracker</h1>
-  <div id="status"><span id="dot"></span><span id="status-text">connecting</span></div>
   <nav>
     <button data-tab="live" class="active">Live</button>
     <button data-tab="hits">Hits</button>
     <button data-tab="weapons">Weapons</button>
     <button data-tab="encounters">Encounters</button>
   </nav>
+  <div id="status"><span id="dot"></span><span id="status-text">connecting</span></div>
 </header>
 <main>
   <section id="live" class="active">
@@ -110,7 +116,7 @@
         <h2>Window DPS over time</h2>
         <canvas id="chart" width="800" height="180"></canvas>
       </div>
-      <div class="card" style="grid-column: 1 / -1">
+      <div class="card wide">
         <h2>Latest hits</h2>
         <table id="feed">
           <thead><tr><th>Time</th><th>Source</th><th>Damage</th><th>Kind</th><th>Crit</th><th>Kill</th><th>Target</th><th>Element</th></tr></thead>
@@ -168,7 +174,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <div class="card" style="grid-column: 1 / -1">
+      <div class="card wide">
         <h2>All weapons of this character</h2>
         <table id="weapons-all" class="ranked">
           <thead><tr><th>#</th><th>Weapon</th><th>Id</th><th>DPS in hand</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>In hand</th><th>First seen</th><th>Last seen</th></tr></thead>
@@ -396,8 +402,9 @@
     context.strokeStyle = "#f5c542";
     context.lineWidth = 2;
     context.beginPath();
+    const span = Math.max(samples.length - 1, 1);
     samples.forEach(function (sample, index) {
-      const x = index / (MAX_SAMPLES - 1) * width;
+      const x = index / span * width;
       const y = height - 5 - (height - 25) * sample.dps / max;
       if (index === 0) {
         context.moveTo(x, y);
