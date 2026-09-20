@@ -83,6 +83,9 @@ MAX_REMEMBERED_EXPLOSIONS = 32
 GRENADE_WINDOW_S = 12.0
 EXPLOSION_WINDOW_S = 3.0
 MELEE_WINDOW_S = 1.0
+# When the swing trick ends, the melee window closes a few frames later: skill hits landing
+# in the same second as a knife swing are otherwise indistinguishable from the knife's hit.
+MELEE_END_GRACE_S = 0.15
 # An action skill chains tricks with gaps of up to about 1.5 s while it runs; each trick
 # start or end keeps the window open this much longer.
 SKILL_WINDOW_S = 3.0
@@ -172,6 +175,10 @@ class DamagePoller:
     def note_melee_swing(self, now: float) -> None:
         self._melee_until = now + MELEE_WINDOW_S
         self._last_melee_action = now
+
+    def note_melee_end(self, now: float) -> None:
+        """The swing trick ended; its hit has landed by now (or will within a few frames)."""
+        self._melee_until = min(self._melee_until, now + MELEE_END_GRACE_S)
 
     def note_skill_activity(self, now: float) -> None:
         """An action skill trick started or ended; the skill is running."""

@@ -511,8 +511,13 @@ def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunc
 
 def _on_trick_end(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     try:
-        if poller is not None and SKILL_TRICK_CLASS_FRAGMENT in str(obj.Class.Name):
+        if poller is None:
+            return
+        class_name = str(obj.Class.Name)
+        if SKILL_TRICK_CLASS_FRAGMENT in class_name:
             poller.note_skill_activity(time.time())
+        elif _is_player_melee_trick(class_name):
+            poller.note_melee_end(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 

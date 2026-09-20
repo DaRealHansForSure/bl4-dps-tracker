@@ -401,6 +401,20 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "grenade", "the skill window closed, the throw window is still open")
 
+    def test_the_swing_end_closes_the_melee_window_early(self) -> None:
+        self.poller.tick()
+        self.poller.note_skill_activity(self.clock.now)
+        self.poller.note_melee_swing(self.clock.now)
+        self.clock.advance(0.3)
+        write_hit(self.controller, 0, 7552.1, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.clock.advance(0.3)
+        self.poller.note_melee_end(self.clock.now)
+        self.clock.advance(0.2)
+        write_hit(self.controller, 1, 10136.0, flags=0, target="Char_B_2")
+        self.poller.tick()
+        self.assertEqual([e["src"] for e in self.received], ["melee", "skill"])
+
     def test_a_knife_swing_during_a_skill_is_melee_for_one_second(self) -> None:
         self.poller.tick()
         self.poller.note_skill_activity(self.clock.now)
