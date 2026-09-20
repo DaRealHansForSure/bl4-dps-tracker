@@ -46,10 +46,10 @@ DEFAULT_TICK_FUNCTION = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
 PROJECTILE_EXPLODE_FUNCTION = "/Script/GbxGame.projectile:Explode"
 GRENADE_THROW_FUNCTION = "/Script/OakGame.OakCharacter:ThrowGadget"
 GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
-MELEE_SWING_FUNCTION = (
-    "/Game/PlayerCharacters/_Shared/Tricks/Skills/Script_LTrick_HandleOffhand."
-    "Script_LTrick_HandleOffhand_C:OnBegin_Const"
-)
+# Every trick (melee swings included) starts through this native function; the melee trick
+# is recognised by its script class, shared by all characters (probe 2026-09-20).
+TRICK_BEGIN_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnBegin_Mut"
+MELEE_TRICK_CLASS_FRAGMENT = "HandleOffhand"
 DEFAULT_RING_PROPERTY = "RecentlyCausedDamageInstances"
 DEFAULT_RING_SIZE = 6
 DEFAULT_FLUSH_INTERVAL_S = 1.0
@@ -466,9 +466,10 @@ def _on_grenade_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: Boun
         pass
 
 
-def _on_melee_swing(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    """Fires for every trick of every actor; only the player's own melee trick counts."""
     try:
-        if poller is None:
+        if poller is None or MELEE_TRICK_CLASS_FRAGMENT not in str(obj.Class.Name):
             return
         try:
             actor = obj.GetAssociatedActor()
@@ -484,7 +485,7 @@ SOURCE_HOOKS = (
     (PROJECTILE_EXPLODE_FUNCTION, "projectile-explode", _on_projectile_exploded, "explosive round"),
     (GRENADE_THROW_FUNCTION, "grenade-throw", _on_grenade_thrown, "grenade"),
     (GRENADE_EXPLODE_FUNCTION, "grenade-explode", _on_grenade_exploded, "grenade"),
-    (MELEE_SWING_FUNCTION, "melee-swing", _on_melee_swing, "melee"),
+    (TRICK_BEGIN_FUNCTION, "trick-begin", _on_trick_begin, "melee"),
 )
 
 
@@ -510,7 +511,7 @@ def _install_source_hooks() -> None:
     # No existence check here: Blueprint functions (the melee trick) load with the world,
     # long after the mod enables, and unrealsdk matches hooks by name when they are called.
     for path, name, callback, _damage_kind in SOURCE_HOOKS:
-        unrealsdk.hooks.add_hook(path, Type.POST, f"{HOOK_ID}:{name}", callback)
+        unrealsdk.hooks.add_hook(path, Type.PRE, f"{HOOK_ID}:{name}", callback)
 
 
 def _remove_tick_hook() -> None:
@@ -519,8 +520,8 @@ def _remove_tick_hook() -> None:
         unrealsdk.hooks.remove_hook(path, Type.POST, HOOK_ID)
     for source_path, name, _callback, _kind in SOURCE_HOOKS:
         identifier = f"{HOOK_ID}:{name}"
-        if unrealsdk.hooks.has_hook(source_path, Type.POST, identifier):
-            unrealsdk.hooks.remove_hook(source_path, Type.POST, identifier)
+        if unrealsdk.hooks.has_hook(source_path, Type.PRE, identifier):
+            unrealsdk.hooks.remove_hook(source_path, Type.PRE, identifier)
 
 
 # ------------------------------------------------------------------ lifecycle
