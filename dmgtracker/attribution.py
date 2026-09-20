@@ -22,6 +22,8 @@ SOURCE_UNKNOWN = "unknown"
 UNKNOWN_LABEL = "Unknown"
 OTHER_LABEL = "Other"
 WEAPON_CLASS_NAME = "OakWeapon"
+# The player's character has equipment slots; a vehicle pawn (OakVehicle) does not.
+CHARACTER_MARKER_PROPERTY = "EquippedInventorySlots"
 MAX_CACHED_LABELS = 256
 
 # Manufacturer codes as they appear in the body asset names. Unknown codes fall back to the
@@ -33,7 +35,7 @@ MANUFACTURER_NAMES = {
     "MAL": "Maliwan",
     "TED": "Tediore",
     "BOR": "Bor",
-    "DAL": "Daedalus",
+    "DAD": "Daedalus",
     "RIP": "Ripper",
     "ORD": "Order",
 }
@@ -93,6 +95,20 @@ class WeaponResolver:
 
     def __init__(self) -> None:
         self._sources_by_instance: dict[int, DamageSource] = {}
+        self._character_by_class: dict[str, bool] = {}
+
+    def is_character(self, pawn: Any) -> bool:
+        """True while the player is on foot (the pawn is the character), False in a vehicle or
+        without a pawn. Decided once per pawn class, so per-frame calls cost one name read."""
+        if pawn is None:
+            return False
+        class_name = str(pawn.Class.Name)
+        known = self._character_by_class.get(class_name)
+        if known is None:
+            # pyunrealsdk raises AttributeError for fields a class does not have, so hasattr works.
+            known = hasattr(pawn, CHARACTER_MARKER_PROPERTY)
+            self._character_by_class[class_name] = known
+        return known
 
     def resolve_weapon(self, weapon: Any) -> DamageSource:
         """The DamageSource for one OakWeapon actor."""

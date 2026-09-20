@@ -54,6 +54,7 @@ class LabelForBodyTests(unittest.TestCase):
         self.assertEqual(label_for_body("Body_JAK_SR"), "Jakobs Sniper")
         self.assertEqual(label_for_body("Body_VLA_AR"), "Vladof Assault Rifle")
         self.assertEqual(label_for_body("Body_BOR_SM"), "Bor SMG")
+        self.assertEqual(label_for_body("Body_DAD_SM"), "Daedalus SMG")
         self.assertEqual(label_for_body("Body_TOR_SG"), "Torgue Shotgun")
 
     def test_unknown_codes_are_kept(self) -> None:
@@ -116,6 +117,16 @@ class WeaponResolverTests(unittest.TestCase):
     def test_pawn_without_equipment_slots_gives_none(self) -> None:
         vehicle = SimpleNamespace(Class=SimpleNamespace(Name="OakVehicle"))
         self.assertIsNone(self.resolver.equipped_weapons(vehicle))
+
+    def test_is_character(self) -> None:
+        vehicle = SimpleNamespace(Class=SimpleNamespace(Name="OakVehicle"))
+        character = fake_pawn()
+        character.Class = SimpleNamespace(Name="OakCharacter")
+        self.assertFalse(self.resolver.is_character(None))
+        self.assertFalse(self.resolver.is_character(vehicle))
+        self.assertTrue(self.resolver.is_character(character))
+        # Decided per class name: a second vehicle pawn of the same class needs no lookup.
+        self.assertFalse(self.resolver.is_character(SimpleNamespace(Class=SimpleNamespace(Name="OakVehicle"))))
 
 
 if __name__ == "__main__":

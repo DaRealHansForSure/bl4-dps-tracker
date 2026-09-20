@@ -77,7 +77,7 @@ class EncounterTrackerTests(unittest.TestCase):
         self.tracker.add(hit(100.0, 50.0, kind="heal"))
         self.assertIsNone(self.tracker.latest())
 
-    def test_per_source_split_holds_dot_out(self) -> None:
+    def test_per_source_split_credits_dot_to_its_source(self) -> None:
         self.tracker.add(hit(100.0, 100.0))
         self.tracker.add(hit(101.0, 40.0, weapon="Vladof Assault Rifle", wid=280))
         self.tracker.add(hit(102.0, 7.0, kind="dot"))
@@ -86,7 +86,7 @@ class EncounterTrackerTests(unittest.TestCase):
         self.assertEqual(encounter.total, 480.0)
         self.assertEqual(encounter.dot_damage, 7.0)
         by_label = {totals.label: totals.damage for totals in encounter.by_source.values()}
-        self.assertEqual(by_label, {"Jakobs Sniper": 100.0, "Vladof Assault Rifle": 40.0, "Other": 333.0})
+        self.assertEqual(by_label, {"Jakobs Sniper": 107.0, "Vladof Assault Rifle": 40.0, "Other": 333.0})
         self.assertEqual(encounter.other_damage(), 333.0)
 
     def test_active_dps_counts_only_seconds_with_hits(self) -> None:
@@ -153,7 +153,7 @@ class RollingStatsTests(unittest.TestCase):
         self.assertEqual(self.window.by_source, {})
         self.assertEqual(self.window.dps(), 0.0)
 
-    def test_healing_is_ignored_and_dot_is_held_out(self) -> None:
+    def test_healing_is_ignored_and_dot_is_credited_and_counted(self) -> None:
         self.window.add(hit(100.0, 50.0, kind="heal"))
         self.window.add(hit(101.0, 7.0, kind="dot"))
         self.window.add(hit(102.0, 100.0))
@@ -161,6 +161,9 @@ class RollingStatsTests(unittest.TestCase):
         self.assertEqual(self.window.total, 107.0)
         self.assertEqual(self.window.dot_damage, 7.0)
         self.assertEqual(len(self.window.by_source), 1)
+        self.assertEqual(next(iter(self.window.by_source.values())).damage, 107.0)
+        self.window.prune(200.0)
+        self.assertEqual(self.window.dot_damage, 0.0)
 
     def test_dps_in_hand_uses_held_time(self) -> None:
         sniper = source_key(hit(0.0, 0.0))

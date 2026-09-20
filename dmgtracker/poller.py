@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .attribution import OTHER_SOURCE, WeaponResolver
+from .attribution import OTHER_SOURCE, DamageSource, WeaponResolver
 
 ERRORS_TO_REMEMBER = 3
 # Outside the world (main menu, loading) there is nothing to poll; look again once a second.
@@ -38,6 +38,13 @@ KILL_FLAG = 1 << 14
 KIND_DIRECT = "direct"
 KIND_DOT = "dot"
 KIND_HEAL = "heal"
+
+# Status effect ticks (burn, radiation, ...) carry no reference to what applied them. They are
+# credited to the last non-status hit on the same target inside this window; the game's own
+# damage type names end in "_Status" for them, and not all of them have bIsDoT set.
+STATUS_TYPE_SUFFIX = "_Status"
+STATUS_ATTRIBUTION_WINDOW_S = 30.0
+MAX_REMEMBERED_TARGETS = 128
 
 EventSink = Callable[[list[dict[str, Any]]], None]
 ControllerResolver = Callable[[], Any]
@@ -71,6 +78,7 @@ class DamagePoller:
         self.events = 0
         self.errors = 0
         self.overflow_frames = 0
+        self.ignored_events = 0
         self.recent_errors: list[str] = []
         self.broken_reason = ""
         # Called with the new controller when one is adopted, and with None when it is lost.
@@ -78,6 +86,7 @@ class DamagePoller:
         self._dirty_flags: list[int] = []
         self._controller_address = 0
         self._idle_until = 0.0
+        self._last_hit_by_target: dict[str, tuple[DamageSource, float]] = {}
 
     def tick(self) -> None:
         """Called once per frame from the tick hook. Never raises."""
@@ -144,15 +153,23 @@ class DamagePoller:
     def _collect_new_events(self, now: float) -> list[dict[str, Any]]:
         ring = getattr(self.controller, self._ring_property)
         pawn = self.controller.Pawn
+        # Damage dealt from a vehicle is not the player's gun play; it is dropped, but the
+        # flags still advance so those hits are not replayed once the player is on foot.
+        tracking = self._resolver.is_character(pawn)
         new_events: list[dict[str, Any]] = []
+        changed_slots = 0
         for index in range(self._ring_size):
             instance = ring[index]
             dirty = int(instance.RepDirtyFlag)
             if dirty == self._dirty_flags[index]:
                 continue
             self._dirty_flags[index] = dirty
-            new_events.append(self._read_instance(instance, pawn, now))
-        if len(new_events) == self._ring_size:
+            changed_slots += 1
+            if tracking:
+                new_events.append(self._read_instance(instance, pawn, now))
+            else:
+                self.ignored_events += 1
+        if changed_slots == self._ring_size:
             # Every slot changed within one frame: the ring may have wrapped and dropped hits.
             self.overflow_frames += 1
         return new_events
@@ -161,19 +178,25 @@ class DamagePoller:
         flags = int(instance.DamageFlags.Flags)
         damage_type = instance.DamageType
         target = instance.DamagedActor
-        if flags & WEAPON_FLAG:
-            source = self._resolver.weapon_in_hand(pawn)
-        else:
-            source = OTHER_SOURCE
+        target_name = str(target.Name) if target is not None else ""
         # Some instances (grenades, cleared slots) carry an unresolved damage type handle whose
         # fields raise on access; those hits are still damage, so read the fields with defaults.
+        type_name = str(getattr(damage_type, "_name", "None"))
         is_heal = bool(flags & HEALING_FLAG) or bool(getattr(damage_type, "bIsHealingType", False))
+        is_status = bool(getattr(damage_type, "bIsDoT", False)) or type_name.endswith(STATUS_TYPE_SUFFIX)
         if is_heal:
             kind = KIND_HEAL
-        elif bool(getattr(damage_type, "bIsDoT", False)):
+            source = OTHER_SOURCE
+        elif is_status:
             kind = KIND_DOT
+            source = self._status_source(target_name, now)
         else:
             kind = KIND_DIRECT
+            if flags & WEAPON_FLAG:
+                source = self._resolver.weapon_in_hand(pawn)
+            else:
+                source = OTHER_SOURCE
+            self._remember_hit(target_name, source, now)
         return {
             "t": now,
             "dmg": float(instance.TotalDamage),
@@ -186,9 +209,33 @@ class DamagePoller:
             "weapon": source.label,
             "body": source.body,
             "wid": source.instance_id,
-            "dtype": str(getattr(damage_type, "_name", "None")),
-            "target": str(target.Name) if target is not None else "",
+            "dtype": type_name,
+            "target": target_name,
         }
+
+    # ------------------------------------------------------------------ status attribution
+
+    def _remember_hit(self, target_name: str, source: DamageSource, now: float) -> None:
+        if not target_name:
+            return
+        if len(self._last_hit_by_target) >= MAX_REMEMBERED_TARGETS:
+            cutoff = now - STATUS_ATTRIBUTION_WINDOW_S
+            stale = [name for name, (_, when) in self._last_hit_by_target.items() if when < cutoff]
+            for name in stale:
+                del self._last_hit_by_target[name]
+            if len(self._last_hit_by_target) >= MAX_REMEMBERED_TARGETS:
+                self._last_hit_by_target.clear()
+        self._last_hit_by_target[target_name] = (source, now)
+
+    def _status_source(self, target_name: str, now: float) -> DamageSource:
+        """The source of the last non-status hit on this target, if recent enough."""
+        remembered = self._last_hit_by_target.get(target_name)
+        if remembered is None:
+            return OTHER_SOURCE
+        source, when = remembered
+        if now - when > STATUS_ATTRIBUTION_WINDOW_S:
+            return OTHER_SOURCE
+        return source
 
     # ------------------------------------------------------------------ errors
 

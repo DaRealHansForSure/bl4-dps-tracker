@@ -24,7 +24,7 @@ class FakeClock:
 
 
 def fake_instance(damage: float = 0.0, flags: int = 0, is_dot: bool = False, is_heal_type: bool = False,
-                  target: str | None = "Char_CatAdult_1", dtype: str = "None") -> SimpleNamespace:
+                  target: str | None = "Char_CatAdult_1", dtype: str = "Normal") -> SimpleNamespace:
     damaged_actor = None if target is None else SimpleNamespace(Name=target)
     return SimpleNamespace(
         RepDirtyFlag=0,
@@ -48,7 +48,11 @@ def fake_controller(name: str = "OakPlayerController_1", with_ring: bool = True,
     weapon = fake_weapon(277, "/Game/Body_JAK_SR.Body_JAK_SR")
     pawn = None
     if with_pawn:
-        pawn = SimpleNamespace(ActiveWeapons=SimpleNamespace(Slots=[SimpleNamespace(Weapon=weapon)]))
+        pawn = SimpleNamespace(
+            Class=SimpleNamespace(Name="OakCharacter"),
+            ActiveWeapons=SimpleNamespace(Slots=[SimpleNamespace(Weapon=weapon)]),
+            EquippedInventorySlots=SimpleNamespace(items=[]),
+        )
     controller = SimpleNamespace(
         Pawn=pawn,
         Class=SimpleNamespace(Name="OakPlayerController"),
@@ -118,6 +122,20 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(second["src"], "other")
         self.assertFalse(second["kill"])
 
+    def test_vehicle_hits_are_ignored_but_not_replayed(self) -> None:
+        self.poller.tick()
+        self.controller.Pawn = SimpleNamespace(Class=SimpleNamespace(Name="OakVehicle"))
+        write_hit(self.controller, 0, 500.0, flags=WEAPON_FLAG)
+        self.poller.tick()
+        self.assertEqual(self.received, [])
+        self.assertEqual(self.poller.ignored_events, 1)
+        self.controller.Pawn = fake_controller().Pawn
+        self.poller.tick()
+        self.assertEqual(self.received, [], "the vehicle hit must not surface once on foot")
+        write_hit(self.controller, 1, 20.0, flags=WEAPON_FLAG)
+        self.poller.tick()
+        self.assertEqual([event["dmg"] for event in self.received], [20.0])
+
     def test_unchanged_slots_produce_nothing(self) -> None:
         self.poller.tick()
         write_hit(self.controller, 2, 10.0)
@@ -133,6 +151,29 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 2, 30.0, flags=WEAPON_FLAG, is_heal_type=True)
         self.poller.tick()
         self.assertEqual([event["kind"] for event in self.received], ["dot", "heal", "heal"])
+
+    def test_status_ticks_are_credited_to_the_last_hit_on_that_target(self) -> None:
+        self.poller.tick()
+        write_hit(self.controller, 0, 50.0, flags=WEAPON_FLAG, target="Char_Leader_7", dtype="Radiation")
+        write_hit(self.controller, 1, 300.0, flags=0, target="Char_Psycho_3", dtype="Normal")
+        self.poller.tick()
+        write_hit(self.controller, 2, 6.3, flags=0x90, target="Char_Leader_7", dtype="Radiation_Status")
+        write_hit(self.controller, 3, 6.3, flags=0x80, target="Char_Psycho_3", dtype="Radiation_Status", is_dot=True)
+        write_hit(self.controller, 4, 6.3, flags=0x80, target="Char_Unknown_1", dtype="Radiation_Status")
+        self.poller.tick()
+        ticks = self.received[2:]
+        self.assertEqual([event["kind"] for event in ticks], ["dot", "dot", "dot"])
+        self.assertEqual([event["weapon"] for event in ticks], ["Jakobs Sniper", "Other", "Other"])
+        self.assertEqual([event["src"] for event in ticks], ["weapon", "other", "other"])
+
+    def test_status_attribution_expires(self) -> None:
+        self.poller.tick()
+        write_hit(self.controller, 0, 50.0, flags=WEAPON_FLAG, target="Char_Leader_7")
+        self.poller.tick()
+        self.clock.advance(31.0)
+        write_hit(self.controller, 1, 6.3, flags=0x80, target="Char_Leader_7", dtype="Radiation_Status")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["weapon"], "Other")
 
     def test_unresolved_damage_type_handle_is_tolerated(self) -> None:
         self.poller.tick()

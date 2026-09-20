@@ -5,9 +5,9 @@ The on-screen readout feeds it live, report.py replays a session file through it
 future dashboard can tail a file into it, so all of them agree on what an encounter is.
 
 An encounter opens on the first damage event and closes after ENCOUNTER_GAP_S seconds with
-no damage. Healing events are ignored. Damage over time counts in the encounter total but
-is held out of the per-source split, because a burn tick lands seconds after the weapon
-that applied it was swapped away.
+no damage. Healing events are ignored. Damage over time is credited to the source the
+poller attributed it to (the last hit on that target); dot_damage keeps the sum separately
+so the report can say how much of a gun's damage was status damage.
 
 No SDK imports here, and nothing above Python 3.11 syntax: the dev machine runs the tests
 on 3.11 while the game embeds 3.14.
@@ -105,7 +105,6 @@ class Encounter:
             self.targets[target_family(target)] += 1
         if event.get("kind") == KIND_DOT:
             self.dot_damage += damage
-            return
         key = source_key(event)
         totals = self.by_source.get(key)
         if totals is None:
@@ -228,7 +227,6 @@ class RollingStats:
         self.hits += 1
         if event.get("kind") == KIND_DOT:
             self.dot_damage += damage
-            return
         key = source_key(event)
         totals = self.by_source.get(key)
         if totals is None:
@@ -273,7 +271,6 @@ class RollingStats:
         self.hits -= 1
         if event.get("kind") == KIND_DOT:
             self.dot_damage -= damage
-            return
         key = source_key(event)
         totals = self.by_source.get(key)
         if totals is None:

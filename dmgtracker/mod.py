@@ -262,13 +262,13 @@ def _refresh_readout() -> None:
             _transition_hidden = True
             readout.set_visible(False)
         tracker.close_if_idle(now)
-        if pawn is not None and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
+        on_foot = resolver.is_character(pawn)
+        if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
             equipped = resolver.equipped_weapons(pawn)
-            # A vehicle pawn has no equipment slots; keep showing the guns from before.
             if equipped is not None:
                 _equipped_cache = equipped
-        held = resolver.weapon_in_hand(pawn) if pawn is not None else UNKNOWN_SOURCE
+        held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         _sample_held_time(held, now)
         rolling.prune(now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
@@ -283,9 +283,10 @@ def _refresh_readout() -> None:
 
 
 def _should_show_table(controller: UObject, pawn: Any) -> bool:
-    """Field reads only, so this can run every frame: no pawn (menus, loading), a menu with
-    the cursor (ESC, inventory, map), a hidden pawn (tunnels, cutscenes) all hide the table."""
-    if pawn is None or controller.bShowMouseCursor or _transition_hidden:
+    """Field reads only, so this can run every frame: no pawn (menus, loading), a vehicle, a
+    menu with the cursor (ESC, inventory, map), a hidden pawn (tunnels, cutscenes) all hide
+    the table."""
+    if not resolver.is_character(pawn) or controller.bShowMouseCursor or _transition_hidden:
         return False
     return not pawn.bHidden
 
@@ -329,8 +330,9 @@ def _maybe_report_status() -> None:
             f"{session_log.write_errors} write errors"
         )
     _say(
-        f"{poller.events} events, {poller.errors} errors, {poller.overflow_frames} overflow-suspect "
-        f"frames, {poller.ticks} ticks, {_tick_errors} hook errors; log: {log_state}"
+        f"{poller.events} events, {poller.ignored_events} ignored (vehicle), {poller.errors} errors, "
+        f"{poller.overflow_frames} overflow-suspect frames, {poller.ticks} ticks, {_tick_errors} hook errors; "
+        f"log: {log_state}"
     )
     for error in poller.recent_errors:
         _say(f"   recent error: {error}")
