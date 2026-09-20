@@ -1,9 +1,10 @@
 """
 SDK glue: options, the per-frame hook, enable/disable, and the periodic status line.
 
-Everything that touches the SDK lives here, so the other modules stay importable outside
-the game. Kept deliberately thin: the hook callback hands the frame to the poller, the
-poller hands new events to the session log (and, in the next step, to the readout).
+Everything that touches the SDK lives here (readout.py is the other exception), so the
+other modules stay importable outside the game. Kept deliberately thin: the hook callback
+hands the frame to the poller, the poller hands new events to the session log and the
+stats engine, and the readout is refreshed from the same frame.
 """
 
 from __future__ import annotations
@@ -19,9 +20,12 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import WeaponResolver
+from .attribution import UNKNOWN_SOURCE, WeaponResolver
 from .logwriter import SessionLog
 from .poller import DamagePoller
+from .readout import Readout, ReadoutLayout
+from .stats import KIND_HEAL, EncounterTracker, RollingWindow
+from .table import build_rows
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
@@ -39,12 +43,29 @@ DEFAULT_FLUSH_INTERVAL_S = 1.0
 DEFAULT_SESSIONS_TO_KEEP = 20
 DEFAULT_STATUS_INTERVAL_S = 60.0
 
+DEFAULT_READOUT_X = 120.0
+DEFAULT_READOUT_Y = 320.0
+DEFAULT_READOUT_FONT_SIZE = 30
+DEFAULT_READOUT_COLUMN_GAP = 44.0
+DEFAULT_READOUT_COLUMN_WIDTHS = [320.0, 240.0, 190.0, 140.0]
+DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
+READOUT_REFRESH_INTERVAL_S = 0.25
+EQUIPMENT_REFRESH_INTERVAL_S = 1.0
+READOUT_ERRORS_BEFORE_GIVING_UP = 5
+MAX_LIVE_ENCOUNTERS = 1000
+
 # ------------------------------------------------------------------ options
 
 logging_enabled = BoolOption(
     "Logging enabled",
     True,
     description="Write every damage instance you deal to the session log.",
+)
+show_readout = BoolOption(
+    "Show damage table",
+    True,
+    description="Show the per-weapon damage table on screen.",
+    on_change_while_enabled=lambda _option, value: _on_show_readout_changed(value),
 )
 open_log_folder = ButtonOption(
     "Open log folder",
@@ -61,14 +82,28 @@ ring_size = HiddenOption("ring_size", DEFAULT_RING_SIZE)
 flush_interval_s = HiddenOption("flush_interval_s", DEFAULT_FLUSH_INTERVAL_S)
 sessions_to_keep = HiddenOption("sessions_to_keep", DEFAULT_SESSIONS_TO_KEEP)
 status_interval_s = HiddenOption("status_interval_s", DEFAULT_STATUS_INTERVAL_S)
+readout_x = HiddenOption("readout_x", DEFAULT_READOUT_X)
+readout_y = HiddenOption("readout_y", DEFAULT_READOUT_Y)
+readout_font_size = HiddenOption("readout_font_size", DEFAULT_READOUT_FONT_SIZE)
+readout_column_gap = HiddenOption("readout_column_gap", DEFAULT_READOUT_COLUMN_GAP)
+readout_column_widths = HiddenOption("readout_column_widths", DEFAULT_READOUT_COLUMN_WIDTHS)
+readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READOUT_BACKGROUND_ALPHA)
+readout_show_rolling_row = HiddenOption("readout_show_rolling_row", True)
 
 # ------------------------------------------------------------------ state
 
 resolver = WeaponResolver()
 poller: DamagePoller | None = None
 session_log: SessionLog | None = None
+tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
+rolling = RollingWindow()
+readout: Readout | None = None
 _last_status_time = 0.0
 _broken_reported = False
+_readout_errors = 0
+_last_readout_refresh = 0.0
+_last_equipment_refresh = 0.0
+_equipped_cache: list = []
 
 
 def _say(message: str) -> None:
@@ -101,13 +136,115 @@ def _open_log_folder() -> None:
 def _on_new_events(events: list[dict[str, Any]]) -> None:
     if session_log is not None and logging_enabled.value:
         session_log.append(events)
+    for event in events:
+        tracker.add(event)
+        if event["kind"] != KIND_HEAL:
+            rolling.add(float(event["t"]), float(event["dmg"]))
 
 
 def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     if poller is None:
         return
     poller.tick()
+    _refresh_readout()
     _maybe_report_status()
+
+
+# ------------------------------------------------------------------ readout
+
+def _readout_layout() -> ReadoutLayout:
+    widths = [float(width) for width in readout_column_widths.value]
+    if len(widths) != 4:
+        widths = list(DEFAULT_READOUT_COLUMN_WIDTHS)
+    return ReadoutLayout(
+        x=float(readout_x.value),
+        y=float(readout_y.value),
+        font_size=int(readout_font_size.value),
+        column_gap=float(readout_column_gap.value),
+        column_widths=(widths[0], widths[1], widths[2], widths[3]),
+        background_alpha=float(readout_background_alpha.value),
+    )
+
+
+def _on_controller_changed(controller: UObject) -> None:
+    """A new controller means a new world: the old widget is gone with it, build a fresh one."""
+    global _equipped_cache
+    _equipped_cache = []
+    _destroy_readout()
+    if show_readout.value:
+        _create_readout(controller)
+
+
+def _create_readout(controller: UObject) -> None:
+    global readout, _readout_errors
+    if _readout_errors >= READOUT_ERRORS_BEFORE_GIVING_UP:
+        return
+    candidate = Readout(_readout_layout())
+    try:
+        candidate.create(controller)
+    except Exception as ex:  # noqa: BLE001 - UMG failures must not take the tracker down
+        _readout_errors += 1
+        logging.error(f"{LOG_PREFIX} cannot create the damage table: {type(ex).__name__}: {ex}")
+        _give_up_readout_if_needed()
+        return
+    readout = candidate
+
+
+def _destroy_readout() -> None:
+    global readout
+    if readout is None:
+        return
+    try:
+        readout.destroy()
+    except Exception as ex:  # noqa: BLE001 - the widget may already be gone with its world
+        _say(f"damage table removal: {type(ex).__name__}: {ex}")
+    readout = None
+
+
+def _on_show_readout_changed(value: bool) -> None:
+    if value:
+        if poller is not None and poller.controller is not None:
+            _create_readout(poller.controller)
+    else:
+        _destroy_readout()
+
+
+def _refresh_readout() -> None:
+    """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S."""
+    global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors
+    if readout is None or poller is None or poller.controller is None:
+        return
+    try:
+        controller = poller.controller
+        pawn = controller.Pawn
+        readout.set_visible(pawn is not None and not controller.bShowMouseCursor)
+        now = time.time()
+        if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
+            return
+        _last_readout_refresh = now
+        tracker.close_if_idle(now)
+        if pawn is not None and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
+            _last_equipment_refresh = now
+            _equipped_cache = resolver.equipped_weapons(pawn)
+        held = resolver.weapon_in_hand(pawn) if pawn is not None else UNKNOWN_SOURCE
+        rows = build_rows(
+            tracker.latest(),
+            _equipped_cache,
+            held.instance_id,
+            rolling.dps_at(now),
+            bool(readout_show_rolling_row.value),
+        )
+        readout.render(rows)
+    except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
+        _readout_errors += 1
+        _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
+        _destroy_readout()
+        _give_up_readout_if_needed()
+
+
+def _give_up_readout_if_needed() -> None:
+    if _readout_errors >= READOUT_ERRORS_BEFORE_GIVING_UP:
+        logging.error(f"{LOG_PREFIX} damage table disabled for this session after {_readout_errors} errors")
 
 
 def _maybe_report_status() -> None:
@@ -163,9 +300,12 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, _last_status_time, _broken_reported
+    global poller, session_log, tracker, rolling, _last_status_time, _broken_reported, _readout_errors
     _broken_reported = False
+    _readout_errors = 0
     _last_status_time = time.time()
+    tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
+    rolling = RollingWindow()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
         ring_property=str(ring_property.value),
@@ -173,6 +313,7 @@ def on_enable() -> None:
         resolver=resolver,
         sink=_on_new_events,
     )
+    poller.on_controller_changed = _on_controller_changed
     session_log = _start_session_log()
     if not _install_tick_hook():
         return
@@ -200,6 +341,7 @@ def _start_session_log() -> SessionLog | None:
 def on_disable() -> None:
     global poller, session_log
     _remove_tick_hook()
+    _destroy_readout()
     if session_log is not None:
         session_log.stop()
         _say(f"disabled; {session_log.written} events written to {session_log.path}")
@@ -213,6 +355,7 @@ mod = build_mod(
     settings_file=SETTINGS_FILE,
     options=[
         logging_enabled,
+        show_readout,
         open_log_folder,
         log_dir,
         tick_function,
@@ -221,6 +364,13 @@ mod = build_mod(
         flush_interval_s,
         sessions_to_keep,
         status_interval_s,
+        readout_x,
+        readout_y,
+        readout_font_size,
+        readout_column_gap,
+        readout_column_widths,
+        readout_background_alpha,
+        readout_show_rolling_row,
     ],
     keybinds=[],
     hooks=[],
