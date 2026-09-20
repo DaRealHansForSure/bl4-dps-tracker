@@ -9,7 +9,7 @@ Written 2026-09-20 after the proof of concept closed (all five checks in `poc/fi
 3. `build.py`, producing the `.sdkmod` and the Nexus zip.
 4. Tests, a README, hook notes and the Nexus page text.
 
-Not in v1: grenade and skill attribution (data is logged so it can be added), item display names such as "Lionized Gruppagrak" (separate project, the strings live in the game's localization tables), damage taken, co-op.
+Not in v1: grenade and skill attribution (data is logged so it can be added), item display names such as "Lionized Gruppagrak" (separate project, the strings live in the game's localization tables), the local web dashboard (see the last section; v1 prepares for it), damage taken, co-op.
 
 ## Decisions carried into the build
 
@@ -17,7 +17,7 @@ Not in v1: grenade and skill attribution (data is logged so it can be added), it
 - Weapon attribution: the weapon in hand at the moment of the hit, `pc.Pawn.ActiveWeapons.Slots[0].Weapon`. Label from the `BodyData` path stem (`Body_JAK_SR` -> "Jakobs Sniper"), identity from `Item.data.InstanceId`.
 - On-screen readout: a runtime UMG `UserWidget` with `TextBlock` children, added to the viewport above the Coherent HUD (findings section E).
 - Number formatting everywhere the user reads a number: Swiss style, `'` thousands separator, `.` decimal point (`1'234'567.5`). One shared helper, no ad-hoc `format(x, ",")`.
-- Configuration through mods_base options persisted in `sdk_mods/settings/dmgtracker.json` (a `config.json` inside the `.sdkmod` zip would not be editable). Mechanism knobs are `HiddenOption`s.
+- Configuration through mods_base options persisted in `sdk_mods/settings/dmgtracker.json` (a `config.json` inside the `.sdkmod` zip would not be editable). Mechanism knobs and layout knobs such as the readout position are `HiddenOption`s in that file, which is also where future settings go; the file is hand-editable and documented in the README.
 - Logs under `sdk_mods/settings/dmgtracker/logs/session-<YYYYMMDD-HHMMSS>.jsonl`, newest 20 kept.
 - Release: one zip `dmgtracker-<version>.zip` containing only `sdk_mods/dmgtracker.sdkmod`. Vortex strips the leading folder and drops the `.sdkmod` into `sdk_mods`; manual installers extract to the game root. No loose files next to the `.sdkmod` (the loader logs an error for any file in `sdk_mods` that is not a valid `.sdkmod`).
 - Stdlib only, Python 3.14 syntax level (the SDK's embedded interpreter); the dev machine runs tests with `C:\Development\Python311\python.exe`, so no 3.12+ syntax in code that tests import.
@@ -48,7 +48,7 @@ One JSON object per line, raw values, no formatting:
 | `dtype` | `repr(DamageType)` name | the hook for classifying grenade and skill damage later |
 | `target` | `DamagedActor.Name` | raw actor name, the report strips the numeric suffix |
 
-The first line of every file is `{"meta": {"mod": "dmgtracker", "version": "1.0.0", "started": <t>}}`. Readers skip lines that carry `meta`.
+The first line of every file is `{"meta": {"mod": "dmgtracker", "version": "1.0.0", "schema": 1, "started": <t>}}`. Readers skip lines that carry `meta`; `schema` lets a future consumer refuse or adapt to a changed record layout. The log folder also holds `latest-session.txt` with the file name of the running session, rewritten at enable, so a tailer never has to guess by modification time.
 
 ## Mod layout
 
@@ -59,9 +59,9 @@ dmgtracker/
   attribution.py    DamageSource dataclass, resolve_source(), body path parsing, label cache
   logwriter.py      buffer + lock, flush thread, session file, meta line, pruning
   readout.py        the UMG widget: create, position, update text, remove
-  live_stats.py     running encounter total, honest average, rolling 60 s window
+  stats.py          the one stats engine: EncounterTracker and RollingWindow, fed event by event
   formatting.py     format_number() in Swiss style, used by readout and report
-  report.py         offline report; stdlib only, importable by the mod and runnable standalone
+  report.py         offline report over a session file; replays it through stats.py
   pyproject.toml    name, version, author, description, [tool.sdkmod]
 ```
 
@@ -69,9 +69,9 @@ Rules that shape the modules:
 
 - `poller.py` is the only file that runs every frame. Per frame it reads six `RepDirtyFlag`s; only on a change does it read the slot and call attribution. Everything inside a broad `try/except` that counts errors, logs the first three, and forces a controller re-resolve (at most once per second). No file IO, no formatting.
 - `attribution.py` has two layers: pure functions (`parse_body_path`, `label_for_body`) with no SDK imports, testable on the dev machine; and `resolve_source(pawn, instance)` that touches SDK objects and caches the label per `InstanceId`. Adding grenade or skill attribution later means adding a resolver branch keyed on `dtype`, not touching the poller.
-- `logwriter.py` swaps the buffer under the lock and appends the batch in a daemon thread every `flush_interval` seconds; the session file opens at enable; pruning to 20 sessions runs at enable.
+- `logwriter.py` swaps the buffer under the lock and appends the batch in a daemon thread every `flush_interval` seconds; the session file opens at enable; pruning to 20 sessions runs at enable. After each written batch it calls every registered flush listener with that batch (none in v1); that is the seam for an in-process publisher later, without touching the poller.
 - `readout.py` owns the widget lifecycle. The widget is created when the controller resolves and recreated if the controller object changes (map load); `on_disable` removes it. Text updates happen on the game thread from the tick hook, at most every 250 ms and only when a value changed.
-- `live_stats.py` is pure Python (no SDK), updated per event in O(1): current encounter total and duration (5 s gap rule), honest average per second, rolling 60 s sum via a deque. The encounter gap constant is shared with `report.py` by import; a test asserts the two agree.
+- `stats.py` is pure Python (no SDK), updated per event in O(1): `EncounterTracker` opens an encounter on the first hit and closes it after the 5 s gap (yielding the closed encounter with total, duration, per-source split, targets, crit count), `RollingWindow` keeps the last 60 s in a deque. The readout feeds it live, `report.py` replays a file through it, and the future dashboard tails a file into it, so all three agree by construction.
 - `formatting.py`: `format_number(value, decimals=0) -> str`, e.g. `1'234'567` and `51'687.5`.
 - Self-check on enable: `find_object("Function", tick_function)` inside `try`, and the ring property on the controller once resolved. On failure: one `logging.error` naming the expected path and the settings file, hook not installed, mod stays enabled but idle. No per-frame exception spam after a game patch.
 - A status line to the SDK log every 60 s: events, errors, ticks, overflow-suspect frames (all six slots changed in one frame, which means the ring may have dropped hits), buffer size.
@@ -104,15 +104,15 @@ Hidden (persisted, editable in `sdk_mods/settings/dmgtracker.json`):
 - `tick_function` (default `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget`)
 - `ring_property` (default `RecentlyCausedDamageInstances`), `ring_size` (6)
 - `flush_interval_s` (1.0), `sessions_to_keep` (20)
-- `readout_x`, `readout_y` (120, 320), `readout_font_size` (24)
+- `readout_x`, `readout_y` (120, 320), `readout_font_size` (24): the readout position and size, changed by editing the settings file (no menu entry; the file is reloaded at enable)
 
 ## report.py
 
-Standalone, stdlib, `python report.py [session.jsonl] [--last N] [--gap S]`. With no file argument it picks the newest session in the default log folder.
+Stdlib, `python report.py [session.jsonl] [--last N] [--gap S]`, run from the repo checkout or an unzipped `.sdkmod` (it imports `stats.py` and `formatting.py` from its own folder). With no file argument it picks the session named in `latest-session.txt`, falling back to the newest file in the default log folder.
 
 Per encounter (5 s gap constant at the top of the file): total, duration, honest avg/s, active avg/s (seconds with at least one hit), top targets by hit count (so the boss fight is recognisable), per-weapon split as absolute and percent with DoT held out on its own line and counted in the total, crit share as one number. Session summary: total, encounter count, average encounter, largest encounter. `--last N` averages raw damage over the final N seconds regardless of encounters. All numbers through `format_number`. Text to stdout; no HTML.
 
-The mod registers a console command `dmgreport [--last N]` that runs the same functions on the current session file and prints to the SDK console, so the colleague never needs a Python install. The mod also copies `report.py` into the log folder at enable (overwriting when the version line differs) for offline use.
+The mod registers a console command `dmgreport [--last N]` that runs the same functions on the current session file and prints to the SDK console, so the colleague never needs a Python install; that is the primary way to read a report.
 
 ## Tests
 
@@ -120,7 +120,7 @@ The mod registers a console command `dmgreport [--last N]` that runs the same fu
 
 - `test_formatting.py`: Swiss format cases (0, 999, 1000, 1'234'567.5, negatives, rounding).
 - `test_attribution.py`: body path parsing for the known codes and an unknown code (falls back to the raw code).
-- `test_live_stats.py`: encounter open/close on the gap, rolling window pruning, averages.
+- `test_stats.py`: encounter open/close on the gap, per-source split, rolling window pruning, averages.
 - `test_report.py`: against `tests/fixtures/sample-session.jsonl` with known totals, `--last`, `heal` exclusion, DoT held out of the split, meta line skipped.
 
 The fixture is a real session recorded with the finished mod (replacing a synthetic one used during development), with its expected totals written next to it.
@@ -140,7 +140,7 @@ End-to-end test before any upload: install the zip through Vortex on this machin
 ## Order of work and gates
 
 1. Mod core: `poller`, `attribution`, `logwriter`, `formatting`, options, self-check, status line. Deploy to `sdk_mods/`, one 2-minute session. Gate: plausible line count, `weapon` labels correct for the guns used, 0 errors in the status lines, no stutter.
-2. Readout: `readout`, `live_stats`. Session with a map change or respawn. Gate: the three numbers show, update, and survive the controller change; menu toggle hides and shows them.
+2. Readout: `readout`, `stats`. Session with a map change or respawn. Gate: the three numbers show, update, and survive the controller change; menu toggle hides and shows them.
 3. Report: `report.py`, `dmgreport`, tests, real fixture. Gate: report totals equal the readout's last encounter, `--last 300` sane, all tests green.
 4. Packaging: `build.py`, Vortex end-to-end install. Gate: fresh install works from the zip alone.
 5. Docs and the Nexus page text. Then tag `v1.0.0`.
@@ -149,6 +149,14 @@ One commit per step, messages in the existing style.
 
 ## Open points
 
-- Nexus display name and author string for `pyproject.toml` (proposal: "BL4 Damage Tracker", author "SevenX").
-- Default readout position: top left at (120, 320) worked in the probe; say if another corner is better.
-- Whether `dmgreport` output to the SDK console is enough for the colleague, or the report should also open a text file.
+Decided on 2026-09-20: display name "BL4 Damage Tracker", author "DaRealHansForSure"; readout position defaults to (120, 320) and is changed through the settings file; `dmgreport` prints to the SDK console only.
+
+## Future extension: local web dashboard
+
+Wanted later: a web page served locally that shows every collected stat and updates live over a WebSocket stream. Design intent so v1 does not stand in its way:
+
+- The dashboard is a separate process (`webstats/`, not part of the `.sdkmod`), which tails the session file named in `latest-session.txt` and pushes each new event line to the browser. Live latency is the flush interval (1 s). The game process never hosts a web server, so a dashboard bug can never stall the game thread.
+- It reuses `stats.py` and `formatting.py` for encounters, averages and number formatting, so the page, the readout and the report show the same numbers.
+- Transport: a WebSocket server is about 150 lines of stdlib (`hashlib` and `base64` for the handshake, `struct` for frames); Server-Sent Events is the simpler stdlib alternative if bidirectional traffic is never needed. Decide then. The external process is free to use third-party packages, unlike the mod.
+- If sub-second latency is ever wanted, the flush-listener seam in `logwriter.py` allows an in-process publisher (for example a UDP broadcast of each batch) without changing the poller.
+- History across sessions comes from the same log folder (20 sessions kept by default; raise `sessions_to_keep` for a longer history).
