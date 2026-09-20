@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
 from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .character import CharacterIdentity, read_identity
+from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
+from .dashboard import Dashboard, DashboardSources
 from .formatting import format_number
 from .itemidentity import ItemIdentityReader
 from .logwriter import SessionLog
@@ -96,6 +99,7 @@ READOUT_CREATE_RETRY_S = 1.0
 # Time-in-hand lines in the session log, once per second per gun, so the report and the
 # dashboard can compute DPS in hand from the log.
 HELD_LINE_INTERVAL_S = 1.0
+DEFAULT_WEB_PORT = 8765
 
 # ------------------------------------------------------------------ options
 
@@ -114,6 +118,12 @@ open_log_folder = ButtonOption(
     "Open log folder",
     description="Opens the session log folder in Explorer.",
     on_press=lambda _button: _open_log_folder(),
+)
+web_enabled = BoolOption(
+    "Web dashboard",
+    True,
+    description="Serve the dashboard page (live table, hits, weapon ranking, encounters); 'dmgweb' in the console prints the address.",
+    on_change_while_enabled=lambda _option, value: _set_dashboard_enabled(value),
 )
 
 # Mechanism and layout knobs. Hidden from the menu, persisted in the settings file, editable
@@ -137,12 +147,17 @@ readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 readout_show_best_column = HiddenOption("readout_show_best_column", True)
 # Non-weapon rows to leave out of the table, by source kind: "melee", "grenade", "skill", "other".
 readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
+# The dashboard listens on every interface (0.0.0.0) so other devices on the network can open
+# it; "127.0.0.1" keeps it on this machine.
+web_host = HiddenOption("web_host", DEFAULT_WEB_HOST)
+web_port = HiddenOption("web_port", DEFAULT_WEB_PORT)
 
 # ------------------------------------------------------------------ state
 
 identity_reader = ItemIdentityReader()
 resolver = WeaponResolver(identity_reader.item_id)
 poller: DamagePoller | None = None
+dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
 tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
 rolling = RollingStats(DEFAULT_READOUT_WINDOW_MINUTES * 60.0)
@@ -278,6 +293,8 @@ def _check_character(controller: UObject, pawn: Any) -> None:
     _reset_live_stats()
     if session_log is not None:
         session_log.append([{"character": identity.to_json(), "t": time.time()}])
+    if dashboard is not None:
+        dashboard.publish_character(identity.to_json())
     _say(f"character: {identity.display} ({identity.class_name}), key {identity.key[:8]}, record {weapon_store.path}")
 
 
@@ -375,6 +392,8 @@ def _refresh_readout() -> None:
         )
         _latest_rows = rows
         readout.render(rows)
+        if dashboard is not None:
+            dashboard.publish_rows(rows)
         _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -675,6 +694,9 @@ def on_enable() -> None:
     if session_log is not None:
         # The writer thread wakes every flush interval; let it save the weapon record too.
         session_log.add_flush_listener(_save_weapon_store_if_due)
+        session_log.add_flush_listener(_publish_log_batch)
+    if web_enabled.value:
+        _start_dashboard()
     if not _install_tick_hook():
         return
     _install_source_hooks()
@@ -690,6 +712,54 @@ def _load_weapon_store(path: Path) -> WeaponStore:
     if store.set_aside_old_schema is not None:
         _say(f"weapon record in the old format (keyed by the unstable instance id) set aside as {store.set_aside_old_schema.name}; starting a new one")
     return store
+
+
+def _publish_log_batch(batch: list[dict[str, Any]]) -> None:
+    """Flush listener (writer thread): hands every written batch to the dashboard."""
+    if dashboard is not None:
+        dashboard.publish_lines(batch)
+
+
+def _dashboard_sources() -> DashboardSources:
+    return DashboardSources(
+        version=_mod_version(),
+        log_dir=_log_dir(),
+        weapon_store=lambda: weapon_store,
+        character=lambda: None if character is None else character.to_json(),
+        session_path=lambda: None if session_log is None else session_log.path,
+        window_minutes=lambda: float(readout_window_minutes.value),
+        encounter_gap_s=lambda: float(encounter_gap_s.value),
+    )
+
+
+def _start_dashboard() -> None:
+    global dashboard
+    if dashboard is not None:
+        return
+    candidate = Dashboard(int(web_port.value), _dashboard_sources(), _say, host=str(web_host.value))
+    if not candidate.start():
+        logging.error(f"{LOG_PREFIX} dashboard not started on {web_host.value}:{web_port.value}: {candidate.start_error}")
+        return
+    dashboard = candidate
+    _say(f"dashboard at {' or '.join(candidate.urls())}")
+
+
+def _stop_dashboard() -> None:
+    global dashboard
+    if dashboard is None:
+        return
+    try:
+        dashboard.stop()
+    except Exception as ex:  # noqa: BLE001 - shutting down must not fail the disable
+        logging.error(f"{LOG_PREFIX} dashboard stop: {type(ex).__name__}: {ex}")
+    dashboard = None
+
+
+def _set_dashboard_enabled(enabled: bool) -> None:
+    if enabled:
+        _start_dashboard()
+    else:
+        _stop_dashboard()
 
 
 def _save_weapon_store_if_due(_batch: list[dict[str, Any]]) -> None:
@@ -720,6 +790,7 @@ def on_disable() -> None:
     global poller, session_log, weapon_store
     _remove_tick_hook()
     _destroy_readout()
+    _stop_dashboard()
     if weapon_store is not None:
         weapon_store.save_if_due(time.time(), force=True)
         if weapon_store.save_error:
@@ -750,6 +821,22 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
 
 dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
 dmgweapons_command.add_argument("--by", choices=("dps", "peak", "damage"), default="dps", help="sort order (default: DPS in hand)")
+
+
+@command("dmgweb", description="Print the dashboard address; --open opens it in the browser.")
+def dmgweb_command(args: argparse.Namespace) -> None:
+    if dashboard is None:
+        reason = "disabled in the mod menu" if not web_enabled.value else "not running (see the log for the reason)"
+        logging.info(f"{LOG_PREFIX} dashboard {reason}")
+        return
+    for url in dashboard.urls():
+        logging.info(f"{LOG_PREFIX} dashboard: {url}")
+    logging.info(f"{LOG_PREFIX} {dashboard.client_count()} client(s) connected, {dashboard.errors} errors")
+    if args.open:
+        webbrowser.open(dashboard.url)
+
+
+dmgweb_command.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
 
 
 @command("dmgreport", description="Report over the current session: encounters, per-weapon numbers, optionally the last N seconds.")
@@ -802,6 +889,10 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         )
     table_state = "shown" if readout is not None and readout.visible() else ("created, hidden" if readout is not None else "not created")
     logging.info(f"{LOG_PREFIX} table: {table_state}; combat clock {format_number(_combat_clock)} s; window {readout_window_minutes.value} min")
+    if dashboard is not None:
+        logging.info(f"{LOG_PREFIX} dashboard: {dashboard.url} ({dashboard.client_count()} client(s), {dashboard.errors} errors)")
+    else:
+        logging.info(f"{LOG_PREFIX} dashboard: not running")
 
 
 @command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's.")
@@ -848,6 +939,7 @@ mod = build_mod(
         logging_enabled,
         show_readout,
         open_log_folder,
+        web_enabled,
         log_dir,
         tick_function,
         ring_property,
@@ -866,10 +958,12 @@ mod = build_mod(
         readout_show_encounter_row,
         readout_show_best_column,
         readout_hidden_rows,
+        web_host,
+        web_port,
     ],
     keybinds=[],
     hooks=[],
-    commands=[dmgweapons_command, dmgreport_command, dmgstatus_command, dmgreset_command],
+    commands=[dmgweapons_command, dmgreport_command, dmgstatus_command, dmgreset_command, dmgweb_command],
     on_enable=on_enable,
     on_disable=on_disable,
 )

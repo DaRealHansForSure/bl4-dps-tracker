@@ -1,0 +1,447 @@
+"""
+The local web dashboard: one HTTP + WebSocket server, run by the vendored `websockets`
+package. It listens on every interface by default (a setting), so a phone or a second screen
+on the same network can show it; the API is read-only. The library's sync server gives every
+connection a thread; plain HTTP requests (the page, the JSON API) are answered from
+`process_request`, WebSocket upgrades on /ws continue into the connection handler.
+
+Live data goes over the WebSocket: the table rows whenever they change, every batch of hits
+the log flushed, character changes. Everything else is read from the files when the page
+asks for it (webdata.py).
+
+The game thread only calls the publish_*() methods, which copy data under a lock and wake the
+broadcaster; every socket and file operation runs on the dashboard's own daemon threads, so a
+browser left open never keeps the game from exiting. Nothing here touches game objects, and
+no exception leaves a handler: errors are counted and the server keeps going.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import socket
+import threading
+import time
+import urllib.parse
+from dataclasses import dataclass
+from http import HTTPStatus
+from importlib import resources
+from pathlib import Path
+from typing import Any, Callable
+
+from ._vendor import use_vendored_packages
+
+use_vendored_packages()
+
+from websockets.datastructures import Headers  # noqa: E402
+from websockets.exceptions import ConnectionClosed  # noqa: E402
+from websockets.http11 import Request, Response  # noqa: E402
+from websockets.sync.server import Server, ServerConnection, serve  # noqa: E402
+
+from .report import default_session_path  # noqa: E402
+from .table import TableRow  # noqa: E402
+from .webdata import (  # noqa: E402
+    DEFAULT_PAGE_SIZE,
+    SessionCache,
+    encounters_payload,
+    hits_page,
+    list_sessions,
+    session_path,
+    session_weapons_payload,
+    weapons_payload,
+)
+from .weaponstats import WeaponStore  # noqa: E402
+
+DEFAULT_HOST = "0.0.0.0"
+LOCAL_HOST = "127.0.0.1"
+WS_PATH = "/ws"
+# Any routable address works for the "which interface faces the network" question; nothing is sent.
+PROBE_ADDRESS = ("192.0.2.1", 9)
+PAGE_PACKAGE = "dmgtracker.web"
+PAGE_FILE = "index.html"
+# Longest wait of the broadcaster and of a connection handler before they look at the stop flag.
+WAKE_INTERVAL_S = 1.0
+RECV_TIMEOUT_S = 1.0
+THREAD_JOIN_TIMEOUT_S = 3.0
+# Hits waiting for the broadcaster while no client reads them; older ones are dropped.
+MAX_PENDING_HITS = 5000
+
+Message = dict[str, Any]
+
+
+@dataclass
+class DashboardSources:
+    """Where the server reads current state from. Every callable is cheap and safe to call
+    from any thread: they return references to objects with their own locks, or values."""
+
+    version: str
+    log_dir: Path
+    weapon_store: Callable[[], WeaponStore | None]
+    character: Callable[[], dict[str, str] | None]
+    session_path: Callable[[], Path | None]
+    window_minutes: Callable[[], float]
+    encounter_gap_s: Callable[[], float]
+
+
+class Dashboard:
+    def __init__(self, port: int, sources: DashboardSources, log: Callable[[str], None], host: str = DEFAULT_HOST) -> None:
+        self.host = host
+        self.port = port
+        self.sources = sources
+        self.errors = 0
+        self.start_error = ""
+        self._log = log
+        self._logger = _library_logger(log)
+        self._server: Server | None = None
+        self._accept_thread: threading.Thread | None = None
+        self._broadcast_thread: threading.Thread | None = None
+        self._stopping = threading.Event()
+        self._state_lock = threading.Lock()
+        self._wake = threading.Condition(self._state_lock)
+        self._rows_json: list[Message] = []
+        self._rows_dirty = False
+        self._last_rows: list[TableRow] = []
+        self._pending_hits: list[Message] = []
+        self._pending_character: dict[str, str] | None = None
+        self._clients: set[ServerConnection] = set()
+        self._clients_lock = threading.Lock()
+        self._sessions = SessionCache()
+
+    # ------------------------------------------------------------------ lifecycle
+
+    @property
+    def url(self) -> str:
+        """The address for a browser on this machine."""
+        return f"http://{LOCAL_HOST}:{self.port}/"
+
+    def urls(self) -> list[str]:
+        """The local address plus, when listening on every interface, the address other
+        devices on the network can use."""
+        urls = [self.url]
+        if self.host == DEFAULT_HOST:
+            lan = lan_address()
+            if lan:
+                urls.append(f"http://{lan}:{self.port}/")
+        elif self.host != LOCAL_HOST:
+            urls.append(f"http://{self.host}:{self.port}/")
+        return urls
+
+    def running(self) -> bool:
+        return self._server is not None and not self._stopping.is_set()
+
+    def client_count(self) -> int:
+        with self._clients_lock:
+            return len(self._clients)
+
+    def start(self) -> bool:
+        """Bind the port and start the threads. False (with start_error set) when the port is
+        taken or cannot be bound; the mod runs on without the dashboard then."""
+        self.start_error = ""
+        try:
+            server = serve(
+                self._handle_connection,
+                self.host,
+                self.port,
+                process_request=self._process_request,
+                logger=self._logger,
+                server_header=None,
+            )
+        except OSError as ex:
+            self.start_error = f"{type(ex).__name__}: {ex}"
+            return False
+        self._server = server
+        self.port = int(server.socket.getsockname()[1])
+        self._stopping.clear()
+        self._accept_thread = threading.Thread(target=self._accept_loop, args=(server,), name="dmgtracker-web", daemon=True)
+        self._broadcast_thread = threading.Thread(target=self._broadcast_loop, name="dmgtracker-web-push", daemon=True)
+        self._accept_thread.start()
+        self._broadcast_thread.start()
+        return True
+
+    def stop(self) -> None:
+        server = self._server
+        if server is None:
+            return
+        self._stopping.set()
+        with self._wake:
+            self._wake.notify_all()
+        server.shutdown()
+        with self._clients_lock:
+            clients = list(self._clients)
+            self._clients.clear()
+        for client in clients:
+            _close_quietly(client)
+        for thread in (self._accept_thread, self._broadcast_thread):
+            if thread is not None:
+                thread.join(THREAD_JOIN_TIMEOUT_S)
+        self._server = None
+
+    # ------------------------------------------------------------------ publishing (other threads)
+
+    def publish_rows(self, rows: list[TableRow]) -> None:
+        """The table as the game shows it; only a change wakes the broadcaster."""
+        if rows == self._last_rows:
+            return
+        self._last_rows = rows
+        rows_json = [{"cells": list(row.cells), "style": row.style} for row in rows]
+        with self._wake:
+            self._rows_json = rows_json
+            self._rows_dirty = True
+            self._wake.notify()
+
+    def publish_lines(self, lines: list[Message]) -> None:
+        """A batch the session log just wrote: the hits in it go to the clients."""
+        hits = [line for line in lines if "dmg" in line]
+        if not hits:
+            return
+        with self._wake:
+            self._pending_hits.extend(hits)
+            if len(self._pending_hits) > MAX_PENDING_HITS:
+                del self._pending_hits[: len(self._pending_hits) - MAX_PENDING_HITS]
+            self._wake.notify()
+
+    def publish_character(self, identity: dict[str, str]) -> None:
+        with self._wake:
+            self._pending_character = dict(identity)
+            self._wake.notify()
+
+    # ------------------------------------------------------------------ server threads
+
+    def _accept_loop(self, server: Server) -> None:
+        """The library's serve_forever() runs connection handlers on non-daemon threads, which
+        would hold the game process open at exit while a browser tab is connected. This is the
+        same loop with daemon threads; shutdown() closes the socket and ends it."""
+        while not self._stopping.is_set():
+            try:
+                sock, address = server.socket.accept()
+            except OSError:
+                break
+            threading.Thread(target=server.handler, args=(sock, address), name="dmgtracker-web-conn", daemon=True).start()
+
+    def _handle_connection(self, connection: ServerConnection) -> None:
+        """One WebSocket client: greet it, then keep the connection open until it goes away or
+        the dashboard stops. Whatever the client sends is ignored."""
+        with self._clients_lock:
+            self._clients.add(connection)
+        try:
+            connection.send(json.dumps(self._hello()))
+            while not self._stopping.is_set():
+                try:
+                    connection.recv(timeout=RECV_TIMEOUT_S)
+                except TimeoutError:
+                    continue
+        except ConnectionClosed:
+            pass
+        except Exception as ex:  # noqa: BLE001 - one client must not take the server down
+            self._count_error(f"client handler: {type(ex).__name__}: {ex}")
+        finally:
+            with self._clients_lock:
+                self._clients.discard(connection)
+
+    def _broadcast_loop(self) -> None:
+        while not self._stopping.is_set():
+            with self._wake:
+                self._wake.wait(WAKE_INTERVAL_S)
+                messages = self._take_pending_messages()
+            for message in messages:
+                self._broadcast(json.dumps(message))
+
+    def _take_pending_messages(self) -> list[Message]:
+        """Called with the state lock held: everything published since the last round."""
+        messages: list[Message] = []
+        if self._pending_character is not None:
+            messages.append({"type": "character", "character": self._pending_character})
+            self._pending_character = None
+        if self._rows_dirty:
+            messages.append({"type": "table", "rows": self._rows_json, "t": time.time()})
+            self._rows_dirty = False
+        if self._pending_hits:
+            messages.append({"type": "hits", "events": self._pending_hits})
+            self._pending_hits = []
+        return messages
+
+    def _broadcast(self, text: str) -> None:
+        with self._clients_lock:
+            clients = list(self._clients)
+        for client in clients:
+            try:
+                client.send(text)
+            except Exception:  # noqa: BLE001 - a dead client is dropped, nothing else
+                with self._clients_lock:
+                    self._clients.discard(client)
+                _close_quietly(client)
+
+    def _hello(self) -> Message:
+        with self._state_lock:
+            rows = self._rows_json
+        return {
+            "type": "hello",
+            "version": self.sources.version,
+            "character": self.sources.character(),
+            "window_minutes": self.sources.window_minutes(),
+            "rows": rows,
+        }
+
+    # ------------------------------------------------------------------ HTTP
+
+    def _process_request(self, connection: ServerConnection, request: Request) -> Response | None:
+        """Plain HTTP for everything but the WebSocket path; None lets the upgrade proceed."""
+        path, _, query_string = request.path.partition("?")
+        if path == WS_PATH:
+            if _origin_is_foreign(request):
+                # A page from another site must not read the live feed through the browser.
+                return _text_response(HTTPStatus.FORBIDDEN, "origin not allowed")
+            return None
+        try:
+            return self._respond(path, urllib.parse.parse_qs(query_string))
+        except Exception as ex:  # noqa: BLE001 - reported to the client and counted
+            self._count_error(f"{path}: {type(ex).__name__}: {ex}")
+            return _text_response(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(ex).__name__}: {ex}")
+
+    def _respond(self, path: str, query: dict[str, list[str]]) -> Response:
+        if path in ("/", "/index.html"):
+            return _response(HTTPStatus.OK, "text/html; charset=utf-8", _page_bytes())
+        if path == "/api/status":
+            return _json_response(self._status())
+        if path == "/api/sessions":
+            return _json_response({"sessions": list_sessions(self.sources.log_dir), "current": self._current_session_name()})
+        if path == "/api/weapons":
+            by = _first(query, "by", "dps")
+            return _json_response(weapons_payload(self.sources.weapon_store(), self.sources.character(), by))
+        session = self._session_for(query)
+        if session is None:
+            return _json_response({"error": "no such session"}, HTTPStatus.NOT_FOUND)
+        if path == "/api/hits":
+            page = _int(query, "page", 1)
+            size = _int(query, "size", DEFAULT_PAGE_SIZE)
+            return _json_response(hits_page(session, page, size, _first(query, "q", "")))
+        if path == "/api/session-weapons":
+            return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session)})
+        if path == "/api/encounters":
+            return _json_response(encounters_payload(session, self.sources.encounter_gap_s()))
+        return _text_response(HTTPStatus.NOT_FOUND, "not found")
+
+    def _status(self) -> Message:
+        store = self.sources.weapon_store()
+        return {
+            "version": self.sources.version,
+            "character": self.sources.character(),
+            "session": self._current_session_name(),
+            "window_minutes": self.sources.window_minutes(),
+            "encounter_gap_s": self.sources.encounter_gap_s(),
+            "clients": self.client_count(),
+            "errors": self.errors,
+            "weapons": 0 if store is None else len(store.records),
+        }
+
+    def _current_session_name(self) -> str | None:
+        path = self.sources.session_path()
+        if path is None:
+            path = default_session_path(self.sources.log_dir)
+        return None if path is None else path.name
+
+    def _session_for(self, query: dict[str, list[str]]) -> Any:
+        """The session named in the query, or the current one; None when there is none."""
+        name = _first(query, "session", "")
+        if name:
+            path = session_path(self.sources.log_dir, name)
+        else:
+            path = self.sources.session_path()
+            if path is None:
+                path = default_session_path(self.sources.log_dir)
+        if path is None or not path.is_file():
+            return None
+        return self._sessions.get(path)
+
+    def _count_error(self, message: str) -> None:
+        self.errors += 1
+        self._log(f"dashboard error #{self.errors}: {message}")
+
+
+# ------------------------------------------------------------------ helpers
+
+def _page_bytes() -> bytes:
+    """The dashboard page, read on every request so edits show up without a restart. Works
+    from the .sdkmod zip too, through importlib.resources."""
+    return resources.files(PAGE_PACKAGE).joinpath(PAGE_FILE).read_bytes()
+
+
+def _response(status: HTTPStatus, content_type: str, body: bytes) -> Response:
+    headers = Headers([
+        ("Content-Type", content_type),
+        ("Content-Length", str(len(body))),
+        ("Cache-Control", "no-store"),
+        ("Connection", "close"),
+    ])
+    return Response(status.value, status.phrase, headers, body)
+
+
+def _json_response(payload: Any, status: HTTPStatus = HTTPStatus.OK) -> Response:
+    return _response(status, "application/json; charset=utf-8", json.dumps(payload).encode("utf-8"))
+
+
+def _text_response(status: HTTPStatus, text: str) -> Response:
+    return _response(status, "text/plain; charset=utf-8", text.encode("utf-8"))
+
+
+def _origin_is_foreign(request: Request) -> bool:
+    """True when the browser says the page came from somewhere other than this server. The
+    Origin header is set by the browser and cannot be forged by a page; requests without it
+    (scripts, tools) are allowed."""
+    origin = request.headers.get("Origin")
+    host = request.headers.get("Host")
+    if origin is None or host is None:
+        return False
+    return urllib.parse.urlsplit(origin).netloc.lower() != host.lower()
+
+
+def lan_address() -> str:
+    """This machine's address on the network, or '' when there is none."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(PROBE_ADDRESS)
+            return str(probe.getsockname()[0])
+    except OSError:
+        return ""
+
+
+def _first(query: dict[str, list[str]], name: str, default: str) -> str:
+    values = query.get(name)
+    return values[0] if values else default
+
+
+def _int(query: dict[str, list[str]], name: str, default: int) -> int:
+    try:
+        return int(_first(query, name, str(default)))
+    except ValueError:
+        return default
+
+
+def _close_quietly(connection: ServerConnection) -> None:
+    try:
+        connection.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class _ForwardingHandler(logging.Handler):
+    """Hands the library's warnings and errors to the mod's log line by line."""
+
+    def __init__(self, log: Callable[[str], None]) -> None:
+        super().__init__(logging.WARNING)
+        self._log = log
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._log(f"dashboard ({record.levelname.lower()}): {record.getMessage()}")
+        except Exception:  # noqa: BLE001 - logging must never raise into the library
+            pass
+
+
+def _library_logger(log: Callable[[str], None]) -> logging.Logger:
+    logger = logging.getLogger("dmgtracker.web")
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
+    if not any(isinstance(handler, _ForwardingHandler) for handler in logger.handlers):
+        logger.addHandler(_ForwardingHandler(log))
+    return logger

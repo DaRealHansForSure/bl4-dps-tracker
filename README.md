@@ -37,6 +37,19 @@ Open the console with F6 (in the world, not in the main menu):
 | `dmgweapons` | Rank the current character's weapons over all sessions: DPS in hand, peak DPS, damage, hits, average hit, crit share, kills, minutes in hand. `-n 30` for a longer list. |
 | `dmgreport` | Report over the current session: each fight (total, duration, DPS, active DPS, targets, kills, crit share, per-source split), a session summary, a weapons table. `--last 300` adds the average over the final five minutes, `--gap 30` changes the fight boundary. |
 | `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. |
+| `dmgweb` | Print the dashboard address (`--open` opens it in the browser). |
+| `dmgstatus` | Counters, hooks, character, files, item identity, dashboard. |
+
+## Web dashboard
+
+While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
+
+- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes, a chart of the window DPS, and the latest hits as they land.
+- **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
+- **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
+- **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.
+
+The live tab updates itself; the other tabs read the files when you open them or press Reload. "Web dashboard" in the mod menu turns the server on and off; `web_port` and `web_host` in the settings file change the address (`127.0.0.1` keeps it on this machine). Windows may ask once whether the game may accept network connections; that prompt is for the dashboard, and the answer only matters for other devices. The server is read-only and runs on its own threads, never on the game's.
 
 ## Files
 
@@ -59,6 +72,7 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |
 | `readout_show_best_column` | `true` | the `Best DPS` column |
 | `readout_hidden_rows` | `["melee"]` | non-weapon rows to leave out: `melee`, `grenade`, `skill`, `other` |
+| `web_host`, `web_port` | `0.0.0.0`, `8765` | where the dashboard listens (`127.0.0.1` for this machine only) |
 | `readout_font_size` | `30` | font size |
 | `readout_column_gap`, `readout_column_widths` | `44`, `[320, 240, 190, 140]` | column layout |
 | `readout_background_alpha` | `0.6` | background darkness |

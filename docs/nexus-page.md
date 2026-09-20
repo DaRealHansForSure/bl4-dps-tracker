@@ -41,8 +41,9 @@ Tested against the game build of 2026-09-19 with oak2-mod-manager v0.3. A game p
 
 ## Settings
 
-Three menu entries (logging on/off, table on/off, open log folder). Position, size, window length and the rest are in `sdk_mods\settings\dmgtracker.json`; see the README.
+Four menu entries (logging on/off, table on/off, open log folder, web dashboard on/off). Position, size, window length and the rest are in `sdk_mods\settings\dmgtracker.json`; see the README.
 
 ## Changelog
 
+1.1.0: web dashboard at http://127.0.0.1:8765/ (live table over WebSocket, hits with search, weapon Top 10, encounters; also reachable from other devices on the network); Best DPS for Skill and Grenade; weapon records follow the gun across restarts and character switches (records from 1.0.0 are set aside); Melee row hidden by default; table at the left screen border.
 1.0.0: first release.
