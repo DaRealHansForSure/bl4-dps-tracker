@@ -60,6 +60,7 @@
   .cards > .wide { grid-column: 1 / -1; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; min-width: 0; }
   .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .card h2 span { text-transform: none; letter-spacing: 0; font-weight: normal; margin-left: 8px; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { padding: 4px 10px; text-align: right; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
@@ -120,7 +121,7 @@
         <table id="live-table"><tbody></tbody></table>
       </div>
       <div class="card chart">
-        <h2>Window DPS over time</h2>
+        <h2>DPS over time <span id="chart-note" class="muted"></span></h2>
         <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
@@ -351,7 +352,10 @@
   function handleMessage(data) {
     if (data.type === "hello") {
       character = data.character;
-      document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of fighting";
+      document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of play";
+      chartSeconds = data.chart_seconds || 10;
+      windowMinutes = data.window_minutes || 5;
+      document.getElementById("chart-note").textContent = "now = last " + formatNumber(chartSeconds, 0) + " s, dashed = the " + formatNumber(windowMinutes, 0) + " min window";
       setStatus(true, "live, " + characterText());
       renderLive(data.rows);
       fill(feedBody, (data.recent || []).map(function (event) { return hitRow(event, false); }));
@@ -391,7 +395,7 @@
   function sampleFromRows(rows, t) {
     const sources = [];
     let windowRow = null;
-    rows.forEach(function (r) {
+    rows.forEach(function (r, position) {
       if (r.cells.length < 3) {
         return;
       }
@@ -399,7 +403,8 @@
       if (r.style === "total" && label.indexOf("Last ") === 0) {
         windowRow = r;
       } else if ((r.style === "row" || r.style === "active") && label !== "-") {
-        sources.push({ key: sources.length + ":" + label, label: label, dps: parseSwiss(r.cells[2]) });
+        const slot = position >= 1 && position <= WEAPON_SLOTS ? position - 1 : -1;
+        sources.push({ key: slot >= 0 ? "slot" + slot + ":" + label : label, label: label, slot: slot, dps: parseSwiss(r.cells[2]) });
       }
     });
     if (!windowRow) {
@@ -420,16 +425,45 @@
   }
 
   // The chart: one sample per table update while fighting, x by sample (a combat timeline
-  // whose labels show the real clock), y by DPS. The source rows (each weapon, Skill,
-  // Grenade, ...) are stacked as bands, since every row is its damage over the same window
-  // time they add up to the window total, drawn as the yellow line on top; a tooltip lists
-  // them for the hovered sample.
+  // whose labels show the real clock), y by DPS. It shows what is happening now: the damage
+  // per second of the last chartSeconds, the sources stacked as bands under the yellow total
+  // line, and the table's window average as a dashed line for reference. A tooltip lists
+  // them for the hovered sample. A mod that sends no "now" (an older build) falls back to
+  // the window values.
+  let chartSeconds = 10;
+  let windowMinutes = 5;
+  const AVERAGE_COLOR = "#9aa3ad";
+
+  function nowOf(sample) {
+    return sample.now !== undefined ? sample.now : sample.dps;
+  }
+
+  function sourceNowOf(source) {
+    return source.now !== undefined ? source.now : source.dps;
+  }
   const CHART_MARGIN = { left: 8, right: 8, top: 34, bottom: 22 };
   const TIME_LABELS = 5;
   const LABEL_GAP = 12;
   const GRID_STEPS = 3;
   const TOTAL_COLOR = "#f5c542";
-  const SERIES_COLORS = ["#6fcf7a", "#5aa9e6", "#e06c6c", "#c77dff", "#ff9f43", "#4dd0e1", "#f06292", "#a1887f"];
+  // Fixed colours: one per weapon slot (whatever gun is in it) and one per source kind.
+  const WEAPON_SLOTS = 4;
+  const SLOT_COLORS = ["#6fcf7a", "#5aa9e6", "#e06c6c", "#4dd0e1"];
+  const CATEGORY_COLORS = { "Skill": "#c77dff", "Grenade": "#ff9f43", "Melee": "#f06292", "Other": "#9aa3ad" };
+  const FALLBACK_COLOR = "#a1887f";
+
+  function colorFor(source) {
+    let slot = source.slot;
+    if (slot === undefined) {
+      // Samples of an older mod build: the key starts with the row's position instead.
+      const match = /^(\d+):/.exec(source.key || "");
+      slot = match && !(source.label in CATEGORY_COLORS) ? Number(match[1]) : -1;
+    }
+    if (slot >= 0 && slot < SLOT_COLORS.length) {
+      return SLOT_COLORS[slot];
+    }
+    return CATEGORY_COLORS[source.label] || FALLBACK_COLOR;
+  }
   let hoverIndex = -1;
 
   function chartGeometry() {
@@ -470,17 +504,16 @@
       (sample.sources || []).forEach(function (source) {
         let series = byKey[source.key];
         if (!series) {
-          series = { key: source.key, label: source.label, values: new Array(samples.length).fill(0), peak: 0 };
+          series = { key: source.key, label: source.label, color: colorFor(source), values: new Array(samples.length).fill(0), window: new Array(samples.length).fill(0), peak: 0 };
           byKey[source.key] = series;
           order.push(series);
         }
-        series.values[index] = source.dps;
-        series.peak = Math.max(series.peak, source.dps);
+        series.values[index] = sourceNowOf(source);
+        series.window[index] = source.dps;
+        series.peak = Math.max(series.peak, series.values[index]);
       });
     });
-    const shown = order.filter(function (series) { return series.peak > 0; });
-    shown.forEach(function (series, index) { series.color = SERIES_COLORS[index % SERIES_COLORS.length]; });
-    return shown;
+    return order.filter(function (series) { return series.peak > 0; });
   }
 
   function drawChart() {
@@ -497,14 +530,18 @@
       return;
     }
     const series = chartSeries();
-    const totals = samples.map(function (sample) { return sample.dps; });
+    const totals = samples.map(nowOf);
+    const averages = samples.map(function (sample) { return sample.dps; });
     stackSeries(series);
-    let peak = Math.max.apply(null, totals);
+    let peak = Math.max(Math.max.apply(null, totals), Math.max.apply(null, averages));
     series.forEach(function (line) { peak = Math.max(peak, line.stackPeak); });
     const max = peak || 1;
     drawGridLines(context, geometry, max);
     drawTimeLabels(context, geometry);
     series.forEach(function (line) { drawBand(context, geometry, line, max); });
+    context.setLineDash([4, 4]);
+    drawLine(context, geometry, averages, max, AVERAGE_COLOR, 1.5);
+    context.setLineDash([]);
     drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
     if (peak > 0) {
       drawValueLabels(context, geometry, max);
@@ -566,7 +603,7 @@
 
   function drawLegend(context, geometry, series) {
     // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
-    const entries = [{ label: "Total", color: TOTAL_COLOR }].concat(series);
+    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: formatNumber(windowMinutes, 0) + " min", color: AVERAGE_COLOR }].concat(series);
     context.font = "11px sans-serif";
     context.textAlign = "left";
     context.textBaseline = "middle";
@@ -666,10 +703,10 @@
     context.setLineDash([]);
     // One entry per band: the total first, then the sources with damage at this sample;
     // each dot sits on its band's top edge, the total on the line above them all.
-    const entries = [{ label: "Total", color: TOTAL_COLOR, value: sample.dps, at: sample.dps }];
+    const entries = [{ label: "Now", color: TOTAL_COLOR, value: nowOf(sample), at: nowOf(sample), average: sample.dps }];
     series.forEach(function (line) {
-      if (line.values[index] > 0) {
-        entries.push({ label: line.label, color: line.color, value: line.values[index], at: line.top[index] });
+      if (line.values[index] > 0 || line.window[index] > 0) {
+        entries.push({ label: line.label, color: line.color, value: line.values[index], at: line.top[index], average: line.window[index] });
       }
     });
     entries.forEach(function (entry) {
@@ -682,8 +719,12 @@
     const footer = formatNumber(sample.total, 0) + " damage in the window";
     context.font = "12px sans-serif";
     let textWidth = Math.max(context.measureText(header).width, context.measureText(footer).width);
+    const minutes = formatNumber(windowMinutes, 0);
+    function entryText(entry) {
+      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (" + minutes + " min: " + formatNumber(entry.average, 0) + ")";
+    }
     entries.forEach(function (entry) {
-      textWidth = Math.max(textWidth, 14 + context.measureText(entry.label + "  " + formatNumber(entry.value, 0) + " DPS").width);
+      textWidth = Math.max(textWidth, 14 + context.measureText(entryText(entry)).width);
     });
     const lineHeight = 16;
     const boxWidth = textWidth + 16;
@@ -713,7 +754,7 @@
       context.arc(boxX + 12, y + 7, 4, 0, Math.PI * 2);
       context.fill();
       context.fillStyle = "#e8e8e8";
-      context.fillText(entry.label + "  " + formatNumber(entry.value, 0) + " DPS", boxX + 22, y);
+      context.fillText(entryText(entry), boxX + 22, y);
     });
     context.fillStyle = "#9aa3ad";
     context.fillText(footer, boxX + 8, boxY + 5 + (entries.length + 1) * lineHeight);

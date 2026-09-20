@@ -49,11 +49,8 @@ The table's DPS column is a third thing: each row's damage over the rolling wind
 
 The mod keeps the last 1000 closed fights of a session in memory for the in-game row; the report and the dashboard read the session file, so nothing is lost after that.
 
-## The combat clock, which is related but not the same
+## The play clock, which is related but not the same
 
-The table's other rows ("last 5 minutes of fighting") do not use encounters directly. They use a **combat clock** that advances only while a fight is open, from the first hit until the gap closes it, sampled every 250 ms; a step longer than one second (loading screen, pause) is dropped. On that clock:
+The table's other rows ("last 5 minutes of play") do not use encounters. They use a **play clock** that advances whenever you are in play, fighting or not: with a pawn, not in a menu (the pause menu included), not in a tunnel transition; a step longer than one second (a loading screen) is dropped. On that clock the rolling window covers the last `readout_window_minutes`, so a source that stops dealing damage comes down as its hits age out, while menus and pauses leave the numbers where they are.
 
-- the rolling window covers the last `readout_window_minutes` of fighting, so menus, driving and walking between fights leave the numbers where they are;
-- a gun's time in hand accumulates only while a fight is open and the table is visible; it feeds the lifetime record's DPS in hand (`dmgweapons`), not the table.
-
-So the encounter gap has a second effect: it decides when the combat clock stops. Fifteen seconds after your last hit, the window and the time in hand freeze until the next hit.
+Encounters still matter for one number: a gun's **time in hand** accumulates only while a fight is open and the table is visible. It feeds the lifetime record's DPS in hand (`dmgweapons`, the dashboard's Weapons tab), not the table. Fifteen seconds after your last hit the fight closes and the time in hand stops counting; the window's clock keeps running.

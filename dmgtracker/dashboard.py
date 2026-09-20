@@ -6,8 +6,12 @@ connection a thread; plain HTTP requests (the page, the JSON API) are answered f
 `process_request`, WebSocket upgrades on /ws continue into the connection handler.
 
 Live data goes over the WebSocket: the table rows whenever they change, every batch of hits
-the log flushed, character changes. Everything else is read from the files when the page
-asks for it (webdata.py).
+as the poller sees them, character changes. Everything else is read from the files when the
+page asks for it (webdata.py).
+
+The chart wants "what is happening now" next to the table's window average, so every
+sample also carries the damage per second of the last `chart_seconds` for the total and for
+each source, computed from the hits kept in memory.
 
 The game thread only calls the publish_*() methods, which copy data under a lock and wake the
 broadcaster; every socket and file operation runs on the dashboard's own daemon threads, so a
@@ -41,7 +45,7 @@ from websockets.sync.server import Server, ServerConnection, serve  # noqa: E402
 
 from .formatting import parse_number  # noqa: E402
 from .report import default_session_path  # noqa: E402
-from .table import STYLE_ACTIVE, STYLE_ROW, STYLE_TOTAL, TableRow  # noqa: E402
+from .table import STYLE_ACTIVE, STYLE_ROW, STYLE_TOTAL, WEAPON_SLOT_ROWS, TableRow  # noqa: E402
 from .webdata import (  # noqa: E402
     DEFAULT_PAGE_SIZE,
     SessionCache,
@@ -71,6 +75,10 @@ MAX_PENDING_HITS = 5000
 RECENT_HITS = 50
 # Window samples (time, DPS, damage) kept for the chart, one per table change, sent on connect.
 CHART_HISTORY = 300
+# The chart's "now": damage per second over this many seconds before each sample.
+DEFAULT_CHART_SECONDS = 10.0
+MAX_RECENT_HITS = 5000
+SOURCE_WEAPON = "weapon"
 WINDOW_ROW_PREFIX = "Last "
 EMPTY_SLOT_LABEL = "-"
 TOTAL_CELL = 1
@@ -95,10 +103,18 @@ class DashboardSources:
 
 
 class Dashboard:
-    def __init__(self, port: int, sources: DashboardSources, log: Callable[[str], None], host: str = DEFAULT_HOST) -> None:
+    def __init__(
+        self,
+        port: int,
+        sources: DashboardSources,
+        log: Callable[[str], None],
+        host: str = DEFAULT_HOST,
+        chart_seconds: float = DEFAULT_CHART_SECONDS,
+    ) -> None:
         self.host = host
         self.port = port
         self.sources = sources
+        self.chart_seconds = max(float(chart_seconds), 1.0)
         self.errors = 0
         self.start_error = ""
         self._log = log
@@ -116,6 +132,9 @@ class Dashboard:
         self._pending_hits: list[Message] = []
         self._pending_character: dict[str, str] | None = None
         self._history: deque[Message] = deque(maxlen=CHART_HISTORY)
+        # (time, damage, key) of recent hits, for the chart's "now"; key is the weapon's item
+        # id or the source label, whichever the table rows can be matched by.
+        self._recent_hits: deque[tuple[float, float, str]] = deque(maxlen=MAX_RECENT_HITS)
         self._clients: set[ServerConnection] = set()
         self._clients_lock = threading.Lock()
         self._sessions = SessionCache()
@@ -191,14 +210,18 @@ class Dashboard:
 
     # ------------------------------------------------------------------ publishing (other threads)
 
-    def publish_rows(self, rows: list[TableRow]) -> None:
-        """The table as the game shows it; only a change wakes the broadcaster."""
+    def publish_rows(self, rows: list[TableRow], slot_item_ids: list[str] | None = None) -> None:
+        """The table as the game shows it; only a change wakes the broadcaster.
+        `slot_item_ids` names the gun in each weapon slot, so the chart's "now" can be
+        matched to the slot rows by item."""
         if rows == self._last_rows:
             return
         self._last_rows = rows
         rows_json = [{"cells": list(row.cells), "style": row.style} for row in rows]
-        sample = _window_sample(rows, time.time())
+        now = time.time()
         with self._wake:
+            instant = self._instant_dps(now)
+            sample = _window_sample(rows, now, instant, slot_item_ids or [])
             self._rows_json = rows_json
             self._rows_sample = sample
             self._rows_dirty = True
@@ -206,22 +229,36 @@ class Dashboard:
                 self._history.append(sample)
             self._wake.notify()
 
-    def publish_lines(self, lines: list[Message]) -> None:
-        """A batch the session log just wrote: the hits in it go to the clients."""
-        hits = [line for line in lines if "dmg" in line]
-        if not hits:
+    def publish_hits(self, events: list[Message]) -> None:
+        """New hits from the poller: to the clients, and into the chart's "now"."""
+        if not events:
             return
         with self._wake:
-            self._pending_hits.extend(hits)
+            self._pending_hits.extend(events)
             if len(self._pending_hits) > MAX_PENDING_HITS:
                 del self._pending_hits[: len(self._pending_hits) - MAX_PENDING_HITS]
+            for event in events:
+                self._recent_hits.append((float(event.get("t", 0.0)), float(event.get("dmg", 0.0)), _hit_key(event)))
             self._wake.notify()
+
+    def _instant_dps(self, now: float) -> dict[str, float]:
+        """Damage per second over the last chart_seconds, by hit key, plus "" for the total.
+        Called with the state lock held."""
+        cutoff = now - self.chart_seconds
+        while self._recent_hits and self._recent_hits[0][0] < cutoff:
+            self._recent_hits.popleft()
+        totals: dict[str, float] = {"": 0.0}
+        for _when, damage, key in self._recent_hits:
+            totals[""] += damage
+            totals[key] = totals.get(key, 0.0) + damage
+        return {key: damage / self.chart_seconds for key, damage in totals.items()}
 
     def publish_character(self, identity: dict[str, str]) -> None:
         """A character switch starts the live numbers from zero; the chart follows."""
         with self._wake:
             self._pending_character = dict(identity)
             self._history.clear()
+            self._recent_hits.clear()
             self._wake.notify()
 
     # ------------------------------------------------------------------ server threads
@@ -299,12 +336,13 @@ class Dashboard:
             "version": self.sources.version,
             "character": self.sources.character(),
             "window_minutes": self.sources.window_minutes(),
+            "chart_seconds": self.chart_seconds,
             "rows": rows,
-            "recent": self._recent_hits(),
+            "recent": self._recent_hits_from_file(),
             "history": history,
         }
 
-    def _recent_hits(self) -> list[Message]:
+    def _recent_hits_from_file(self) -> list[Message]:
         """The newest hits of the current session from its file, newest first; the file is at
         most one flush interval behind the game."""
         try:
@@ -394,26 +432,50 @@ class Dashboard:
 
 # ------------------------------------------------------------------ helpers
 
-def _window_sample(rows: list[TableRow], now: float) -> Message | None:
-    """A chart sample: the window row's DPS and damage, plus the DPS of every source row
-    (each weapon slot, Skill, Grenade, ...), keyed by row position and label so a gun
-    swapped into a slot starts a new line. None without a window row."""
+def _hit_key(event: Message) -> str:
+    """What a hit is summed under for the chart's "now": the gun's item id, or the label of
+    a non-weapon source (Skill, Grenade, ...), which is also the table row's label."""
+    if event.get("src") == SOURCE_WEAPON:
+        return str(event.get("wid", ""))
+    return str(event.get("weapon", ""))
+
+
+def _window_sample(rows: list[TableRow], now: float, instant: dict[str, float], slot_item_ids: list[str]) -> Message | None:
+    """A chart sample: the window row's DPS and damage, the DPS of the last chart_seconds
+    ("now"), and both for every source row. The weapon slots (the rows right after the
+    header, in slot order) carry their slot number, so the page gives each slot a fixed
+    colour whatever gun is in it; the other sources are keyed by their label. A gun swapped
+    into a slot starts a new line. None without a window row."""
     window_row = None
     sources: list[Message] = []
-    for row in rows:
+    for position, row in enumerate(rows):
         if len(row.cells) <= DPS_CELL:
             continue
         label = str(row.cells[0])
         if row.style == STYLE_TOTAL and label.startswith(WINDOW_ROW_PREFIX):
             window_row = row
         elif row.style in SOURCE_STYLES and label != EMPTY_SLOT_LABEL:
-            sources.append({"key": f"{len(sources)}:{label}", "label": label, "dps": parse_number(row.cells[DPS_CELL])})
+            slot = position - 1 if 1 <= position <= WEAPON_SLOT_ROWS else -1
+            if slot >= 0:
+                key = f"slot{slot}:{label}"
+                hit_key = slot_item_ids[slot] if slot < len(slot_item_ids) else ""
+            else:
+                key = label
+                hit_key = label
+            sources.append({
+                "key": key,
+                "label": label,
+                "slot": slot,
+                "dps": parse_number(row.cells[DPS_CELL]),
+                "now": instant.get(hit_key, 0.0) if hit_key else 0.0,
+            })
     if window_row is None:
         return None
     return {
         "t": now,
         "dps": parse_number(window_row.cells[DPS_CELL]),
         "total": parse_number(window_row.cells[TOTAL_CELL]),
+        "now": instant.get("", 0.0),
         "sources": sources,
     }
 

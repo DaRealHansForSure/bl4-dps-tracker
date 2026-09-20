@@ -19,11 +19,11 @@ Other                    7'703         77         0.2        0.0       0
 Last 5 min           3'219'066     32'190       100.0       19.8      56
 ```
 
-- Every number covers the **last 5 minutes of fighting**. The clock only runs while a fight is on, so menus, driving, loading and walking between fights do not move the numbers.
+- Every number covers the **last 5 minutes of play**. The window's clock runs whether you are fighting or not, so a source that stops dealing damage comes down; it stops only in menus (the pause menu included), during loading screens and in tunnel transitions, where the numbers hold still.
 - Every row's **DPS is its damage over the window's fighting time**, so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage, `Share [%]` the share of the window total, `Crit [%]` the share of the row's direct hits that were crits (status ticks cannot crit and are left out), `Kills` the kills in the window; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
-- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s of fighting. It only rises; `dmgreset --weapons` clears it.
+- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s. It only rises; `dmgreset --weapons` clears it.
 - A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
 - Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
 - The table hides in menus, in vehicles and during tunnel transitions. Vehicle damage is not tracked. Healing is never counted.
@@ -68,7 +68,7 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | Setting | Default | Meaning |
 |---|---|---|
 | `log_dir` | `%LOCALAPPDATA%\BL4DamageTracker\logs` | where sessions are written; environment variables allowed |
-| `readout_window_minutes` | `5.0` | the table's window, in minutes of fighting |
+| `readout_window_minutes` | `5.0` | the table's window, in minutes of play |
 | `readout_show_encounter_row` | `false` | add an `Encounter` row (the current fight, for bosses) |
 | `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |
 | `readout_show_best_column` | `true` | the `Best DPS` column |
@@ -93,7 +93,7 @@ First launch: open the console in the world, type `mods`, and enable "BL4 Damage
 
 ## How a fight is counted
 
-A fight (encounter) starts with the first damage instance you deal and ends after `encounter_gap_s` seconds (default 15) without any hit; nothing else defines it, not the enemies, not your health. Per fight the mod counts total damage, hits, crits, kills, status damage, the split per source, the targets, and two rates: DPS (total over the fight's length) and active DPS (total over the seconds in which a hit landed). The same rule drives the combat clock behind the table's `Last X min` rows and a gun's time in hand. Details, consequences (two groups within 15 s are one fight, a boss phase longer than the gap splits a fight) and where fights show up: [`docs/encounters.md`](docs/encounters.md).
+A fight (encounter) starts with the first damage instance you deal and ends after `encounter_gap_s` seconds (default 15) without any hit; nothing else defines it, not the enemies, not your health. Per fight the mod counts total damage, hits, crits, kills, status damage, the split per source, the targets, and two rates: DPS (total over the fight's length) and active DPS (total over the seconds in which a hit landed). The same rule drives a gun's time in hand for the lifetime record; the table's `Last X min` rows run on play time instead. Details, consequences (two groups within 15 s are one fight, a boss phase longer than the gap splits a fight) and where fights show up: [`docs/encounters.md`](docs/encounters.md).
 
 ## How it works, in one paragraph
 

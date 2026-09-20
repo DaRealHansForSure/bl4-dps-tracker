@@ -24,8 +24,8 @@ from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
 from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .character import CharacterIdentity, read_identity
+from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
-from .dashboard import Dashboard, DashboardSources
 from .formatting import format_number
 from .itemidentity import ItemIdentityReader
 from .logwriter import SessionLog
@@ -159,6 +159,8 @@ readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
 # it; "127.0.0.1" keeps it on this machine.
 web_host = HiddenOption("web_host", DEFAULT_WEB_HOST)
 web_port = HiddenOption("web_port", DEFAULT_WEB_PORT)
+# The dashboard chart's "now": damage per second over this many seconds.
+web_chart_seconds = HiddenOption("web_chart_seconds", DEFAULT_CHART_SECONDS)
 
 # ------------------------------------------------------------------ state
 
@@ -184,10 +186,10 @@ _transition_hidden = False
 _equipped_cache: list = []
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
-# Clocks: intervals and this combat clock run on time.monotonic(), which cannot jump; event
+# Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
 # timestamps and everything persisted use time.time(), which is comparable across sessions.
-_combat_clock = 0.0
-_last_combat_step = 0.0
+_play_clock = 0.0
+_last_fight_step = 0.0
 _latest_rows: list = []
 _held_pending: dict[str, tuple[str, float]] = {}
 _last_held_flush = 0.0
@@ -225,9 +227,11 @@ def _on_new_events(events: list[dict[str, Any]]) -> None:
         session_log.append(events)
     for event in events:
         tracker.add(event)
-        rolling.add(event, at=_combat_clock)
+        rolling.add(event, at=_play_clock)
         if weapon_store is not None:
             weapon_store.add_event(event)
+    if dashboard is not None:
+        dashboard.publish_hits(events)
 
 
 def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
@@ -312,10 +316,10 @@ def _check_character(controller: UObject, pawn: Any) -> None:
 
 
 def _reset_live_stats() -> None:
-    global tracker, rolling, _combat_clock, _equipped_cache
+    global tracker, rolling, _play_clock, _equipped_cache
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
-    _combat_clock = 0.0
+    _play_clock = 0.0
     _equipped_cache = []
 
 
@@ -372,7 +376,8 @@ def _refresh_readout() -> None:
                 _create_readout(controller)
             if readout is None:
                 return
-        readout.set_visible(_should_show_table(controller, pawn))
+        in_play = _should_show_table(controller, pawn)
+        readout.set_visible(in_play)
         readout.fade(now)
         if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
             return
@@ -386,7 +391,7 @@ def _refresh_readout() -> None:
             _transition_hidden = True
             readout.set_visible(False)
         tracker.close_if_idle(wall_now)
-        _advance_combat_clock(now)
+        _advance_play_clock(now, _in_play(controller, pawn))
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
@@ -397,7 +402,7 @@ def _refresh_readout() -> None:
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
-        rolling.prune(_combat_clock)
+        rolling.prune(_play_clock)
         _record_peaks(wall_now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best = _peak_dps() if readout_show_best_column.value else None
@@ -414,7 +419,7 @@ def _refresh_readout() -> None:
         _latest_rows = rows
         readout.render(rows, now)
         if dashboard is not None:
-            dashboard.publish_rows(rows)
+            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache])
         _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -422,6 +427,14 @@ def _refresh_readout() -> None:
         if _readout_errors <= READOUT_ERRORS_TO_LOG:
             _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
         _give_up_readout_if_needed()
+
+
+def _in_play(controller: UObject, pawn: Any) -> bool:
+    """Whether the window's time should pass: a pawn (on foot or driving), no menu or pause
+    menu, no transition. Field reads only."""
+    if pawn is None or controller.bShowMouseCursor or _transition_hidden:
+        return False
+    return not pawn.bHidden
 
 
 def _should_show_table(controller: UObject, pawn: Any) -> bool:
@@ -461,17 +474,22 @@ def _record_peaks(now: float) -> None:
         weapon_store.note_source_peak(kind, damage / window_seconds, window_seconds, now)
 
 
-def _advance_combat_clock(now: float) -> None:
-    """Run the combat clock while an encounter is open. A long gap between samples is a
-    pause or a loading screen, not fighting, and is dropped."""
-    global _last_held_sample, _combat_clock, _last_combat_step
+def _advance_play_clock(now: float, in_play: bool) -> None:
+    """Run the play clock while the player is in play: with a pawn, not in a menu (the pause
+    menu included), not in a transition. Fighting or not, the window's time passes, so a
+    source that stops dealing damage comes down (a user rule); menus, pauses and loading
+    screens (a long gap between samples) do not count. The step doubles as the time-in-hand
+    sample, but only while a fight is open: the lifetime record's DPS in hand stays about
+    fighting."""
+    global _last_held_sample, _play_clock, _last_fight_step
     elapsed = now - _last_held_sample
     _last_held_sample = now
-    _last_combat_step = 0.0
-    if tracker.current is None or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+    _last_fight_step = 0.0
+    if not in_play or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
         return
-    _combat_clock += elapsed
-    _last_combat_step = elapsed
+    _play_clock += elapsed
+    if tracker.current is not None:
+        _last_fight_step = elapsed
 
 
 def _sample_held_time(held: Any) -> None:
@@ -479,14 +497,14 @@ def _sample_held_time(held: Any) -> None:
     can be measured over the time it was actually used in fights. Menus, vehicles and
     transitions hide the table and do not count; neither does carrying a gun around
     between fights, which would otherwise dilute its number."""
-    if _last_combat_step <= 0 or not readout.visible() or held.item_id == "":
+    if _last_fight_step <= 0 or not readout.visible() or held.item_id == "":
         return
     key = source_key({"src": held.kind, "weapon": held.label, "wid": held.item_id})
-    rolling.add_held(_combat_clock, key, _last_combat_step)
+    rolling.add_held(_play_clock, key, _last_fight_step)
     if weapon_store is not None:
-        weapon_store.add_held(held.item_id, held.label, held.body, _last_combat_step, time.time())
+        weapon_store.add_held(held.item_id, held.label, held.body, _last_fight_step, time.time())
     _label, seconds = _held_pending.get(held.item_id, (held.label, 0.0))
-    _held_pending[held.item_id] = (held.label, seconds + _last_combat_step)
+    _held_pending[held.item_id] = (held.label, seconds + _last_fight_step)
 
 
 def _flush_held_lines(now: float) -> None:
@@ -708,12 +726,12 @@ def _remove_tick_hook() -> None:
 
 def on_enable() -> None:
     global poller, session_log, tracker, rolling, weapon_store, character
-    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _combat_clock
+    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
     _last_status_time = time.monotonic()
     _last_held_sample = time.monotonic()
-    _combat_clock = 0.0
+    _play_clock = 0.0
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
     character = None
@@ -730,7 +748,6 @@ def on_enable() -> None:
     if session_log is not None:
         # The writer thread wakes every flush interval; let it save the weapon record too.
         session_log.add_flush_listener(_save_weapon_store_if_due)
-        session_log.add_flush_listener(_publish_log_batch)
     if web_enabled.value:
         _start_dashboard()
     if not _install_tick_hook():
@@ -752,12 +769,6 @@ def _load_weapon_store(path: Path) -> WeaponStore:
     return store
 
 
-def _publish_log_batch(batch: list[dict[str, Any]]) -> None:
-    """Flush listener (writer thread): hands every written batch to the dashboard."""
-    if dashboard is not None:
-        dashboard.publish_lines(batch)
-
-
 def _dashboard_sources() -> DashboardSources:
     return DashboardSources(
         version=_mod_version(),
@@ -774,7 +785,9 @@ def _start_dashboard() -> None:
     global dashboard
     if dashboard is not None:
         return
-    candidate = Dashboard(int(web_port.value), _dashboard_sources(), _say, host=str(web_host.value))
+    candidate = Dashboard(
+        int(web_port.value), _dashboard_sources(), _say, host=str(web_host.value), chart_seconds=float(web_chart_seconds.value)
+    )
     if not candidate.start():
         logging.error(f"{LOG_PREFIX} dashboard not started on {web_host.value}:{web_port.value}: {candidate.start_error}")
         return
@@ -926,7 +939,7 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
             f"{session_log.write_errors} write errors)"
         )
     table_state = "shown" if readout is not None and readout.visible() else ("created, hidden" if readout is not None else "not created")
-    logging.info(f"{LOG_PREFIX} table: {table_state}; combat clock {format_number(_combat_clock)} s; window {readout_window_minutes.value} min")
+    logging.info(f"{LOG_PREFIX} table: {table_state}; play clock {format_number(_play_clock)} s; window {readout_window_minutes.value} min")
     if dashboard is not None:
         logging.info(f"{LOG_PREFIX} dashboard: {dashboard.url} ({dashboard.client_count()} client(s), {dashboard.errors} errors)")
     else:
@@ -999,6 +1012,7 @@ mod = build_mod(
         readout_hidden_rows,
         web_host,
         web_port,
+        web_chart_seconds,
     ],
     keybinds=[],
     hooks=[],
