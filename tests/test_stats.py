@@ -184,6 +184,16 @@ class RollingStatsTests(unittest.TestCase):
         self.window.prune(200.0)
         self.assertNotIn(rifle, self.window.by_source)
 
+    def test_a_separate_clock_can_drive_the_window(self) -> None:
+        # Wall-clock t values are far apart; on the combat clock the hits are 10 s apart.
+        self.window.add(hit(1000.0, 100.0), at=0.0)
+        self.window.add(hit(5000.0, 100.0), at=10.0)
+        self.window.prune(20.0)
+        self.assertEqual(self.window.total, 200.0)
+        self.assertEqual(self.window.duration(), 20.0)
+        self.window.prune(65.0)
+        self.assertEqual(self.window.total, 100.0)
+
     def test_source_without_held_time_falls_back_to_window_duration(self) -> None:
         self.window.add(hit(100.0, 300.0, weapon="Other", wid=0, src="other"))
         self.window.prune(130.0)

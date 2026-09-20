@@ -203,6 +203,11 @@ class RollingStats:
     Events are kept in a deque and evicted as they age out, so memory is bounded by the
     window and every update is O(1) amortized. Offers the same fields as Encounter (total,
     dot_damage, by_source, duration(), dps(), other_damage()) so the table can show either.
+
+    The clock is whatever the caller passes: wall-clock seconds, or a combat clock that only
+    runs while a fight is on, which makes the window "the last X minutes of fighting" and
+    keeps the numbers still while nothing happens. Every timestamp given to add(), add_held()
+    and prune() must come from the same clock.
     """
 
     def __init__(self, window_s: float) -> None:
@@ -211,17 +216,19 @@ class RollingStats:
         self.dot_damage = 0.0
         self.hits = 0
         self.by_source: dict[SourceKey, SourceTotals] = {}
-        self._events: deque[dict[str, Any]] = deque()
+        self._events: deque[tuple[float, dict[str, Any]]] = deque()
         self._held_samples: deque[tuple[float, SourceKey, float]] = deque()
         self._first_hit: float | None = None
         self._now = 0.0
 
-    def add(self, event: dict[str, Any]) -> None:
+    def add(self, event: dict[str, Any], at: float | None = None) -> None:
+        """Count the event; `at` is its time on the window's clock (default: the event's t)."""
         if event.get("kind") == KIND_HEAL:
             return
-        self._events.append(event)
+        timestamp = float(event["t"]) if at is None else at
+        self._events.append((timestamp, event))
         if self._first_hit is None:
-            self._first_hit = float(event["t"])
+            self._first_hit = timestamp
         damage = float(event["dmg"])
         self.total += damage
         self.hits += 1
@@ -249,8 +256,8 @@ class RollingStats:
         """Drop everything older than the window; call before reading the numbers."""
         self._now = now
         cutoff = now - self.window_s
-        while self._events and float(self._events[0]["t"]) < cutoff:
-            self._remove(self._events.popleft())
+        while self._events and self._events[0][0] < cutoff:
+            self._remove(self._events.popleft()[1])
         while self._held_samples and self._held_samples[0][0] < cutoff:
             _, source, seconds = self._held_samples.popleft()
             totals = self.by_source.get(source)

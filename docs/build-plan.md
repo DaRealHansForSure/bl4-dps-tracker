@@ -79,7 +79,7 @@ Rules that shape the modules:
 
 ## In-game readout
 
-A table, always showing every equipped weapon (the four weapon slots, in slot order, even at zero), rendered as approved with `poc/probe_table.py`. Every number covers the last X minutes (default 5, setting `readout_window_minutes`): in the open world that is what a player wants to see; encounters are for boss fights and appear as an optional extra row (off by default).
+A table, always showing every equipped weapon (the four weapon slots, in slot order, even at zero), rendered as approved with `poc/probe_table.py`. Every number covers the last X minutes **of fighting** (default 5, setting `readout_window_minutes`): the window's clock only runs while an encounter is open, so menus, vehicles, loading and walking between fights freeze the table, and numbers change only when hits happen (a wall-clock window made them drift while nothing happened). In the open world that is what a player wants to see; encounters are for boss fights and appear as an optional extra row (off by default).
 
 ```
 Weapon            Total        DPS   Share [%]

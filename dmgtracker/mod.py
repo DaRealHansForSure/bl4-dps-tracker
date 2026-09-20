@@ -122,6 +122,10 @@ _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
 _transition_hidden = False
 _equipped_cache: list = []
+# Seconds of fighting so far: the window's clock. It only advances while an encounter is
+# open, so the table stands still in menus, vehicles and between fights.
+_combat_clock = 0.0
+_last_combat_step = 0.0
 
 
 def _say(message: str) -> None:
@@ -156,7 +160,7 @@ def _on_new_events(events: list[dict[str, Any]]) -> None:
         session_log.append(events)
     for event in events:
         tracker.add(event)
-        rolling.add(event)
+        rolling.add(event, at=_combat_clock)
         if weapon_store is not None:
             weapon_store.add_event(event)
 
@@ -262,6 +266,7 @@ def _refresh_readout() -> None:
             _transition_hidden = True
             readout.set_visible(False)
         tracker.close_if_idle(now)
+        _advance_combat_clock(now)
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
@@ -269,8 +274,8 @@ def _refresh_readout() -> None:
             if equipped is not None:
                 _equipped_cache = equipped
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
-        _sample_held_time(held, now)
-        rolling.prune(now)
+        _sample_held_time(held)
+        rolling.prune(_combat_clock)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter)
         readout.render(rows)
@@ -291,23 +296,30 @@ def _should_show_table(controller: UObject, pawn: Any) -> bool:
     return not pawn.bHidden
 
 
-def _sample_held_time(held: Any, now: float) -> None:
-    """Credit the weapon in hand with the time since the last sample, so its DPS can be
-    measured over the time it was actually used. Only fighting time counts: while an
-    encounter is open (a hit within the encounter gap), the table is shown (no menus,
-    vehicles or transitions) and the sample is not a gap from a pause or a loading screen.
-    Carrying a gun around between fights would otherwise dilute its number, and the idle
-    time ageing out of the window would make the number drift with nothing happening."""
-    global _last_held_sample
+def _advance_combat_clock(now: float) -> None:
+    """Run the combat clock while an encounter is open. A long gap between samples is a
+    pause or a loading screen, not fighting, and is dropped."""
+    global _last_held_sample, _combat_clock, _last_combat_step
     elapsed = now - _last_held_sample
     _last_held_sample = now
-    fighting = tracker.current is not None
-    if not fighting or not readout.visible() or held.instance_id == 0 or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+    _last_combat_step = 0.0
+    if tracker.current is None or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+        return
+    _combat_clock += elapsed
+    _last_combat_step = elapsed
+
+
+def _sample_held_time(held: Any) -> None:
+    """Credit the weapon in hand with the fighting time since the last sample, so its DPS
+    can be measured over the time it was actually used in fights. Menus, vehicles and
+    transitions hide the table and do not count; neither does carrying a gun around
+    between fights, which would otherwise dilute its number."""
+    if _last_combat_step <= 0 or not readout.visible() or held.instance_id == 0:
         return
     key = source_key({"src": held.kind, "weapon": held.label, "wid": held.instance_id})
-    rolling.add_held(now, key, elapsed)
+    rolling.add_held(_combat_clock, key, _last_combat_step)
     if weapon_store is not None:
-        weapon_store.add_held(held.instance_id, held.label, held.body, elapsed, now)
+        weapon_store.add_held(held.instance_id, held.label, held.body, _last_combat_step, time.time())
 
 
 def _give_up_readout_if_needed() -> None:
@@ -371,11 +383,12 @@ def _remove_tick_hook() -> None:
 
 def on_enable() -> None:
     global poller, session_log, tracker, rolling, weapon_store
-    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample
+    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _combat_clock
     _broken_reported = False
     _readout_errors = 0
     _last_status_time = time.time()
     _last_held_sample = time.time()
+    _combat_clock = 0.0
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
     weapon_store = _load_weapon_store()
