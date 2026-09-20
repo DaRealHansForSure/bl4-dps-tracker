@@ -10,8 +10,9 @@ as the poller sees them, character changes. Everything else is read from the fil
 page asks for it (webdata.py).
 
 The chart wants "what is happening now" next to the table's window average, so every
-sample also carries the damage per second of the last `chart_seconds` for the total and for
-each source, computed from the hits kept in memory.
+sample also carries the damage per second of the last CHART_WINDOWS_S seconds (each of
+them, the page picks one) for the total and for each source, computed from the hits kept in
+memory.
 
 The game thread only calls the publish_*() methods, which copy data under a lock and wake the
 broadcaster; every socket and file operation runs on the dashboard's own daemon threads, so a
@@ -75,9 +76,11 @@ MAX_PENDING_HITS = 5000
 RECENT_HITS = 50
 # Window samples (time, DPS, damage) kept for the chart, one per table change, sent on connect.
 CHART_HISTORY = 300
-# The chart's "now": damage per second over this many seconds before each sample.
-DEFAULT_CHART_SECONDS = 10.0
-MAX_RECENT_HITS = 5000
+# The chart's "now": damage per second over the last so many seconds, one value per window
+# in every sample; `chart_seconds` (a setting) is the window the page starts with.
+CHART_WINDOWS_S = (10.0, 30.0, 60.0, 120.0)
+DEFAULT_CHART_SECONDS = 30.0
+MAX_RECENT_HITS = 20000
 SOURCE_WEAPON = "weapon"
 WINDOW_ROW_PREFIX = "Last "
 EMPTY_SLOT_LABEL = "-"
@@ -114,7 +117,7 @@ class Dashboard:
         self.host = host
         self.port = port
         self.sources = sources
-        self.chart_seconds = max(float(chart_seconds), 1.0)
+        self.chart_seconds = _nearest_window(float(chart_seconds))
         self.errors = 0
         self.start_error = ""
         self._log = log
@@ -241,17 +244,23 @@ class Dashboard:
                 self._recent_hits.append((float(event.get("t", 0.0)), float(event.get("dmg", 0.0)), _hit_key(event)))
             self._wake.notify()
 
-    def _instant_dps(self, now: float) -> dict[str, float]:
-        """Damage per second over the last chart_seconds, by hit key, plus "" for the total.
-        Called with the state lock held."""
-        cutoff = now - self.chart_seconds
+    def _instant_dps(self, now: float) -> dict[str, dict[str, float]]:
+        """For every chart window: damage per second over its last seconds, by hit key, plus
+        "" for the total. Called with the state lock held."""
+        cutoff = now - max(CHART_WINDOWS_S)
         while self._recent_hits and self._recent_hits[0][0] < cutoff:
             self._recent_hits.popleft()
-        totals: dict[str, float] = {"": 0.0}
-        for _when, damage, key in self._recent_hits:
-            totals[""] += damage
-            totals[key] = totals.get(key, 0.0) + damage
-        return {key: damage / self.chart_seconds for key, damage in totals.items()}
+        by_window: dict[str, dict[str, float]] = {}
+        for window in CHART_WINDOWS_S:
+            totals: dict[str, float] = {"": 0.0}
+            since = now - window
+            for when, damage, key in self._recent_hits:
+                if when < since:
+                    continue
+                totals[""] += damage
+                totals[key] = totals.get(key, 0.0) + damage
+            by_window[_window_name(window)] = {key: damage / window for key, damage in totals.items()}
+        return by_window
 
     def publish_character(self, identity: dict[str, str]) -> None:
         """A character switch starts the live numbers from zero; the chart follows."""
@@ -337,6 +346,7 @@ class Dashboard:
             "character": self.sources.character(),
             "window_minutes": self.sources.window_minutes(),
             "chart_seconds": self.chart_seconds,
+            "chart_windows": list(CHART_WINDOWS_S),
             "rows": rows,
             "recent": self._recent_hits_from_file(),
             "history": history,
@@ -440,12 +450,25 @@ def _hit_key(event: Message) -> str:
     return str(event.get("weapon", ""))
 
 
-def _window_sample(rows: list[TableRow], now: float, instant: dict[str, float], slot_item_ids: list[str]) -> Message | None:
-    """A chart sample: the window row's DPS and damage, the DPS of the last chart_seconds
-    ("now"), and both for every source row. The weapon slots (the rows right after the
-    header, in slot order) carry their slot number, so the page gives each slot a fixed
-    colour whatever gun is in it; the other sources are keyed by their label. A gun swapped
-    into a slot starts a new line. None without a window row."""
+def _window_name(window: float) -> str:
+    return str(int(window))
+
+
+def _nearest_window(seconds: float) -> float:
+    return min(CHART_WINDOWS_S, key=lambda window: abs(window - seconds))
+
+
+def _instant_for(instant: dict[str, dict[str, float]], hit_key: str) -> dict[str, float]:
+    """One value per chart window for a hit key ("" is the total)."""
+    return {name: values.get(hit_key, 0.0) for name, values in instant.items()}
+
+
+def _window_sample(rows: list[TableRow], now: float, instant: dict[str, dict[str, float]], slot_item_ids: list[str]) -> Message | None:
+    """A chart sample: the window row's DPS and damage, the DPS of the last seconds ("now",
+    one value per chart window), and both for every source row. The weapon slots (the rows
+    right after the header, in slot order) carry their slot number, so the page gives each
+    slot a fixed colour whatever gun is in it; the other sources are keyed by their label.
+    A gun swapped into a slot starts a new line. None without a window row."""
     window_row = None
     sources: list[Message] = []
     for position, row in enumerate(rows):
@@ -467,7 +490,7 @@ def _window_sample(rows: list[TableRow], now: float, instant: dict[str, float], 
                 "label": label,
                 "slot": slot,
                 "dps": parse_number(row.cells[DPS_CELL]),
-                "now": instant.get(hit_key, 0.0) if hit_key else 0.0,
+                "now": _instant_for(instant, hit_key) if hit_key else {name: 0.0 for name in instant},
             })
     if window_row is None:
         return None
@@ -475,7 +498,7 @@ def _window_sample(rows: list[TableRow], now: float, instant: dict[str, float], 
         "t": now,
         "dps": parse_number(window_row.cells[DPS_CELL]),
         "total": parse_number(window_row.cells[TOTAL_CELL]),
-        "now": instant.get("", 0.0),
+        "now": _instant_for(instant, ""),
         "sources": sources,
     }
 

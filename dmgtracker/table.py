@@ -34,7 +34,8 @@ STYLE_ACTIVE = "active"
 STYLE_TOTAL = "total"
 STYLE_SPACER = "spacer"
 
-HEADER_CELLS = ("Weapon", "Total", "DPS", "Share [%]")
+HEADER_CELLS = ("Weapon", "Total", "DPS")
+SHARE_HEADER_CELL = "Share [%]"
 CRIT_AND_KILLS_HEADER_CELLS = ("Crit [%]", "Kills")
 BEST_HEADER_CELL = "Best DPS"
 EMPTY_SLOT_LABEL = "-"
@@ -96,25 +97,38 @@ def build_rows(
     best: PeakDps | None = None,
     hidden_kinds: frozenset[str] = frozenset(),
     crit_and_kills: bool = False,
+    share: bool = True,
 ) -> list[TableRow]:
     """The complete table for the current state. The row count only depends on the settings
     (encounter row, hidden non-weapon rows), never on the data. Optional columns, in this
-    order after the four base ones: Crit [%] and Kills (`crit_and_kills`), then Best DPS
-    (`best`, the lifetime peak DPS of each weapon and non-weapon source)."""
+    order after Weapon, Total and DPS: Share [%] (`share`), Crit [%] and Kills
+    (`crit_and_kills`), then Best DPS (`best`, the lifetime peak DPS of each weapon and
+    non-weapon source)."""
+    columns = TableColumns(share, crit_and_kills)
     header = HEADER_CELLS
+    if share:
+        header += (SHARE_HEADER_CELL,)
     if crit_and_kills:
         header += CRIT_AND_KILLS_HEADER_CELLS
     if best is not None:
         header += (BEST_HEADER_CELL,)
-    columns = len(header)
+    count = len(header)
     rows = [TableRow(header, STYLE_HEADER)]
-    rows.extend(_weapon_slot_rows(window, equipped, held_item_id, best, crit_and_kills))
-    rows.extend(_non_weapon_rows(window, hidden_kinds, best, crit_and_kills))
-    rows.append(TableRow(("",) * columns, STYLE_SPACER))
-    rows.append(_total_row(window_label(window_minutes), window, crit_and_kills))
+    rows.extend(_weapon_slot_rows(window, equipped, held_item_id, best, columns))
+    rows.extend(_non_weapon_rows(window, hidden_kinds, best, columns))
+    rows.append(TableRow(("",) * count, STYLE_SPACER))
+    rows.append(_total_row(window_label(window_minutes), window, columns))
     if encounter is not None:
-        rows.append(_total_row(ENCOUNTER_LABEL, encounter, crit_and_kills))
-    return [_padded(row, columns) for row in rows]
+        rows.append(_total_row(ENCOUNTER_LABEL, encounter, columns))
+    return [_padded(row, count) for row in rows]
+
+
+@dataclass(frozen=True)
+class TableColumns:
+    """Which optional value columns a row carries."""
+
+    share: bool
+    crit_and_kills: bool
 
 
 def _padded(row: TableRow, columns: int) -> TableRow:
@@ -125,14 +139,14 @@ def _padded(row: TableRow, columns: int) -> TableRow:
 
 
 def _weapon_slot_rows(
-    scope: DamageScope, equipped: list[DamageSource], held_item_id: str, best: PeakDps | None, crit_and_kills: bool
+    scope: DamageScope, equipped: list[DamageSource], held_item_id: str, best: PeakDps | None, columns: TableColumns
 ) -> list[TableRow]:
     rows: list[TableRow] = []
     duration = scope.duration()
     for slot in range(WEAPON_SLOT_ROWS):
         if slot >= len(equipped):
             empty = SourceTotals(SOURCE_WEAPON, EMPTY_SLOT_LABEL, "")
-            rows.append(TableRow(_source_cells(EMPTY_SLOT_LABEL, empty, 0.0, scope.total, crit_and_kills), STYLE_ROW))
+            rows.append(TableRow(_source_cells(EMPTY_SLOT_LABEL, empty, 0.0, scope.total, columns), STYLE_ROW))
             continue
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
@@ -140,7 +154,7 @@ def _weapon_slot_rows(
         # Every row's DPS is its damage over the window's fighting time (a user rule: a gun
         # that is not firing must come down like any other source; the lifetime record keeps
         # the DPS in hand for comparing guns), so the rows add up to the window row.
-        row = TableRow(_source_cells(weapon.label, totals, totals.damage / duration, scope.total, crit_and_kills), style)
+        row = TableRow(_source_cells(weapon.label, totals, totals.damage / duration, scope.total, columns), style)
         if best is not None:
             row = _with_best_cell(row, best.weapons.get(weapon.item_id, 0.0))
         rows.append(row)
@@ -148,7 +162,7 @@ def _weapon_slot_rows(
 
 
 def _non_weapon_rows(
-    scope: DamageScope, hidden_kinds: frozenset[str], best: PeakDps | None, crit_and_kills: bool
+    scope: DamageScope, hidden_kinds: frozenset[str], best: PeakDps | None, columns: TableColumns
 ) -> list[TableRow]:
     rows: list[TableRow] = []
     duration = scope.duration()
@@ -156,17 +170,19 @@ def _non_weapon_rows(
         if source.kind in hidden_kinds:
             continue
         totals = kind_totals(scope.by_source, source.kind)
-        row = TableRow(_source_cells(source.label, totals, totals.damage / duration, scope.total, crit_and_kills), STYLE_ROW)
+        row = TableRow(_source_cells(source.label, totals, totals.damage / duration, scope.total, columns), STYLE_ROW)
         if best is not None:
             row = _with_best_cell(row, best.sources.get(source.kind, 0.0))
         rows.append(row)
     return rows
 
 
-def _source_cells(label: str, totals: SourceTotals, dps: float, scope_total: float, crit_and_kills: bool) -> tuple[str, ...]:
-    """Label, Total, DPS, Share, and the crit rate and kills when those columns are on."""
-    cells = [label, format_number(totals.damage), format_number(dps), format_share(totals.damage, scope_total)]
-    if crit_and_kills:
+def _source_cells(label: str, totals: SourceTotals, dps: float, scope_total: float, columns: TableColumns) -> tuple[str, ...]:
+    """Label, Total, DPS, then the share, the crit rate and the kills when those columns are on."""
+    cells = [label, format_number(totals.damage), format_number(dps)]
+    if columns.share:
+        cells.append(format_share(totals.damage, scope_total))
+    if columns.crit_and_kills:
         cells.append(format_share(totals.crits, totals.direct_hits))
         cells.append(format_number(totals.kills))
     return tuple(cells)
@@ -184,7 +200,7 @@ def _totals_for(scope: DamageScope, weapon: DamageSource) -> SourceTotals:
     return SourceTotals(weapon.kind, weapon.label, weapon.item_id)
 
 
-def _total_row(label: str, scope: DamageScope, crit_and_kills: bool) -> TableRow:
+def _total_row(label: str, scope: DamageScope, columns: TableColumns) -> TableRow:
     totals = scope_totals(scope.by_source)
     totals.damage = scope.total
-    return TableRow(_source_cells(label, totals, scope.dps(), scope.total, crit_and_kills), STYLE_TOTAL)
+    return TableRow(_source_cells(label, totals, scope.dps(), scope.total, columns), STYLE_TOTAL)

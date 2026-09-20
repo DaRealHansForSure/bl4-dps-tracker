@@ -18,6 +18,7 @@ from websockets.sync.client import connect
 from tests.test_webdata import ROGUE, hit, write_session
 
 RECV_TIMEOUT_S = 5.0
+ZERO_NOW = {"10": 0.0, "30": 0.0, "60": 0.0, "120": 0.0}
 
 
 def fetch(url: str) -> tuple[int, dict[str, str], bytes]:
@@ -132,14 +133,13 @@ class DashboardTests(unittest.TestCase):
                 self.assertGreater(history[0]["t"], 0)
                 self.assertEqual(
                     history[0]["sources"],
-                    [{"key": "slot0:Jakobs Sniper", "label": "Jakobs Sniper", "slot": 0, "dps": 250.0, "now": 0.0}, {"key": "Skill", "label": "Skill", "slot": -1, "dps": 40.0, "now": 0.0}],
+                    [{"key": "slot0:Jakobs Sniper", "label": "Jakobs Sniper", "slot": 0, "dps": 250.0, "now": ZERO_NOW}, {"key": "Skill", "label": "Skill", "slot": -1, "dps": 40.0, "now": ZERO_NOW}],
                     "weapon slots carry their slot number, empty slots are left out, other sources go by label",
                 )
 
     def test_samples_carry_the_dps_of_the_last_seconds(self) -> None:
         import time as clock
 
-        self.dashboard.chart_seconds = 10.0
         now = clock.time()
         self.dashboard.publish_hits([
             hit(now - 30.0, 9999.0),
@@ -159,10 +159,12 @@ class DashboardTests(unittest.TestCase):
         self.dashboard.publish_rows(rows, ["seed277"])
         with connect(self.url.replace("http://", "ws://") + "ws") as client:
             hello = json.loads(client.recv(RECV_TIMEOUT_S))
-            self.assertEqual(hello["chart_seconds"], 10.0)
+            self.assertEqual(hello["chart_seconds"], 30.0)
+            self.assertEqual(hello["chart_windows"], [10.0, 30.0, 60.0, 120.0])
             sample = hello["history"][-1]
-            self.assertEqual(sample["now"], 125.0, "1'250 damage in the last 10 s; the hit from 30 s ago is out")
-            self.assertEqual([(source["label"], source["now"]) for source in sample["sources"]], [("Jakobs Sniper", 100.0), ("Skill", 25.0)])
+            self.assertEqual(sample["now"]["10"], 125.0, "1'250 damage in the last 10 s; the hit from 30 s ago is out")
+            self.assertEqual(sample["now"]["60"], (1250.0 + 9999.0) / 60.0, "the 60 s window still holds it")
+            self.assertEqual([(source["label"], source["now"]["10"]) for source in sample["sources"]], [("Jakobs Sniper", 100.0), ("Skill", 25.0)])
             self.assertEqual(sample["sources"][0]["dps"], 20.0, "the window value stays alongside")
 
     def test_foreign_origin_is_refused(self) -> None:

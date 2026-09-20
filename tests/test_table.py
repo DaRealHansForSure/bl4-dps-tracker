@@ -130,6 +130,13 @@ class BuildRowsTests(unittest.TestCase):
         self.assertEqual(with_best[0].cells[-1], "Best DPS")
         self.assertEqual(with_best[2].cells[-1], "9")
 
+    def test_share_column_is_optional(self) -> None:
+        window = window_with(hit(100.0, 100.0, SNIPER), now=105.0)
+        rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277", best=PeakDps({"277": 9.0}, {}), share=False)
+        self.assertEqual(rows[0].cells, ("Weapon", "Total", "DPS", "Best DPS"))
+        self.assertEqual(rows[2].cells, ("Jakobs Sniper", "100", "20", "9"))
+        self.assertEqual(rows[10].cells, ("Last 5 min", "100", "20", ""))
+
     def test_hidden_rows_are_left_out_but_still_count_in_the_total(self) -> None:
         melee = DamageSource("melee", "Melee", "", "")
         window = window_with(hit(100.0, 50.0, melee), hit(101.0, 950.0, SNIPER), now=105.0)

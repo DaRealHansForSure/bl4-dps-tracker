@@ -61,6 +61,7 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-x: auto; min-width: 0; }
   .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
   .card h2 span { text-transform: none; letter-spacing: 0; font-weight: normal; margin-left: 8px; }
+  .card h2 select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; font: inherit; padding: 1px 4px; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { padding: 4px 10px; text-align: right; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
@@ -121,7 +122,7 @@
         <table id="live-table"><tbody></tbody></table>
       </div>
       <div class="card chart">
-        <h2>DPS over time <span id="chart-note" class="muted"></span></h2>
+        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the <span id="chart-window"></span> min window</span></h2>
         <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
@@ -353,9 +354,9 @@
     if (data.type === "hello") {
       character = data.character;
       document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of play";
-      chartSeconds = data.chart_seconds || 10;
       windowMinutes = data.window_minutes || 5;
-      document.getElementById("chart-note").textContent = "now = last " + formatNumber(chartSeconds, 0) + " s, dashed = the " + formatNumber(windowMinutes, 0) + " min window";
+      document.getElementById("chart-window").textContent = formatNumber(windowMinutes, 0);
+      setChartWindows(data.chart_windows || [10], data.chart_seconds || 10);
       setStatus(true, "live, " + characterText());
       renderLive(data.rows);
       fill(feedBody, (data.recent || []).map(function (event) { return hitRow(event, false); }));
@@ -430,16 +431,54 @@
   // line, and the table's window average as a dashed line for reference. A tooltip lists
   // them for the hovered sample. A mod that sends no "now" (an older build) falls back to
   // the window values.
-  let chartSeconds = 10;
+  let chartSeconds = 30;
   let windowMinutes = 5;
   const AVERAGE_COLOR = "#9aa3ad";
+  const chartSecondsSelect = document.getElementById("chart-seconds");
+
+  // The mod sends one "now" value per chart window; the select picks which one to show.
+  function setChartWindows(windows, chosen) {
+    chartSecondsSelect.textContent = "";
+    windows.forEach(function (seconds) {
+      const option = document.createElement("option");
+      option.value = String(seconds);
+      option.textContent = formatNumber(seconds, 0);
+      chartSecondsSelect.appendChild(option);
+    });
+    let wanted = chosen;
+    try { wanted = Number(localStorage.getItem("dmgtracker.chartSeconds")) || chosen; } catch (e) { /* private mode */ }
+    if (windows.indexOf(wanted) < 0) {
+      wanted = chosen;
+    }
+    chartSecondsSelect.value = String(wanted);
+    chartSeconds = wanted;
+  }
+
+  chartSecondsSelect.addEventListener("change", function () {
+    chartSeconds = Number(chartSecondsSelect.value);
+    try { localStorage.setItem("dmgtracker.chartSeconds", String(chartSeconds)); } catch (e) { /* private mode */ }
+    drawChart();
+  });
+
+  // "now" is a value per window; a number is the single window of an older mod build, and
+  // a missing value falls back to the window average.
+  function pickNow(now, fallback) {
+    if (now === undefined || now === null) {
+      return fallback;
+    }
+    if (typeof now === "number") {
+      return now;
+    }
+    const value = now[String(chartSeconds)];
+    return value === undefined ? fallback : value;
+  }
 
   function nowOf(sample) {
-    return sample.now !== undefined ? sample.now : sample.dps;
+    return pickNow(sample.now, sample.dps);
   }
 
   function sourceNowOf(source) {
-    return source.now !== undefined ? source.now : source.dps;
+    return pickNow(source.now, source.dps);
   }
   const CHART_MARGIN = { left: 8, right: 8, top: 34, bottom: 22 };
   const TIME_LABELS = 5;
