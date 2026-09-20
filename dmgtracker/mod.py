@@ -21,7 +21,7 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import UNKNOWN_SOURCE, WeaponResolver
+from .attribution import UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -39,8 +39,10 @@ DEFAULT_LOG_DIR = r"%LOCALAPPDATA%\BL4DamageTracker\logs"
 FALLBACK_LOG_DIR = Path.home() / "AppData" / "Local" / "BL4DamageTracker" / "logs"
 
 DEFAULT_TICK_FUNCTION = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
-# Optional hooks that tell grenade and melee damage apart from the gun's own splash (call
-# traces, findings section B). Missing ones are reported once and skipped.
+# Optional hooks that attribute explosions, grenades and melee (probes, findings section B).
+# Missing ones are reported once and skipped. None of them reads hook arguments: reading an
+# argument of an unknown property type inside a hook crashed the game once.
+PROJECTILE_EXPLODE_FUNCTION = "/Script/GbxGame.projectile:Explode"
 GRENADE_THROW_FUNCTION = "/Script/OakGame.OakCharacter:ThrowGadget"
 GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
 MELEE_SWING_FUNCTION = (
@@ -132,6 +134,8 @@ _transition_hidden = False
 _equipped_cache: list = []
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
+# Clocks: intervals and this combat clock run on time.monotonic(), which cannot jump; event
+# timestamps and everything persisted use time.time(), which is comparable across sessions.
 _combat_clock = 0.0
 _last_combat_step = 0.0
 
@@ -262,10 +266,11 @@ def _refresh_readout() -> None:
         controller = poller.controller
         pawn = controller.Pawn
         readout.set_visible(_should_show_table(controller, pawn))
-        now = time.time()
+        now = time.monotonic()
         if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
             return
         _last_readout_refresh = now
+        wall_now = time.time()
         if not controller.IsMoveInputIgnored():
             _transition_hidden = False
         else:
@@ -273,7 +278,7 @@ def _refresh_readout() -> None:
             # until they come back. Checked at refresh rate: a function call, not a field read.
             _transition_hidden = True
             readout.set_visible(False)
-        tracker.close_if_idle(now)
+        tracker.close_if_idle(wall_now)
         _advance_combat_clock(now)
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
@@ -282,6 +287,7 @@ def _refresh_readout() -> None:
             if equipped is not None:
                 _equipped_cache = equipped
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
+        poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
         rolling.prune(_combat_clock)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
@@ -338,7 +344,7 @@ def _give_up_readout_if_needed() -> None:
 
 def _maybe_report_status() -> None:
     global _last_status_time, _broken_reported
-    now = time.time()
+    now = time.monotonic()
     if now - _last_status_time < float(status_interval_s.value):
         return
     _last_status_time = now
@@ -372,6 +378,24 @@ def _is_player_pawn(actor: Any) -> bool:
         return pawn is not None and int(pawn._get_address()) == int(actor._get_address())
     except Exception:  # noqa: BLE001 - no pawn, no player action
         return False
+
+
+def _on_projectile_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    """A projectile went off. Owned by a weapon: that weapon's damage follows within a few
+    frames, whatever is in hand. Owned by the character: a grenade."""
+    try:
+        if poller is None:
+            return
+        instigator = obj.GetInstigator()
+        if instigator is None or not _is_player_pawn(instigator):
+            return
+        owner = obj.GetOwner()
+        if owner is not None and str(owner.Class.Name) == WEAPON_CLASS_NAME:
+            poller.note_explosion(time.time(), resolver.resolve_weapon(owner))
+        else:
+            poller.note_grenade_exploded(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
 
 
 def _on_grenade_thrown(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
@@ -408,6 +432,7 @@ def _on_melee_swing(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunc
 
 
 SOURCE_HOOKS = (
+    (PROJECTILE_EXPLODE_FUNCTION, "projectile-explode", _on_projectile_exploded, "explosive round"),
     (GRENADE_THROW_FUNCTION, "grenade-throw", _on_grenade_thrown, "grenade"),
     (GRENADE_EXPLODE_FUNCTION, "grenade-explode", _on_grenade_exploded, "grenade"),
     (MELEE_SWING_FUNCTION, "melee-swing", _on_melee_swing, "melee"),
@@ -459,8 +484,8 @@ def on_enable() -> None:
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _combat_clock
     _broken_reported = False
     _readout_errors = 0
-    _last_status_time = time.time()
-    _last_held_sample = time.time()
+    _last_status_time = time.monotonic()
+    _last_held_sample = time.monotonic()
     _combat_clock = 0.0
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
