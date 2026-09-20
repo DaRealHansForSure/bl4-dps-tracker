@@ -6,6 +6,19 @@ keeps a small ring of `RecentPlayerCausedDamageInstance` structs (the source of 
 floating numbers), and every write bumps that slot's RepDirtyFlag. Comparing the six flags
 with the previous frame's values catches every instance (see poc/findings.md, section B).
 
+Attribution, in this order (all from recorded sessions, see the findings):
+  1. status ticks (burn, radiation, ...) go to the last hit on that target;
+  2. a hit with the gun flag (0x400, bullet impacts) goes to the gun in hand;
+  3. an unflagged hit on a target that took a flagged hit in the same frame is the elemental
+     half of that bullet: gun in hand;
+  4. an unflagged hit inside a grenade window (after ThrowGadget, extended by a gadget
+     explosion) is grenade damage;
+  5. an unflagged hit shortly after a melee swing is melee damage;
+  6. every other unflagged hit is splash, explosive rounds or elemental damage of the gun in
+     hand, which the data shows is the common case.
+The mod feeds the grenade and melee windows from hooks; without them nothing breaks, the
+grenade and melee damage then lands on the gun in hand.
+
 This module never imports the SDK: the controller is obtained through a callable and only
 its attributes are read, so the whole path can be exercised with fakes in the tests.
 
@@ -20,7 +33,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .attribution import OTHER_SOURCE, DamageSource, WeaponResolver
+from .attribution import GRENADE_SOURCE, MELEE_SOURCE, OTHER_SOURCE, DamageSource, WeaponResolver
 
 ERRORS_TO_REMEMBER = 3
 # Outside the world (main menu, loading) there is nothing to poll; look again once a second.
@@ -45,6 +58,13 @@ KIND_HEAL = "heal"
 STATUS_TYPE_SUFFIX = "_Status"
 STATUS_ATTRIBUTION_WINDOW_S = 30.0
 MAX_REMEMBERED_TARGETS = 128
+
+# How long after a throw unflagged damage counts as grenade damage (fuses, drone gadgets
+# that fire for a while), how long a gadget explosion extends that, and how long after a
+# melee swing starts its damage can land.
+GRENADE_WINDOW_S = 8.0
+EXPLOSION_WINDOW_S = 1.0
+MELEE_WINDOW_S = 1.5
 
 EventSink = Callable[[list[dict[str, Any]]], None]
 ControllerResolver = Callable[[], Any]
@@ -87,6 +107,19 @@ class DamagePoller:
         self._controller_address = 0
         self._idle_until = 0.0
         self._last_hit_by_target: dict[str, tuple[DamageSource, float]] = {}
+        self._grenade_until = 0.0
+        self._melee_until = 0.0
+
+    # ------------------------------------------------------------------ source windows
+
+    def note_grenade_thrown(self, now: float) -> None:
+        self._grenade_until = max(self._grenade_until, now + GRENADE_WINDOW_S)
+
+    def note_grenade_exploded(self, now: float) -> None:
+        self._grenade_until = max(self._grenade_until, now + EXPLOSION_WINDOW_S)
+
+    def note_melee_swing(self, now: float) -> None:
+        self._melee_until = now + MELEE_WINDOW_S
 
     def tick(self) -> None:
         """Called once per frame from the tick hook. Never raises."""
@@ -156,25 +189,31 @@ class DamagePoller:
         # Damage dealt from a vehicle is not the player's gun play; it is dropped, but the
         # flags still advance so those hits are not replayed once the player is on foot.
         tracking = self._resolver.is_character(pawn)
-        new_events: list[dict[str, Any]] = []
-        changed_slots = 0
+        changed: list[Any] = []
         for index in range(self._ring_size):
             instance = ring[index]
             dirty = int(instance.RepDirtyFlag)
             if dirty == self._dirty_flags[index]:
                 continue
             self._dirty_flags[index] = dirty
-            changed_slots += 1
-            if tracking:
-                new_events.append(self._read_instance(instance, pawn, now))
-            else:
-                self.ignored_events += 1
-        if changed_slots == self._ring_size:
+            changed.append(instance)
+        if len(changed) == self._ring_size:
             # Every slot changed within one frame: the ring may have wrapped and dropped hits.
             self.overflow_frames += 1
-        return new_events
+        if not tracking:
+            self.ignored_events += len(changed)
+            return []
+        # Targets that took a bullet impact this frame: their unflagged hits in the same frame
+        # are the elemental part of that bullet, not a grenade or a swing.
+        flagged_targets: set[str] = set()
+        for instance in changed:
+            if int(instance.DamageFlags.Flags) & WEAPON_FLAG:
+                target = instance.DamagedActor
+                if target is not None:
+                    flagged_targets.add(str(target.Name))
+        return [self._read_instance(instance, pawn, now, flagged_targets) for instance in changed]
 
-    def _read_instance(self, instance: Any, pawn: Any, now: float) -> dict[str, Any]:
+    def _read_instance(self, instance: Any, pawn: Any, now: float, flagged_targets: set[str]) -> dict[str, Any]:
         flags = int(instance.DamageFlags.Flags)
         damage_type = instance.DamageType
         target = instance.DamagedActor
@@ -192,10 +231,7 @@ class DamagePoller:
             source = self._status_source(target_name, now)
         else:
             kind = KIND_DIRECT
-            if flags & WEAPON_FLAG:
-                source = self._resolver.weapon_in_hand(pawn)
-            else:
-                source = OTHER_SOURCE
+            source = self._direct_source(flags, target_name, flagged_targets, pawn, now)
             self._remember_hit(target_name, source, now)
         return {
             "t": now,
@@ -213,7 +249,16 @@ class DamagePoller:
             "target": target_name,
         }
 
-    # ------------------------------------------------------------------ status attribution
+    # ------------------------------------------------------------------ attribution
+
+    def _direct_source(self, flags: int, target_name: str, flagged_targets: set[str], pawn: Any, now: float) -> DamageSource:
+        if flags & WEAPON_FLAG or target_name in flagged_targets:
+            return self._resolver.weapon_in_hand(pawn)
+        if now < self._grenade_until:
+            return GRENADE_SOURCE
+        if now < self._melee_until:
+            return MELEE_SOURCE
+        return self._resolver.weapon_in_hand(pawn)
 
     def _remember_hit(self, target_name: str, source: DamageSource, now: float) -> None:
         if not target_name:

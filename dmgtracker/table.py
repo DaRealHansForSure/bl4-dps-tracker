@@ -27,7 +27,6 @@ STYLE_SPACER = "spacer"
 
 HEADER_CELLS = ("Weapon", "Total", "DPS", "Share [%]")
 EMPTY_CELLS = ("", "", "", "")
-OTHER_LABEL = "Other"
 ENCOUNTER_LABEL = "Encounter"
 
 MAX_SOURCE_ROWS = 8
@@ -76,9 +75,9 @@ def build_rows(
     """The complete table for the current state, at most MAX_ROWS rows.
 
     Every equipped weapon gets a row (even at zero damage), in slot order, followed by
-    sources that dealt damage in the window but are not equipped any more, then the Other
-    row (grenades, melee, skills, status ticks with no known source) when it has damage.
-    The encounter row appears only when an encounter is passed in.
+    sources that dealt damage in the window but are not equipped any more, then one row per
+    non-weapon source with damage (Grenade, Melee, Other), largest first. The encounter row
+    appears only when an encounter is passed in.
     """
     rows = [TableRow(HEADER_CELLS, STYLE_HEADER)]
     rows.extend(_source_rows(window, equipped, held_instance_id))
@@ -107,9 +106,9 @@ def _source_rows(scope: DamageScope, equipped: list[DamageSource], held_instance
         listed_instance_ids.add(totals.instance_id)
         rows.append(_weapon_row(totals.label, totals, scope, STYLE_ROW))
 
-    other_damage = scope.other_damage()
-    if other_damage > 0:
-        rows.append(_damage_row(OTHER_LABEL, other_damage, duration, total, STYLE_ROW))
+    non_weapon = [totals for totals in scope.by_source.values() if totals.kind != SOURCE_WEAPON and totals.damage > 0]
+    for totals in sorted(non_weapon, key=lambda item: item.damage, reverse=True):
+        rows.append(_damage_row(totals.label, totals.damage, duration, total, STYLE_ROW))
 
     return rows[:MAX_SOURCE_ROWS]
 

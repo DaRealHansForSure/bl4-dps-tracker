@@ -77,19 +77,24 @@ class BuildRowsTests(unittest.TestCase):
         self.assertEqual(rows[1].cells, ("Vladof Assault Rifle", "765'433", "76'543", "38.3"))
         self.assertEqual(rows[4].cells, ("Last 5 min", "2'000'000", "200'000", "100.0"))
 
-    def test_unequipped_and_other_rows_follow_the_equipped_ones(self) -> None:
+    def test_unequipped_and_non_weapon_rows_follow_the_equipped_ones(self) -> None:
         shotgun = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", 278)
-        other = DamageSource("other", "Other", "", 0)
+        grenade = DamageSource("grenade", "Grenade", "", 0)
+        melee = DamageSource("melee", "Melee", "", 0)
         window = window_with(
-            hit(100.0, 100.0, shotgun), hit(101.0, 50.0, other), hit(102.0, 25.0, SNIPER, kind="dot"), now=105.0
+            hit(100.0, 100.0, shotgun), hit(101.0, 50.0, melee), hit(101.5, 333.0, grenade),
+            hit(102.0, 25.0, SNIPER, kind="dot"), now=105.0,
         )
         rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, 280)
         labels = [row.cells[0] for row in rows]
-        self.assertEqual(labels, ["Weapon", "Vladof Assault Rifle", "Jakobs Sniper", "Torgue Shotgun", "Other", "", "Last 5 min"])
+        self.assertEqual(
+            labels, ["Weapon", "Vladof Assault Rifle", "Jakobs Sniper", "Torgue Shotgun", "Grenade", "Melee", "", "Last 5 min"]
+        )
         self.assertEqual(rows[2].cells[1], "25", "the sniper's status ticks count for the sniper")
         self.assertEqual(rows[3].cells[1], "100")
-        self.assertEqual(rows[4].cells[1], "50")
-        self.assertEqual(rows[6].cells[1], "175")
+        self.assertEqual(rows[4].cells[1], "333")
+        self.assertEqual(rows[5].cells[1], "50")
+        self.assertEqual(rows[7].cells[1], "508")
 
     def test_row_count_never_exceeds_the_widget_capacity(self) -> None:
         many = [DamageSource("weapon", f"Gun {index}", "", index) for index in range(1, 12)]

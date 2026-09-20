@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from dmgtracker.attribution import WeaponResolver
+from dmgtracker.attribution import GRENADE_SOURCE, MELEE_SOURCE, WeaponResolver
 from dmgtracker.poller import CRIT_FLAG, HEALING_FLAG, KILL_FLAG, WEAPON_FLAG, DamagePoller
 
 RING_PROPERTY = "RecentlyCausedDamageInstances"
@@ -111,16 +111,57 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(event["t"], self.clock.now)
         self.assertEqual(self.poller.events, 1)
 
-    def test_hits_without_the_weapon_flag_are_other_damage(self) -> None:
+    def test_unflagged_hits_belong_to_the_gun_in_hand_by_default(self) -> None:
         self.poller.tick()
-        write_hit(self.controller, 0, 333.0, flags=KILL_FLAG)
-        write_hit(self.controller, 1, 333.0, flags=0)
+        write_hit(self.controller, 0, 300.9, flags=KILL_FLAG, target="Char_A_1")
+        write_hit(self.controller, 1, 300.9, flags=0, target="Char_B_2")
         self.poller.tick()
         first, second = self.received
-        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", 0))
+        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("weapon", "Jakobs Sniper", 277))
         self.assertTrue(first["kill"])
-        self.assertEqual(second["src"], "other")
+        self.assertEqual(second["src"], "weapon")
         self.assertFalse(second["kill"])
+
+    def test_grenade_window_claims_unflagged_hits(self) -> None:
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.clock.advance(2.0)
+        write_hit(self.controller, 0, 333.0, flags=0, target="Char_A_1")
+        write_hit(self.controller, 1, 333.0, flags=KILL_FLAG, target="Char_B_2")
+        write_hit(self.controller, 2, 50.0, flags=WEAPON_FLAG, target="Char_C_3")
+        self.poller.tick()
+        self.assertEqual([e["weapon"] for e in self.received], [GRENADE_SOURCE.label, GRENADE_SOURCE.label, "Jakobs Sniper"])
+        self.assertEqual(self.received[0]["src"], "grenade")
+        self.clock.advance(7.0)
+        write_hit(self.controller, 3, 300.9, flags=0, target="Char_D_4")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["weapon"], "Jakobs Sniper", "the window has passed")
+
+    def test_explosion_extends_the_grenade_window(self) -> None:
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.clock.advance(7.9)
+        self.poller.note_grenade_exploded(self.clock.now)
+        self.clock.advance(0.8)
+        write_hit(self.controller, 0, 333.0, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "grenade")
+
+    def test_melee_window_claims_unflagged_hits(self) -> None:
+        self.poller.tick()
+        self.poller.note_melee_swing(self.clock.now)
+        self.clock.advance(0.5)
+        write_hit(self.controller, 0, 270.7, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.assertEqual((self.received[-1]["src"], self.received[-1]["weapon"]), ("melee", MELEE_SOURCE.label))
+
+    def test_same_frame_elemental_hit_stays_with_the_gun_even_in_a_window(self) -> None:
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        write_hit(self.controller, 0, 56.9, flags=WEAPON_FLAG, target="Char_A_1", dtype="Radiation")
+        write_hit(self.controller, 1, 56.9, flags=0, target="Char_A_1", dtype="Radiation")
+        self.poller.tick()
+        self.assertEqual([e["weapon"] for e in self.received], ["Jakobs Sniper", "Jakobs Sniper"])
 
     def test_vehicle_hits_are_ignored_but_not_replayed(self) -> None:
         self.poller.tick()
@@ -155,6 +196,7 @@ class DamagePollerTests(unittest.TestCase):
     def test_status_ticks_are_credited_to_the_last_hit_on_that_target(self) -> None:
         self.poller.tick()
         write_hit(self.controller, 0, 50.0, flags=WEAPON_FLAG, target="Char_Leader_7", dtype="Radiation")
+        self.poller.note_grenade_thrown(self.clock.now)
         write_hit(self.controller, 1, 300.0, flags=0, target="Char_Psycho_3", dtype="Normal")
         self.poller.tick()
         write_hit(self.controller, 2, 6.3, flags=0x90, target="Char_Leader_7", dtype="Radiation_Status")
@@ -163,8 +205,8 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         ticks = self.received[2:]
         self.assertEqual([event["kind"] for event in ticks], ["dot", "dot", "dot"])
-        self.assertEqual([event["weapon"] for event in ticks], ["Jakobs Sniper", "Other", "Other"])
-        self.assertEqual([event["src"] for event in ticks], ["weapon", "other", "other"])
+        self.assertEqual([event["weapon"] for event in ticks], ["Jakobs Sniper", "Grenade", "Other"])
+        self.assertEqual([event["src"] for event in ticks], ["weapon", "grenade", "other"])
 
     def test_status_attribution_expires(self) -> None:
         self.poller.tick()

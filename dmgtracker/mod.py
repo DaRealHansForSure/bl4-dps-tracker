@@ -39,6 +39,14 @@ DEFAULT_LOG_DIR = r"%LOCALAPPDATA%\BL4DamageTracker\logs"
 FALLBACK_LOG_DIR = Path.home() / "AppData" / "Local" / "BL4DamageTracker" / "logs"
 
 DEFAULT_TICK_FUNCTION = "/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget"
+# Optional hooks that tell grenade and melee damage apart from the gun's own splash (call
+# traces, findings section B). Missing ones are reported once and skipped.
+GRENADE_THROW_FUNCTION = "/Script/OakGame.OakCharacter:ThrowGadget"
+GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
+MELEE_SWING_FUNCTION = (
+    "/Game/PlayerCharacters/_Shared/Tricks/Skills/Script_LTrick_HandleOffhand."
+    "Script_LTrick_HandleOffhand_C:OnBegin_Const"
+)
 DEFAULT_RING_PROPERTY = "RecentlyCausedDamageInstances"
 DEFAULT_RING_SIZE = 6
 DEFAULT_FLUSH_INTERVAL_S = 1.0
@@ -355,6 +363,57 @@ def _maybe_report_status() -> None:
     poller.recent_errors.clear()
 
 
+# ------------------------------------------------------------------ source hooks
+
+def _is_player_pawn(actor: Any) -> bool:
+    """Whether this actor is the player's own pawn; enemies throw gadgets too."""
+    try:
+        pawn = get_pc(possibly_loading=True).Pawn
+        return pawn is not None and int(pawn._get_address()) == int(actor._get_address())
+    except Exception:  # noqa: BLE001 - no pawn, no player action
+        return False
+
+
+def _on_grenade_thrown(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    try:
+        if poller is not None and _is_player_pawn(obj):
+            poller.note_grenade_thrown(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
+def _on_grenade_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    try:
+        if poller is None:
+            return
+        instigator = getattr(obj, "Instigator", None)
+        if instigator is None or _is_player_pawn(instigator):
+            poller.note_grenade_exploded(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
+def _on_melee_swing(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    try:
+        if poller is None:
+            return
+        try:
+            actor = obj.GetAssociatedActor()
+        except Exception:  # noqa: BLE001 - if the script cannot say whose it is, assume ours
+            actor = None
+        if actor is None or _is_player_pawn(actor):
+            poller.note_melee_swing(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
+SOURCE_HOOKS = (
+    (GRENADE_THROW_FUNCTION, "grenade-throw", _on_grenade_thrown, "grenade"),
+    (GRENADE_EXPLODE_FUNCTION, "grenade-explode", _on_grenade_exploded, "grenade"),
+    (MELEE_SWING_FUNCTION, "melee-swing", _on_melee_swing, "melee"),
+)
+
+
 # ------------------------------------------------------------------ hook management
 
 def _install_tick_hook() -> bool:
@@ -373,10 +432,24 @@ def _install_tick_hook() -> bool:
     return True
 
 
+def _install_source_hooks() -> None:
+    for path, name, callback, damage_kind in SOURCE_HOOKS:
+        try:
+            unrealsdk.find_object("Function", path)
+        except ValueError:
+            _say(f"{name} hook target {path!r} not found; {damage_kind} damage will count for the gun in hand")
+            continue
+        unrealsdk.hooks.add_hook(path, Type.POST, f"{HOOK_ID}:{name}", callback)
+
+
 def _remove_tick_hook() -> None:
     path = str(tick_function.value)
     if unrealsdk.hooks.has_hook(path, Type.POST, HOOK_ID):
         unrealsdk.hooks.remove_hook(path, Type.POST, HOOK_ID)
+    for source_path, name, _callback, _kind in SOURCE_HOOKS:
+        identifier = f"{HOOK_ID}:{name}"
+        if unrealsdk.hooks.has_hook(source_path, Type.POST, identifier):
+            unrealsdk.hooks.remove_hook(source_path, Type.POST, identifier)
 
 
 # ------------------------------------------------------------------ lifecycle
@@ -406,6 +479,7 @@ def on_enable() -> None:
         session_log.add_flush_listener(lambda _batch: weapon_store.save_if_due(time.time()))
     if not _install_tick_hook():
         return
+    _install_source_hooks()
     log_path = session_log.path if session_log is not None else "nothing (log unavailable)"
     _say(f"v{_mod_version()} enabled, logging to {log_path}")
 
