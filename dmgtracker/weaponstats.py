@@ -42,6 +42,15 @@ class WeaponRecord:
     first_seen: float = 0.0
     last_seen: float = 0.0
 
+    def add(self, event: dict[str, Any]) -> None:
+        """Count one damage event of this weapon."""
+        self.damage += float(event["dmg"])
+        self.hits += 1
+        if event.get("crit"):
+            self.crits += 1
+        if event.get("kill"):
+            self.kills += 1
+
     def dps_in_hand(self) -> float:
         if self.held_seconds < MIN_HELD_SECONDS_FOR_DPS:
             return 0.0
@@ -157,12 +166,7 @@ class WeaponStore:
             return
         with self._lock:
             record = self._record(instance_id, str(event.get("weapon", UNKNOWN_LABEL)), str(event.get("body", "")), float(event["t"]))
-            record.damage += float(event["dmg"])
-            record.hits += 1
-            if event.get("crit"):
-                record.crits += 1
-            if event.get("kill"):
-                record.kills += 1
+            record.add(event)
             self._dirty = True
 
     def add_held(self, instance_id: int, label: str, body: str, seconds: float, now: float) -> None:

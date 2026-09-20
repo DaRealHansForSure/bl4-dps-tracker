@@ -26,6 +26,7 @@ from .character import CharacterIdentity, read_identity
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
+from .report import format_report, gap_for, read_session
 from .stats import EncounterTracker, RollingStats, source_key
 from .table import build_rows
 from .weaponstats import WeaponStore
@@ -664,6 +665,25 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
 dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
 
 
+@command("dmgreport", description="Report over the current session: encounters, per-weapon numbers, optionally the last N seconds.")
+def dmgreport_command(args: argparse.Namespace) -> None:
+    if session_log is None or session_log.path is None:
+        logging.info(f"{LOG_PREFIX} no session log (the mod is not enabled or logging failed)")
+        return
+    try:
+        session = read_session(session_log.path)
+        lines = format_report(session, gap_for(session, args.gap), args.last)
+    except Exception as ex:  # noqa: BLE001 - a report failure is worth a line, not a stack in the console
+        logging.error(f"{LOG_PREFIX} report failed: {type(ex).__name__}: {ex}")
+        return
+    for line in lines:
+        logging.info(line)
+
+
+dmgreport_command.add_argument("--last", type=float, default=None, metavar="SECONDS", help="also average the final N seconds")
+dmgreport_command.add_argument("--gap", type=float, default=None, metavar="SECONDS", help="seconds without a hit that end an encounter")
+
+
 @command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's.")
 def dmgreset_command(args: argparse.Namespace) -> None:
     if poller is None:
@@ -727,7 +747,7 @@ mod = build_mod(
     ],
     keybinds=[],
     hooks=[],
-    commands=[dmgweapons_command, dmgreset_command],
+    commands=[dmgweapons_command, dmgreport_command, dmgreset_command],
     on_enable=on_enable,
     on_disable=on_disable,
 )
