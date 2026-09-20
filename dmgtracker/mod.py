@@ -120,6 +120,7 @@ _tick_errors = 0
 _last_readout_refresh = 0.0
 _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
+_transition_hidden = False
 _equipped_cache: list = []
 
 
@@ -242,17 +243,24 @@ def _on_show_readout_changed(value: bool) -> None:
 def _refresh_readout() -> None:
     """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S.
     Uses only this frame's controller wrapper; nothing is kept across frames."""
-    global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors
+    global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors, _transition_hidden
     if readout is None or poller is None or poller.controller is None:
         return
     try:
         controller = poller.controller
         pawn = controller.Pawn
-        readout.set_visible(pawn is not None and not controller.bShowMouseCursor)
+        readout.set_visible(_should_show_table(controller, pawn))
         now = time.time()
         if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
             return
         _last_readout_refresh = now
+        if not controller.IsMoveInputIgnored():
+            _transition_hidden = False
+        else:
+            # Tunnel transitions and cutscenes take the controls away; keep the table off
+            # until they come back. Checked at refresh rate: a function call, not a field read.
+            _transition_hidden = True
+            readout.set_visible(False)
         tracker.close_if_idle(now)
         if pawn is not None and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
@@ -272,6 +280,14 @@ def _refresh_readout() -> None:
         if _readout_errors <= READOUT_ERRORS_TO_LOG:
             _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
         _give_up_readout_if_needed()
+
+
+def _should_show_table(controller: UObject, pawn: Any) -> bool:
+    """Field reads only, so this can run every frame: no pawn (menus, loading), a menu with
+    the cursor (ESC, inventory, map), a hidden pawn (tunnels, cutscenes) all hide the table."""
+    if pawn is None or controller.bShowMouseCursor or _transition_hidden:
+        return False
+    return not pawn.bHidden
 
 
 def _sample_held_time(held: Any, now: float) -> None:
