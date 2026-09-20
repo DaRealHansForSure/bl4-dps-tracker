@@ -104,6 +104,7 @@ class DashboardTests(unittest.TestCase):
             hello = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(hello["type"], "hello")
             self.assertEqual((hello["version"], hello["character"], hello["window_minutes"], hello["rows"]), ("1.2.3", ROGUE, 5.0, []))
+            self.assertEqual([event["dmg"] for event in hello["recent"]], [50.0, 100.0], "the session's newest hits, newest first")
             rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "1'000"), "active")]
             self.dashboard.publish_rows(rows)
             self.dashboard.publish_rows(rows)

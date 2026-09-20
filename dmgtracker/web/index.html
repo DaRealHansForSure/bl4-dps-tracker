@@ -51,7 +51,7 @@
   }
   nav button.active { background: var(--accent); color: #111; border-color: var(--accent); }
   .controls input { cursor: text; min-width: 220px; }
-  main { padding: 16px 20px; }
+  main { padding: 16px 20px; max-width: 1600px; margin: 0 auto; }
   section { display: none; }
   section.active { display: block; }
   .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; color: var(--muted); }
@@ -346,6 +346,7 @@
       document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of fighting";
       setStatus(true, "live, " + characterText());
       renderLive(data.rows);
+      fill(feedBody, (data.recent || []).map(function (event) { return hitRow(event, false); }));
     } else if (data.type === "table") {
       renderLive(data.rows);
       recordSample(data.rows, data.t);

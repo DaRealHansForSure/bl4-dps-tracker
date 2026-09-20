@@ -65,6 +65,8 @@ RECV_TIMEOUT_S = 1.0
 THREAD_JOIN_TIMEOUT_S = 3.0
 # Hits waiting for the broadcaster while no client reads them; older ones are dropped.
 MAX_PENDING_HITS = 5000
+# The newest hits of the session sent to a client on connect, so the feed is not empty after a reload.
+RECENT_HITS = 50
 
 Message = dict[str, Any]
 
@@ -280,7 +282,20 @@ class Dashboard:
             "character": self.sources.character(),
             "window_minutes": self.sources.window_minutes(),
             "rows": rows,
+            "recent": self._recent_hits(),
         }
+
+    def _recent_hits(self) -> list[Message]:
+        """The newest hits of the current session from its file, newest first; the file is at
+        most one flush interval behind the game."""
+        try:
+            session = self._session_for({})
+        except Exception as ex:  # noqa: BLE001 - a missing feed must not refuse the client
+            self._count_error(f"recent hits: {type(ex).__name__}: {ex}")
+            return []
+        if session is None:
+            return []
+        return hits_page(session, 1, RECENT_HITS, "")["events"]
 
     # ------------------------------------------------------------------ HTTP
 
