@@ -88,6 +88,23 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Fast Gun #2", lines[1])
         self.assertIn("500", lines[1])
 
+    def test_reset_sets_the_file_aside_and_empties_the_records(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(100.0, 400.0))
+        store.save_if_due(now=100.0, force=True)
+        set_aside = store.reset()
+        self.assertEqual(store.records, {})
+        self.assertIsNotNone(set_aside)
+        self.assertTrue(set_aside.exists())
+        self.assertIn("weapons.reset-", set_aside.name)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(store.save_if_due(now=200.0, force=True), "the empty record is saved")
+        self.assertTrue(self.path.exists())
+
+    def test_reset_without_a_file(self) -> None:
+        store = WeaponStore(self.path)
+        self.assertIsNone(store.reset())
+
     def test_empty_ranking_text(self) -> None:
         lines = WeaponStore(self.path).format_ranking()
         self.assertEqual(lines[-1], "no weapon data yet")

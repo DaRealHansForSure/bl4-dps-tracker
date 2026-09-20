@@ -125,12 +125,27 @@ class WeaponStore:
             return False
         return True
 
+    def reset(self) -> Path | None:
+        """Start over: set the current file aside (never delete history) and empty the
+        records. Returns where the old file went, or None if there was none."""
+        with self._lock:
+            self.records = {}
+            self._dirty = True
+        return self._set_aside("reset")
+
     def _set_aside_corrupt_file(self) -> None:
+        self._set_aside("corrupt")
+
+    def _set_aside(self, reason: str) -> Path | None:
+        if not self.path.exists():
+            return None
         stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination = self.path.with_name(f"{self.path.stem}.{reason}-{stamp}{self.path.suffix}")
         try:
-            self.path.replace(self.path.with_name(f"{self.path.stem}.corrupt-{stamp}{self.path.suffix}"))
+            self.path.replace(destination)
         except OSError:
-            pass
+            return None
+        return destination
 
     # ------------------------------------------------------------------ updates
 

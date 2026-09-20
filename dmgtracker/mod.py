@@ -622,6 +622,44 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
 dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
 
 
+@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's.")
+def dmgreset_command(args: argparse.Namespace) -> None:
+    if poller is None:
+        logging.info(f"{LOG_PREFIX} the mod is not enabled")
+        return
+    _reset_live_stats()
+    logging.info(f"{LOG_PREFIX} damage table reset")
+    if args.all:
+        _reset_all_weapon_records()
+    elif args.weapons:
+        _reset_current_weapon_record()
+
+
+dmgreset_command.add_argument("--weapons", action="store_true", help="also start a fresh lifetime record for the current character")
+dmgreset_command.add_argument("--all", action="store_true", help="also start fresh lifetime records for every character")
+
+
+def _reset_current_weapon_record() -> None:
+    if weapon_store is None or character is None:
+        logging.info(f"{LOG_PREFIX} no character loaded, no record to reset")
+        return
+    set_aside = weapon_store.reset()
+    weapon_store.save_if_due(time.time(), force=True)
+    logging.info(f"{LOG_PREFIX} weapon record of {character.display} reset" + (f"; old file kept as {set_aside}" if set_aside else ""))
+
+
+def _reset_all_weapon_records() -> None:
+    characters_dir = _log_dir().parent / CHARACTERS_DIR_NAME
+    count = 0
+    for record_path in characters_dir.glob(f"*/{WEAPON_STORE_NAME}"):
+        if weapon_store is not None and record_path == weapon_store.path:
+            continue
+        WeaponStore(record_path).reset()
+        count += 1
+    _reset_current_weapon_record()
+    logging.info(f"{LOG_PREFIX} {count} other character record(s) set aside")
+
+
 mod = build_mod(
     settings_file=SETTINGS_FILE,
     options=[
@@ -647,7 +685,7 @@ mod = build_mod(
     ],
     keybinds=[],
     hooks=[],
-    commands=[dmgweapons_command],
+    commands=[dmgweapons_command, dmgreset_command],
     on_enable=on_enable,
     on_disable=on_disable,
 )
