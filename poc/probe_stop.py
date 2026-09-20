@@ -65,4 +65,13 @@ if menu_stop is not None:
     except Exception as ex:  # noqa: BLE001
         say(f"   menu sampler: {type(ex).__name__}: {ex}")
 
+# probe_source.py hooks
+source_stop = getattr(builtins, "_dmgsource_stop", None)
+if source_stop is not None:
+    try:
+        source_stop()
+        say("   source probe stopped")
+    except Exception as ex:  # noqa: BLE001
+        say(f"   source probe: {type(ex).__name__}: {ex}")
+
 say(f"done -> {OUT}")
