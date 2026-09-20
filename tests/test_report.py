@@ -25,7 +25,7 @@ ROGUE = {"character": {"key": "aaaa", "class": "Char_RoboDealer", "name": "Rogue
 SIREN = {"character": {"key": "bbbb", "class": "Char_DarkSiren", "name": "DarkSiren"}, "t": 1300.0}
 
 
-def hit(t: float, dmg: float, weapon: str = "Jakobs Sniper", wid: int = 277, src: str = "weapon",
+def hit(t: float, dmg: float, weapon: str = "Jakobs Sniper", wid: str = "277", src: str = "weapon",
         kind: str = "direct", crit: bool = False, kill: bool = False, target: str = "Char_CatAdult_1") -> dict:
     return {"t": t, "dmg": dmg, "kind": kind, "crit": crit, "kill": kill, "elem": 0, "flags": 0,
             "src": src, "weapon": weapon, "body": "", "wid": wid, "dtype": "Normal", "target": target}
@@ -33,13 +33,13 @@ def hit(t: float, dmg: float, weapon: str = "Jakobs Sniper", wid: int = 277, src
 
 ROGUE_EVENTS = [
     hit(1001.0, 100.0, crit=True),
-    hit(1003.0, 50.0, weapon="Vladof Assault Rifle", wid=280),
+    hit(1003.0, 50.0, weapon="Vladof Assault Rifle", wid="280"),
     hit(1004.0, 7.0, kind="dot"),
-    hit(1005.0, 333.0, weapon="Grenade", wid=0, src="grenade", target="Char_CatYoung_2"),
+    hit(1005.0, 333.0, weapon="Grenade", wid="", src="grenade", target="Char_CatYoung_2"),
     hit(1100.0, 400.0, kill=True, target="Char_Boss_9"),
     hit(1101.0, 600.0, target="Char_Boss_9"),
 ]
-SIREN_EVENTS = [hit(1301.0, 5000.0, weapon="Skill", wid=0, src="skill")]
+SIREN_EVENTS = [hit(1301.0, 5000.0, weapon="Skill", wid="", src="skill")]
 
 
 def write_session(directory: Path, name: str = "session-20260920-220000.jsonl", trailing_garbage: bool = False) -> Path:

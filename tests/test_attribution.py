@@ -77,7 +77,11 @@ class WeaponResolverTests(unittest.TestCase):
         self.assertEqual(source.kind, SOURCE_WEAPON)
         self.assertEqual(source.label, "Jakobs Sniper")
         self.assertEqual(source.body, "Body_JAK_SR")
-        self.assertEqual(source.instance_id, 277)
+        self.assertEqual(source.item_id, "instance:277")
+
+    def test_item_id_comes_from_the_injected_reader(self) -> None:
+        resolver = WeaponResolver(lambda weapon: f"seed-{weapon.Item.data.InstanceId}")
+        self.assertEqual(resolver.resolve_weapon(fake_weapon(277)).item_id, "seed-277")
 
     def test_caches_by_instance_id(self) -> None:
         first = self.resolver.resolve_weapon(fake_weapon(277))
@@ -96,7 +100,7 @@ class WeaponResolverTests(unittest.TestCase):
     def test_weapon_without_body_data_still_resolves(self) -> None:
         source = self.resolver.resolve_weapon(fake_weapon(5, body_path=None))
         self.assertEqual(source.label, "Unknown")
-        self.assertEqual(source.instance_id, 5)
+        self.assertEqual(source.item_id, "instance:5")
 
     def test_missing_body_data_is_not_cached(self) -> None:
         self.resolver.resolve_weapon(fake_weapon(5, body_path=None))

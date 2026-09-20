@@ -132,7 +132,7 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(event["kind"], "direct")
         self.assertEqual(event["src"], "weapon")
         self.assertEqual(event["weapon"], "Jakobs Sniper")
-        self.assertEqual(event["wid"], 277)
+        self.assertEqual(event["wid"], "instance:277")
         self.assertEqual(event["target"], "Char_CatYoung_9")
         self.assertEqual(event["dtype"], "Corrosive")
         self.assertEqual(event["t"], self.clock.now)
@@ -146,7 +146,7 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(self.received, [], "unexplained hits are held back for a late explosion event")
         self.settle()
         first, second = self.received
-        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", 0))
+        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", ""))
         self.assertTrue(first["kill"])
         self.assertEqual(second["src"], "other")
         self.assertFalse(second["kill"])
@@ -316,16 +316,16 @@ class DamagePollerTests(unittest.TestCase):
     # ------------------------------------------------------------------ explosions
 
     def test_explosion_before_the_damage_claims_it(self) -> None:
-        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", 281)
+        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", "seed281")
         self.poller.tick()
         self.poller.note_explosion(self.clock.now, torgue)
         self.clock.advance(0.04)
         write_hit(self.controller, 0, 902.8, flags=KILL_FLAG, target="Char_SoldierSMG")
         self.poller.tick()
-        self.assertEqual((self.received[0]["weapon"], self.received[0]["wid"]), ("Torgue Shotgun", 281))
+        self.assertEqual((self.received[0]["weapon"], self.received[0]["wid"]), ("Torgue Shotgun", "seed281"))
 
     def test_explosion_after_the_damage_claims_the_held_event(self) -> None:
-        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", 281)
+        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", "seed281")
         self.poller.tick()
         write_hit(self.controller, 0, 300.9, flags=0x10, target="Char_GruntSMG")
         self.poller.tick()

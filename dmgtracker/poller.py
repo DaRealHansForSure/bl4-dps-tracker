@@ -187,9 +187,9 @@ class DamagePoller:
     def note_weapon_in_hand(self, now: float, held: DamageSource) -> None:
         """Called by the refresh loop; a change of the held weapon starts the swap grace."""
         current = self._current_held
-        if current is not None and held.instance_id == current.instance_id:
+        if current is not None and held.item_id == current.item_id:
             return
-        if current is not None and current.instance_id != 0:
+        if current is not None and current.item_id != "":
             self._previous_held = current
             self._swapped_at = now
             self._hits_since_swap = set()
@@ -352,7 +352,7 @@ class DamagePoller:
         event["src"] = source.kind
         event["weapon"] = source.label
         event["body"] = source.body
-        event["wid"] = source.instance_id
+        event["wid"] = source.item_id
 
     # ------------------------------------------------------------------ attribution
 
@@ -381,7 +381,7 @@ class DamagePoller:
             remembered = self._last_hit_by_target.get(target_name)
             if remembered is not None:
                 last_source, when = remembered
-                if last_source.instance_id == previous.instance_id and now - when <= STICK_WINDOW_S:
+                if last_source.item_id == previous.item_id and now - when <= STICK_WINDOW_S:
                     return previous
         if target_name:
             self._hits_since_swap.add(target_name)

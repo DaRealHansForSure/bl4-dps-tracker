@@ -28,12 +28,13 @@ MIN_DURATION_S = 1.0
 KIND_DOT = "dot"
 KIND_HEAL = "heal"
 
-SourceKey = tuple[str, str, int]
+SourceKey = tuple[str, str, str]
 
 
 def source_key(event: dict[str, Any]) -> SourceKey:
-    """(src, label, instance id): what the per-source split groups by."""
-    return (str(event.get("src", "unknown")), str(event.get("weapon", "Unknown")), int(event.get("wid", 0)))
+    """(src, label, item id): what the per-source split groups by. Older logs carry the
+    numeric instance id as `wid`; it is used as it is."""
+    return (str(event.get("src", "unknown")), str(event.get("weapon", "Unknown")), str(event.get("wid", "")))
 
 
 def kind_damage(by_source: dict[SourceKey, SourceTotals], kind: str) -> float:
@@ -55,7 +56,7 @@ class SourceTotals:
 
     kind: str
     label: str
-    instance_id: int
+    item_id: str
     damage: float = 0.0
     hits: int = 0
     crits: int = 0

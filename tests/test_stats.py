@@ -14,7 +14,7 @@ from dmgtracker.stats import (
 )
 
 
-def hit(t: float, dmg: float, weapon: str = "Jakobs Sniper", wid: int = 277, src: str = "weapon",
+def hit(t: float, dmg: float, weapon: str = "Jakobs Sniper", wid: str = "277", src: str = "weapon",
         kind: str = "direct", crit: bool = False, kill: bool = False, target: str = "Char_CatAdult_1") -> dict:
     return {"t": t, "dmg": dmg, "kind": kind, "crit": crit, "kill": kill, "src": src,
             "weapon": weapon, "wid": wid, "target": target}
@@ -79,9 +79,9 @@ class EncounterTrackerTests(unittest.TestCase):
 
     def test_per_source_split_credits_dot_to_its_source(self) -> None:
         self.tracker.add(hit(100.0, 100.0))
-        self.tracker.add(hit(101.0, 40.0, weapon="Vladof Assault Rifle", wid=280))
+        self.tracker.add(hit(101.0, 40.0, weapon="Vladof Assault Rifle", wid="280"))
         self.tracker.add(hit(102.0, 7.0, kind="dot"))
-        self.tracker.add(hit(103.0, 333.0, weapon="Other", wid=0, src="other"))
+        self.tracker.add(hit(103.0, 333.0, weapon="Other", wid="", src="other"))
         encounter = self.tracker.latest()
         self.assertEqual(encounter.total, 480.0)
         self.assertEqual(encounter.dot_damage, 7.0)
@@ -144,7 +144,7 @@ class RollingStatsTests(unittest.TestCase):
 
     def test_old_hits_fall_out_with_their_source_totals(self) -> None:
         self.window.add(hit(100.0, 600.0))
-        self.window.add(hit(130.0, 600.0, weapon="Vladof Assault Rifle", wid=280))
+        self.window.add(hit(130.0, 600.0, weapon="Vladof Assault Rifle", wid="280"))
         self.window.prune(161.0)
         self.assertEqual(self.window.total, 600.0)
         self.assertEqual([totals.label for totals in self.window.by_source.values()], ["Vladof Assault Rifle"])
@@ -176,7 +176,7 @@ class RollingStatsTests(unittest.TestCase):
         self.assertAlmostEqual(self.window.source_dps(totals), 500.0)
 
     def test_held_time_alone_keeps_a_source_and_ages_out(self) -> None:
-        rifle = ("weapon", "Vladof Assault Rifle", 280)
+        rifle = ("weapon", "Vladof Assault Rifle", "280")
         self.window.add_held(100.0, rifle, 0.25)
         self.window.prune(101.0)
         self.assertIn(rifle, self.window.by_source)
@@ -195,9 +195,9 @@ class RollingStatsTests(unittest.TestCase):
         self.assertEqual(self.window.total, 100.0)
 
     def test_source_without_held_time_falls_back_to_window_duration(self) -> None:
-        self.window.add(hit(100.0, 300.0, weapon="Other", wid=0, src="other"))
+        self.window.add(hit(100.0, 300.0, weapon="Other", wid="", src="other"))
         self.window.prune(130.0)
-        totals = self.window.by_source[("other", "Other", 0)]
+        totals = self.window.by_source[("other", "Other", "")]
         self.assertAlmostEqual(self.window.source_dps(totals), 10.0)
 
 

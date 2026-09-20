@@ -3,7 +3,8 @@ Which source dealt a damage instance, and what to call it.
 
 BL4 exposes no display name for a weapon through reflection (see poc/findings.md, section B),
 so a weapon is labelled by manufacturer and type, both read from the stem of its BodyData
-asset path (`Body_JAK_SR` -> "Jakobs Sniper"), and identified by its item InstanceId.
+asset path (`Body_JAK_SR` -> "Jakobs Sniper"), and identified by the seed bytes of its item
+identity (itemidentity.py), which survive restarts; the item InstanceId only keys the cache.
 
 This module never imports the SDK. The resolver only touches attributes of the objects it is
 handed, which keeps it testable with plain fakes. Grenade and skill attribution, when they
@@ -14,7 +15,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+
+from .itemidentity import instance_item_id
 
 SOURCE_WEAPON = "weapon"
 SOURCE_GRENADE = "grenade"
@@ -65,15 +68,15 @@ class DamageSource:
     kind: str
     label: str
     body: str
-    instance_id: int
+    item_id: str
 
 
-UNKNOWN_SOURCE = DamageSource(SOURCE_UNKNOWN, UNKNOWN_LABEL, "", 0)
-GRENADE_SOURCE = DamageSource(SOURCE_GRENADE, GRENADE_LABEL, "", 0)
-MELEE_SOURCE = DamageSource(SOURCE_MELEE, MELEE_LABEL, "", 0)
-SKILL_SOURCE = DamageSource(SOURCE_SKILL, SKILL_LABEL, "", 0)
+UNKNOWN_SOURCE = DamageSource(SOURCE_UNKNOWN, UNKNOWN_LABEL, "", "")
+GRENADE_SOURCE = DamageSource(SOURCE_GRENADE, GRENADE_LABEL, "", "")
+MELEE_SOURCE = DamageSource(SOURCE_MELEE, MELEE_LABEL, "", "")
+SKILL_SOURCE = DamageSource(SOURCE_SKILL, SKILL_LABEL, "", "")
 # Status ticks whose target is already gone, and healing: nothing to credit them to.
-OTHER_SOURCE = DamageSource(SOURCE_OTHER, OTHER_LABEL, "", 0)
+OTHER_SOURCE = DamageSource(SOURCE_OTHER, OTHER_LABEL, "", "")
 
 
 def body_stem(body_path: str) -> str:
@@ -98,10 +101,14 @@ def label_for_body(stem: str) -> str:
 
 
 class WeaponResolver:
-    """Turns OakWeapon actors into DamageSources, caching the label per weapon instance so the
-    hot path does one dict lookup per hit instead of a path-name read."""
+    """Turns OakWeapon actors into DamageSources, caching the label and item id per weapon
+    instance so the hot path does one dict lookup per hit instead of a path-name read.
 
-    def __init__(self) -> None:
+    `read_item_id` gives a weapon its stable identity (ItemIdentityReader.item_id in the
+    game); the default is the instance id, enough for the tests and for one launch."""
+
+    def __init__(self, read_item_id: Callable[[Any], str] | None = None) -> None:
+        self._read_item_id = read_item_id if read_item_id is not None else instance_item_id
         self._sources_by_instance: dict[int, DamageSource] = {}
         self._character_by_class: dict[str, bool] = {}
 
@@ -128,7 +135,7 @@ class WeaponResolver:
             stem = body_stem(str(weapon.BodyData._path_name()))
         except Exception:  # noqa: BLE001 - a weapon without body data is still a weapon
             stem = ""
-        source = DamageSource(SOURCE_WEAPON, label_for_body(stem), stem, instance_id)
+        source = DamageSource(SOURCE_WEAPON, label_for_body(stem), stem, self._read_item_id(weapon))
         if stem == "":
             # Right after a world load the body data is not set yet; the weapon is real, so
             # attribute to it, but do not cache the missing label. The next read gets it.

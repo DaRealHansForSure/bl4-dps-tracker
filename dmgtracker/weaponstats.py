@@ -8,10 +8,9 @@ PEAK_MIN_HELD_SECONDS of use inside the window, so one lucky second is not a pea
 non-weapon sources (skill, grenade, melee) get a peak too: the highest DPS their table row
 ever showed over a window of at least PEAK_MIN_WINDOW_SECONDS of fighting.
 
-Records are keyed by the weapon's instance id. That id is a process-wide counter: it repeats
-across launches that continue with the same character, but shifts when another character
-was loaded first in the same game process (findings.md), and then a gun starts a fresh
-record. A stable identity is an open item (poc/probe_identity.py).
+Records are keyed by the item id from itemidentity.py (the seed bytes of the item, stable
+across launches). Files written by schema 1 were keyed by the instance id, which shifted
+between launches; such a file is set aside on load and the store starts empty.
 
 The game thread updates records, a background thread saves them; a lock keeps that safe.
 No SDK imports, so the tests and the report can use it.
@@ -28,8 +27,9 @@ from typing import Any
 
 from .attribution import GRENADE_SOURCE, MELEE_SOURCE, SKILL_SOURCE
 from .formatting import format_number, format_share
+from .itemidentity import short_item_id
 
-STORE_SCHEMA = 1
+STORE_SCHEMA = 2
 DEFAULT_SAVE_INTERVAL_S = 30.0
 MIN_HELD_SECONDS_FOR_DPS = 1.0
 PEAK_MIN_HELD_SECONDS = 10.0
@@ -43,7 +43,7 @@ UNKNOWN_LABEL = "Unknown"
 
 @dataclass
 class WeaponRecord:
-    instance_id: int
+    item_id: str
     label: str
     body: str
     damage: float = 0.0
@@ -89,7 +89,7 @@ class WeaponRecord:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WeaponRecord:
         return cls(
-            instance_id=int(data["instance_id"]),
+            item_id=str(data["item_id"]),
             label=str(data.get("label", UNKNOWN_LABEL)),
             body=str(data.get("body", "")),
             damage=float(data.get("damage", 0.0)),
@@ -127,9 +127,10 @@ class WeaponStore:
     def __init__(self, path: Path, save_interval_s: float = DEFAULT_SAVE_INTERVAL_S) -> None:
         self.path = path
         self.save_interval_s = save_interval_s
-        self.records: dict[int, WeaponRecord] = {}
+        self.records: dict[str, WeaponRecord] = {}
         self.source_peaks_by_kind: dict[str, SourcePeak] = {}
         self.load_error = ""
+        self.set_aside_old_schema: Path | None = None
         self.save_error = ""
         self._lock = threading.Lock()
         self._dirty = False
@@ -145,6 +146,10 @@ class WeaponStore:
             return
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
+            if int(data.get("schema", 1)) < STORE_SCHEMA:
+                # Keyed by the unstable instance id: the records cannot be matched to guns.
+                self.set_aside_old_schema = self._set_aside(f"schema{int(data.get('schema', 1))}")
+                return
             records = [WeaponRecord.from_json(item) for item in data["weapons"]]
             source_peaks = [SourcePeak.from_json(item) for item in data.get("sources", [])]
         except (OSError, ValueError, KeyError, TypeError) as ex:
@@ -152,7 +157,7 @@ class WeaponStore:
             self._set_aside_corrupt_file()
             return
         with self._lock:
-            self.records = {record.instance_id: record for record in records}
+            self.records = {record.item_id: record for record in records}
             self.source_peaks_by_kind = {peak.kind: peak for peak in source_peaks}
 
     def save_if_due(self, now: float, force: bool = False) -> bool:
@@ -207,28 +212,28 @@ class WeaponStore:
     def add_event(self, event: dict[str, Any]) -> None:
         if event.get("src") != SOURCE_WEAPON or event.get("kind") == KIND_HEAL:
             return
-        instance_id = int(event.get("wid", 0))
-        if instance_id == 0:
+        item_id = str(event.get("wid", ""))
+        if item_id == "":
             return
         with self._lock:
-            record = self._record(instance_id, str(event.get("weapon", UNKNOWN_LABEL)), str(event.get("body", "")), float(event["t"]))
+            record = self._record(item_id, str(event.get("weapon", UNKNOWN_LABEL)), str(event.get("body", "")), float(event["t"]))
             record.add(event)
             self._dirty = True
 
-    def add_held(self, instance_id: int, label: str, body: str, seconds: float, now: float) -> None:
-        if instance_id == 0 or seconds <= 0:
+    def add_held(self, item_id: str, label: str, body: str, seconds: float, now: float) -> None:
+        if item_id == "" or seconds <= 0:
             return
         with self._lock:
-            record = self._record(instance_id, label, body, now)
+            record = self._record(item_id, label, body, now)
             record.held_seconds += seconds
             self._dirty = True
 
-    def note_peak(self, instance_id: int, label: str, body: str, dps: float, held_seconds: float, now: float) -> None:
+    def note_peak(self, item_id: str, label: str, body: str, dps: float, held_seconds: float, now: float) -> None:
         """Offer the table's current DPS in hand as a peak candidate."""
-        if instance_id == 0 or held_seconds < PEAK_MIN_HELD_SECONDS:
+        if item_id == "" or held_seconds < PEAK_MIN_HELD_SECONDS:
             return
         with self._lock:
-            record = self._record(instance_id, label, body, now)
+            record = self._record(item_id, label, body, now)
             if record.note_dps(dps, now):
                 self._dirty = True
 
@@ -248,11 +253,11 @@ class WeaponStore:
             peak.peak_dps_at = now
             self._dirty = True
 
-    def _record(self, instance_id: int, label: str, body: str, now: float) -> WeaponRecord:
-        record = self.records.get(instance_id)
+    def _record(self, item_id: str, label: str, body: str, now: float) -> WeaponRecord:
+        record = self.records.get(item_id)
         if record is None:
-            record = WeaponRecord(instance_id, label, body, first_seen=now)
-            self.records[instance_id] = record
+            record = WeaponRecord(item_id, label, body, first_seen=now)
+            self.records[item_id] = record
         # A label read too early is "Unknown"; take the real one as soon as it shows up.
         if record.label == UNKNOWN_LABEL and label != UNKNOWN_LABEL:
             record.label = label
@@ -262,10 +267,10 @@ class WeaponStore:
 
     # ------------------------------------------------------------------ reading
 
-    def peaks(self) -> dict[int, float]:
-        """Peak DPS in hand per weapon instance, for the table's Best DPS column."""
+    def peaks(self) -> dict[str, float]:
+        """Peak DPS in hand per weapon item id, for the table's Best DPS column."""
         with self._lock:
-            return {instance_id: record.peak_dps for instance_id, record in self.records.items() if record.peak_dps > 0}
+            return {item_id: record.peak_dps for item_id, record in self.records.items() if record.peak_dps > 0}
 
     def source_peaks(self) -> dict[str, float]:
         """Peak DPS per non-weapon source kind, for the table's Best DPS column."""
@@ -295,13 +300,13 @@ class WeaponStore:
     def format_ranking(self, limit: int = 15, by: str = "dps") -> list[str]:
         """Text lines for the console: one header, one line per weapon."""
         lines = [
-            f"{'#':>2}  {'Weapon':24} {'DPS in hand':>12} {'Peak DPS':>10} {'Damage':>14} {'Hits':>6} "
+            f"{'#':>2}  {'Weapon':30} {'DPS in hand':>12} {'Peak DPS':>10} {'Damage':>14} {'Hits':>6} "
             f"{'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'In hand':>9}"
         ]
         for position, record in enumerate(self.ranking(by)[:limit], start=1):
             minutes = record.held_seconds / 60.0
             lines.append(
-                f"{position:>2}  {record.label[:22] + ' #' + str(record.instance_id):24} "
+                f"{position:>2}  {record.label[:22] + ' ' + short_item_id(record.item_id):30} "
                 f"{format_number(record.dps_in_hand()):>12} {format_number(record.peak_dps):>10} "
                 f"{format_number(record.damage):>14} {record.hits:>6} {format_number(record.average_hit()):>9} "
                 f"{record.crit_share():>7} {record.kills:>6} {format_number(minutes, decimals=1) + ' min':>9}"

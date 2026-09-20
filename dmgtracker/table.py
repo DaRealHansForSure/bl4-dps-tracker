@@ -72,10 +72,10 @@ class TableRow:
 
 @dataclass(frozen=True)
 class PeakDps:
-    """Lifetime peaks for the Best DPS column: per weapon instance id, and per non-weapon
+    """Lifetime peaks for the Best DPS column: per weapon item id, and per non-weapon
     source kind ("skill", "grenade", ...)."""
 
-    weapons: dict[int, float]
+    weapons: dict[str, float]
     sources: dict[str, float]
 
 
@@ -92,7 +92,7 @@ def build_rows(
     window: DamageScope,
     window_minutes: float,
     equipped: list[DamageSource],
-    held_instance_id: int,
+    held_item_id: str,
     encounter: Encounter | None = None,
     best: PeakDps | None = None,
     hidden_kinds: frozenset[str] = frozenset(),
@@ -103,7 +103,7 @@ def build_rows(
     columns = BASE_COLUMNS + (1 if best is not None else 0)
     header = HEADER_CELLS + ((BEST_HEADER_CELL,) if best is not None else ())
     rows = [TableRow(header, STYLE_HEADER)]
-    rows.extend(_weapon_slot_rows(window, equipped, held_instance_id, best))
+    rows.extend(_weapon_slot_rows(window, equipped, held_item_id, best))
     rows.extend(_non_weapon_rows(window, hidden_kinds, best))
     rows.append(TableRow(("",) * columns, STYLE_SPACER))
     rows.append(_total_row(window_label(window_minutes), window))
@@ -120,7 +120,7 @@ def _padded(row: TableRow, columns: int) -> TableRow:
 
 
 def _weapon_slot_rows(
-    scope: DamageScope, equipped: list[DamageSource], held_instance_id: int, best: PeakDps | None
+    scope: DamageScope, equipped: list[DamageSource], held_item_id: str, best: PeakDps | None
 ) -> list[TableRow]:
     rows: list[TableRow] = []
     for slot in range(WEAPON_SLOT_ROWS):
@@ -129,10 +129,10 @@ def _weapon_slot_rows(
             continue
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
-        style = STYLE_ACTIVE if weapon.instance_id == held_instance_id else STYLE_ROW
+        style = STYLE_ACTIVE if weapon.item_id == held_item_id else STYLE_ROW
         row = _weapon_row(weapon.label, totals, scope, style)
         if best is not None:
-            row = _with_best_cell(row, best.weapons.get(weapon.instance_id, 0.0))
+            row = _with_best_cell(row, best.weapons.get(weapon.item_id, 0.0))
         rows.append(row)
     return rows
 
@@ -158,9 +158,9 @@ def _with_best_cell(row: TableRow, peak: float) -> TableRow:
 
 def _totals_for(scope: DamageScope, weapon: DamageSource) -> SourceTotals:
     for totals in scope.by_source.values():
-        if totals.kind == SOURCE_WEAPON and totals.instance_id == weapon.instance_id:
+        if totals.kind == SOURCE_WEAPON and totals.item_id == weapon.item_id:
             return totals
-    return SourceTotals(weapon.kind, weapon.label, weapon.instance_id)
+    return SourceTotals(weapon.kind, weapon.label, weapon.item_id)
 
 
 def _weapon_row(label: str, totals: SourceTotals, scope: DamageScope, style: str) -> TableRow:

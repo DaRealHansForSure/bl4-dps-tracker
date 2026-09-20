@@ -24,6 +24,7 @@ from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .character import CharacterIdentity, read_identity
 from .formatting import format_number
+from .itemidentity import ItemIdentityReader
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -34,7 +35,8 @@ from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
-LOG_SCHEMA_VERSION = 1
+# 2: `wid` and `held` carry the item id (a hex seed, or "instance:<n>" as fallback) instead of the numeric instance id.
+LOG_SCHEMA_VERSION = 2
 SETTINGS_FILE = SETTINGS_DIR / "dmgtracker.json"
 
 # User data belongs under the user's profile, not in the game folder under Program Files.
@@ -138,7 +140,8 @@ readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
 
 # ------------------------------------------------------------------ state
 
-resolver = WeaponResolver()
+identity_reader = ItemIdentityReader()
+resolver = WeaponResolver(identity_reader.item_id)
 poller: DamagePoller | None = None
 session_log: SessionLog | None = None
 tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
@@ -163,7 +166,7 @@ _equipped_cache: list = []
 _combat_clock = 0.0
 _last_combat_step = 0.0
 _latest_rows: list = []
-_held_pending: dict[int, tuple[str, float]] = {}
+_held_pending: dict[str, tuple[str, float]] = {}
 _last_held_flush = 0.0
 
 
@@ -368,7 +371,7 @@ def _refresh_readout() -> None:
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best = _peak_dps() if readout_show_best_column.value else None
         rows = build_rows(
-            rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter, best, _hidden_row_kinds()
+            rolling, float(readout_window_minutes.value), _equipped_cache, held.item_id, encounter, best, _hidden_row_kinds()
         )
         _latest_rows = rows
         readout.render(rows)
@@ -409,9 +412,9 @@ def _record_peaks(now: float) -> None:
     if weapon_store is None:
         return
     for totals in rolling.by_source.values():
-        if totals.kind != "weapon" or totals.instance_id == 0:
+        if totals.kind != "weapon" or totals.item_id == "":
             continue
-        weapon_store.note_peak(totals.instance_id, totals.label, "", rolling.source_dps(totals), totals.held_seconds, now)
+        weapon_store.note_peak(totals.item_id, totals.label, "", rolling.source_dps(totals), totals.held_seconds, now)
     window_seconds = rolling.duration()
     for kind in PEAK_SOURCE_KINDS:
         damage = kind_damage(rolling.by_source, kind)
@@ -436,14 +439,14 @@ def _sample_held_time(held: Any) -> None:
     can be measured over the time it was actually used in fights. Menus, vehicles and
     transitions hide the table and do not count; neither does carrying a gun around
     between fights, which would otherwise dilute its number."""
-    if _last_combat_step <= 0 or not readout.visible() or held.instance_id == 0:
+    if _last_combat_step <= 0 or not readout.visible() or held.item_id == "":
         return
-    key = source_key({"src": held.kind, "weapon": held.label, "wid": held.instance_id})
+    key = source_key({"src": held.kind, "weapon": held.label, "wid": held.item_id})
     rolling.add_held(_combat_clock, key, _last_combat_step)
     if weapon_store is not None:
-        weapon_store.add_held(held.instance_id, held.label, held.body, _last_combat_step, time.time())
-    _label, seconds = _held_pending.get(held.instance_id, (held.label, 0.0))
-    _held_pending[held.instance_id] = (held.label, seconds + _last_combat_step)
+        weapon_store.add_held(held.item_id, held.label, held.body, _last_combat_step, time.time())
+    _label, seconds = _held_pending.get(held.item_id, (held.label, 0.0))
+    _held_pending[held.item_id] = (held.label, seconds + _last_combat_step)
 
 
 def _flush_held_lines(now: float) -> None:
@@ -454,7 +457,7 @@ def _flush_held_lines(now: float) -> None:
         return
     _last_held_flush = now
     if session_log is not None and logging_enabled.value:
-        lines = [{"t": now, "held": instance_id, "weapon": label, "s": round(seconds, 3)} for instance_id, (label, seconds) in _held_pending.items()]
+        lines = [{"t": now, "held": item_id, "weapon": label, "s": round(seconds, 3)} for item_id, (label, seconds) in _held_pending.items()]
         session_log.append(lines)
     _held_pending.clear()
 
@@ -684,6 +687,8 @@ def _load_weapon_store(path: Path) -> WeaponStore:
     store.load()
     if store.load_error:
         logging.error(f"{LOG_PREFIX} weapon record {store.path} could not be read ({store.load_error}); starting a new one")
+    if store.set_aside_old_schema is not None:
+        _say(f"weapon record in the old format (keyed by the unstable instance id) set aside as {store.set_aside_old_schema.name}; starting a new one")
     return store
 
 
@@ -786,6 +791,10 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} character: not known yet")
     if weapon_store is not None:
         logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
+    identity_state = f"{identity_reader.fallbacks} fallback(s) to the instance id"
+    if identity_reader.last_error:
+        identity_state += f", last error: {identity_reader.last_error}"
+    logging.info(f"{LOG_PREFIX} item identity: {identity_state}")
     if session_log is not None:
         logging.info(
             f"{LOG_PREFIX} session log: {session_log.path} ({session_log.written} written, {session_log.buffered()} buffered, "
