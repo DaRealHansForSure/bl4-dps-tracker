@@ -7,14 +7,13 @@ Single player. Tested against the game build of 2026-09-19 with oak2-mod-manager
 ## What you see
 
 ```
-Weapon                   Total        DPS   Share [%]
-Vladof Assault Rifle   442'795     26'047        13.8      <- the gun in hand is yellow
-Jakobs Shotgun         237'166     29'646         7.4
-Vladof SMG             207'749     18'886         6.5
-Torgue Pistol          168'461      7'657         5.2
-Skill                2'034'870     20'349        63.2
-Grenade                120'322      1'204         3.7
-Melee                        0          0         0.0
+Weapon                   Total        DPS   Share [%]   Best DPS
+Vladof Assault Rifle   442'795     26'047        13.8     31'202      <- the gun in hand is yellow
+Jakobs Shotgun         237'166     29'646         7.4     29'646
+Vladof SMG             207'749     18'886         6.5     22'410
+Torgue Pistol          168'461      7'657         5.2      9'980
+Skill                2'034'870     20'349        63.2     24'118
+Grenade                120'322      1'204         3.7      3'350
 Other                    7'703         77         0.2
 
 Last 5 min           3'219'066     32'190       100.0
@@ -23,7 +22,8 @@ Last 5 min           3'219'066     32'190       100.0
 - Every number covers the **last 5 minutes of fighting**. The clock only runs while a fight is on, so menus, driving, loading and walking between fights do not move the numbers.
 - A weapon row's **DPS is damage per second while that gun was in your hands during fights**. A gun you used for one minute out of five gets its own fair number; that is the column to compare a new gun against an old one.
 - `Total` is the window damage, `Share [%]` the share of the window total.
-- Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
+- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character: for a gun with at least 10 s in hand inside the window, for Skill and Grenade over at least 10 s of fighting. It only rises; `dmgreset --weapons` clears it.
+- Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
 - The table hides in menus, in vehicles and during tunnel transitions. Vehicle damage is not tracked. Healing is never counted.
 - Numbers use Swiss formatting: `'` for thousands, `.` for decimals.
 
@@ -55,7 +55,9 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | `log_dir` | `%LOCALAPPDATA%\BL4DamageTracker\logs` | where sessions are written; environment variables allowed |
 | `readout_window_minutes` | `5.0` | the table's window, in minutes of fighting |
 | `readout_show_encounter_row` | `false` | add an `Encounter` row (the current fight, for bosses) |
-| `readout_x`, `readout_y` | `120`, `320` | position of the table |
+| `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |
+| `readout_show_best_column` | `true` | the `Best DPS` column |
+| `readout_hidden_rows` | `["melee"]` | non-weapon rows to leave out: `melee`, `grenade`, `skill`, `other` |
 | `readout_font_size` | `30` | font size |
 | `readout_column_gap`, `readout_column_widths` | `44`, `[320, 240, 190, 140]` | column layout |
 | `readout_background_alpha` | `0.6` | background darkness |

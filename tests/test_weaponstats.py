@@ -107,6 +107,25 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Peak DPS", store.format_ranking()[0])
         self.assertIn("1'200", store.format_ranking()[1])
 
+    def test_source_peaks_need_a_long_enough_window_and_only_rise(self) -> None:
+        store = WeaponStore(self.path)
+        store.note_source_peak("skill", dps=5000.0, window_seconds=4.0, now=100.0)
+        self.assertEqual(store.source_peaks(), {}, "four seconds of fighting is not a window")
+        store.note_source_peak("skill", dps=1500.0, window_seconds=12.0, now=101.0)
+        store.note_source_peak("skill", dps=900.0, window_seconds=60.0, now=102.0)
+        store.note_source_peak("grenade", dps=0.0, window_seconds=60.0, now=102.0)
+        store.note_source_peak("other", dps=9999.0, window_seconds=60.0, now=102.0)
+        self.assertEqual(store.source_peaks(), {"skill": 1500.0})
+        self.assertEqual(store.source_peaks_by_kind["skill"].peak_dps_at, 101.0)
+        self.assertTrue(store.save_if_due(now=200.0, force=True))
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.source_peaks(), {"skill": 1500.0})
+        expected_line = "    " + "Skill".ljust(24) + " peak DPS " + "1'500".rjust(12)
+        self.assertEqual(reloaded.format_source_peaks(), [expected_line])
+        reloaded.reset()
+        self.assertEqual(reloaded.source_peaks(), {})
+
     def test_peaks_map(self) -> None:
         store = WeaponStore(self.path)
         store.note_peak(1, "A", "", dps=100.0, held_seconds=20.0, now=1.0)

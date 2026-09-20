@@ -36,6 +36,11 @@ def source_key(event: dict[str, Any]) -> SourceKey:
     return (str(event.get("src", "unknown")), str(event.get("weapon", "Unknown")), int(event.get("wid", 0)))
 
 
+def kind_damage(by_source: dict[SourceKey, SourceTotals], kind: str) -> float:
+    """Damage of every source of one kind (all grenades, all skill hits, ...)."""
+    return sum(totals.damage for totals in by_source.values() if totals.kind == kind)
+
+
 def target_family(target_name: str) -> str:
     """'Char_CatAdult_2147476409' -> 'Char_CatAdult'; names without a numeric suffix stay."""
     stem, separator, suffix = target_name.rpartition("_")

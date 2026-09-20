@@ -21,16 +21,16 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
+from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .character import CharacterIdentity, read_identity
 from .formatting import format_number
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
 from .report import format_report, gap_for, read_session
-from .stats import EncounterTracker, RollingStats, source_key
-from .table import build_rows
-from .weaponstats import WeaponStore
+from .stats import EncounterTracker, RollingStats, kind_damage, source_key
+from .table import PeakDps, build_rows
+from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
@@ -70,7 +70,7 @@ DEFAULT_STATUS_INTERVAL_S = 60.0
 # swaps and grenade throws in the first real sessions; 15 s keeps a fight together.
 DEFAULT_ENCOUNTER_GAP_S = 15.0
 
-DEFAULT_READOUT_X = 120.0
+DEFAULT_READOUT_X = 32.0
 DEFAULT_READOUT_Y = 320.0
 DEFAULT_READOUT_FONT_SIZE = 30
 DEFAULT_READOUT_COLUMN_GAP = 44.0
@@ -133,6 +133,8 @@ readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READ
 readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
 readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 readout_show_best_column = HiddenOption("readout_show_best_column", True)
+# Non-weapon rows to leave out of the table, by source kind: "melee", "grenade", "skill", "other".
+readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
 
 # ------------------------------------------------------------------ state
 
@@ -364,8 +366,10 @@ def _refresh_readout() -> None:
         rolling.prune(_combat_clock)
         _record_peaks(wall_now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
-        best_dps = _best_dps_by_weapon() if readout_show_best_column.value else None
-        rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter, best_dps)
+        best = _peak_dps() if readout_show_best_column.value else None
+        rows = build_rows(
+            rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter, best, _hidden_row_kinds()
+        )
         _latest_rows = rows
         readout.render(rows)
         _flush_held_lines(wall_now)
@@ -386,20 +390,32 @@ def _should_show_table(controller: UObject, pawn: Any) -> bool:
     return not pawn.bHidden
 
 
-def _best_dps_by_weapon() -> dict[int, float]:
+def _peak_dps() -> PeakDps:
     if weapon_store is None:
-        return {}
-    return weapon_store.peaks()
+        return PeakDps({}, {})
+    return PeakDps(weapon_store.peaks(), weapon_store.source_peaks())
+
+
+def _hidden_row_kinds() -> frozenset[str]:
+    try:
+        return frozenset(str(kind) for kind in readout_hidden_rows.value)
+    except TypeError:
+        return frozenset()
 
 
 def _record_peaks(now: float) -> None:
-    """Offer every gun's current window DPS in hand to the lifetime record as a peak."""
+    """Offer every table row's current DPS to the lifetime record as a peak: a gun's DPS in
+    hand, a non-weapon source's damage over the window's fighting time."""
     if weapon_store is None:
         return
     for totals in rolling.by_source.values():
         if totals.kind != "weapon" or totals.instance_id == 0:
             continue
         weapon_store.note_peak(totals.instance_id, totals.label, "", rolling.source_dps(totals), totals.held_seconds, now)
+    window_seconds = rolling.duration()
+    for kind in PEAK_SOURCE_KINDS:
+        damage = kind_damage(rolling.by_source, kind)
+        weapon_store.note_source_peak(kind, damage / window_seconds, window_seconds, now)
 
 
 def _advance_combat_clock(now: float) -> None:
@@ -723,6 +739,8 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
     logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}), by {args.by}:")
     for line in weapon_store.format_ranking(limit=args.limit, by=args.by):
         logging.info(line)
+    for line in weapon_store.format_source_peaks():
+        logging.info(line)
 
 
 dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
@@ -838,6 +856,7 @@ mod = build_mod(
         readout_window_minutes,
         readout_show_encounter_row,
         readout_show_best_column,
+        readout_hidden_rows,
     ],
     keybinds=[],
     hooks=[],

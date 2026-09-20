@@ -4,9 +4,14 @@ Lifetime per-weapon record, persisted as JSON next to the session logs.
 Answers "which of my guns performs best" across sessions: damage, hits, crits, kills and
 seconds in hand per weapon instance, from which DPS in hand, average hit and crit rate
 follow, plus the peak DPS in hand the live table ever showed for the gun (with at least
-PEAK_MIN_HELD_SECONDS of use inside the window, so one lucky second is not a peak). Weapon
-instance ids are stable across game restarts (checked over three restarts on 2026-09-20),
-so a record survives sessions and a newly found gun starts a fresh one.
+PEAK_MIN_HELD_SECONDS of use inside the window, so one lucky second is not a peak). The
+non-weapon sources (skill, grenade, melee) get a peak too: the highest DPS their table row
+ever showed over a window of at least PEAK_MIN_WINDOW_SECONDS of fighting.
+
+Records are keyed by the weapon's instance id. That id is a process-wide counter: it repeats
+across launches that continue with the same character, but shifts when another character
+was loaded first in the same game process (findings.md), and then a gun starts a fresh
+record. A stable identity is an open item (poc/probe_identity.py).
 
 The game thread updates records, a background thread saves them; a lock keeps that safe.
 No SDK imports, so the tests and the report can use it.
@@ -21,12 +26,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .attribution import GRENADE_SOURCE, MELEE_SOURCE, SKILL_SOURCE
 from .formatting import format_number, format_share
 
 STORE_SCHEMA = 1
 DEFAULT_SAVE_INTERVAL_S = 30.0
 MIN_HELD_SECONDS_FOR_DPS = 1.0
 PEAK_MIN_HELD_SECONDS = 10.0
+PEAK_MIN_WINDOW_SECONDS = 10.0
+# The non-weapon sources whose row gets a lifetime peak; "other" is unattributed damage.
+PEAK_SOURCE_KINDS = (SKILL_SOURCE.kind, GRENADE_SOURCE.kind, MELEE_SOURCE.kind)
 SOURCE_WEAPON = "weapon"
 KIND_HEAL = "heal"
 UNKNOWN_LABEL = "Unknown"
@@ -95,13 +104,31 @@ class WeaponRecord:
         )
 
 
+@dataclass
+class SourcePeak:
+    """The peak DPS of one non-weapon source kind, as its table row showed it."""
+
+    kind: str
+    peak_dps: float = 0.0
+    peak_dps_at: float = 0.0
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> SourcePeak:
+        return cls(
+            kind=str(data["kind"]),
+            peak_dps=float(data.get("peak_dps", 0.0)),
+            peak_dps_at=float(data.get("peak_dps_at", 0.0)),
+        )
+
+
 class WeaponStore:
-    """All weapon records, loaded from and saved to one JSON file."""
+    """All weapon records and the source peaks, loaded from and saved to one JSON file."""
 
     def __init__(self, path: Path, save_interval_s: float = DEFAULT_SAVE_INTERVAL_S) -> None:
         self.path = path
         self.save_interval_s = save_interval_s
         self.records: dict[int, WeaponRecord] = {}
+        self.source_peaks_by_kind: dict[str, SourcePeak] = {}
         self.load_error = ""
         self.save_error = ""
         self._lock = threading.Lock()
@@ -119,12 +146,14 @@ class WeaponStore:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             records = [WeaponRecord.from_json(item) for item in data["weapons"]]
+            source_peaks = [SourcePeak.from_json(item) for item in data.get("sources", [])]
         except (OSError, ValueError, KeyError, TypeError) as ex:
             self.load_error = f"{type(ex).__name__}: {ex}"
             self._set_aside_corrupt_file()
             return
         with self._lock:
             self.records = {record.instance_id: record for record in records}
+            self.source_peaks_by_kind = {peak.kind: peak for peak in source_peaks}
 
     def save_if_due(self, now: float, force: bool = False) -> bool:
         """Write the file when something changed and the save interval has passed (or when
@@ -134,9 +163,10 @@ class WeaponStore:
             if not self._dirty or not due:
                 return False
             snapshot = [asdict(record) for record in self.records.values()]
+            source_snapshot = [asdict(peak) for peak in self.source_peaks_by_kind.values()]
             self._dirty = False
             self._last_save = now
-        payload = {"schema": STORE_SCHEMA, "saved": now, "weapons": snapshot}
+        payload = {"schema": STORE_SCHEMA, "saved": now, "weapons": snapshot, "sources": source_snapshot}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".json.tmp")
@@ -154,6 +184,7 @@ class WeaponStore:
         records. Returns where the old file went, or None if there was none."""
         with self._lock:
             self.records = {}
+            self.source_peaks_by_kind = {}
             self._dirty = True
         return self._set_aside("reset")
 
@@ -201,6 +232,22 @@ class WeaponStore:
             if record.note_dps(dps, now):
                 self._dirty = True
 
+    def note_source_peak(self, kind: str, dps: float, window_seconds: float, now: float) -> None:
+        """Offer a non-weapon row's current DPS (its window damage over the window's fighting
+        time) as a peak candidate."""
+        if kind not in PEAK_SOURCE_KINDS or window_seconds < PEAK_MIN_WINDOW_SECONDS:
+            return
+        with self._lock:
+            peak = self.source_peaks_by_kind.get(kind)
+            if peak is None:
+                peak = SourcePeak(kind)
+                self.source_peaks_by_kind[kind] = peak
+            if dps <= peak.peak_dps:
+                return
+            peak.peak_dps = dps
+            peak.peak_dps_at = now
+            self._dirty = True
+
     def _record(self, instance_id: int, label: str, body: str, now: float) -> WeaponRecord:
         record = self.records.get(instance_id)
         if record is None:
@@ -219,6 +266,21 @@ class WeaponStore:
         """Peak DPS in hand per weapon instance, for the table's Best DPS column."""
         with self._lock:
             return {instance_id: record.peak_dps for instance_id, record in self.records.items() if record.peak_dps > 0}
+
+    def source_peaks(self) -> dict[str, float]:
+        """Peak DPS per non-weapon source kind, for the table's Best DPS column."""
+        with self._lock:
+            return {kind: peak.peak_dps for kind, peak in self.source_peaks_by_kind.items() if peak.peak_dps > 0}
+
+    def format_source_peaks(self) -> list[str]:
+        """One console line per non-weapon source with a peak, in the table's order."""
+        peaks = self.source_peaks()
+        labels = {SKILL_SOURCE.kind: SKILL_SOURCE.label, GRENADE_SOURCE.kind: GRENADE_SOURCE.label, MELEE_SOURCE.kind: MELEE_SOURCE.label}
+        lines: list[str] = []
+        for kind in PEAK_SOURCE_KINDS:
+            if kind in peaks:
+                lines.append(f"    {labels[kind]:24} peak DPS {format_number(peaks[kind]):>12}")
+        return lines
 
     def ranking(self, by: str = "dps") -> list[WeaponRecord]:
         """Records best first: by DPS in hand (default), by peak DPS, or by damage."""
