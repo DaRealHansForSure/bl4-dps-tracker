@@ -59,7 +59,10 @@ READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
 # A held-time sample longer than this means the game was paused or loading, not playing.
 MAX_HELD_SAMPLE_S = 1.0
-READOUT_ERRORS_BEFORE_GIVING_UP = 5
+# Consecutive refresh failures before the table is taken down for the session. A failure
+# during a map change is normal; a table that fails every frame is not.
+READOUT_ERRORS_BEFORE_GIVING_UP = 20
+READOUT_ERRORS_TO_LOG = 3
 MAX_LIVE_ENCOUNTERS = 1000
 WEAPON_STORE_NAME = "weapons.json"
 
@@ -113,6 +116,7 @@ readout: Readout | None = None
 _last_status_time = 0.0
 _broken_reported = False
 _readout_errors = 0
+_tick_errors = 0
 _last_readout_refresh = 0.0
 _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
@@ -157,11 +161,20 @@ def _on_new_events(events: list[dict[str, Any]]) -> None:
 
 
 def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    """The per-frame entry point. Every branch below handles its own errors; this outer
+    guard exists because an exception escaping a hook callback would take the game down,
+    and that must never happen whatever else goes wrong."""
+    global _tick_errors
     if poller is None:
         return
-    poller.tick()
-    _refresh_readout()
-    _maybe_report_status()
+    try:
+        poller.tick()
+        _refresh_readout()
+        _maybe_report_status()
+    except Exception as ex:  # noqa: BLE001 - last line of defence, see the docstring
+        _tick_errors += 1
+        if _tick_errors <= READOUT_ERRORS_TO_LOG:
+            logging.error(f"{LOG_PREFIX} unexpected error in the frame hook: {type(ex).__name__}: {ex}")
 
 
 # ------------------------------------------------------------------ readout
@@ -180,12 +193,14 @@ def _readout_layout() -> ReadoutLayout:
     )
 
 
-def _on_controller_changed(controller: UObject) -> None:
-    """A new controller means a new world: the old widget is gone with it, build a fresh one."""
+def _on_controller_changed(controller: UObject | None) -> None:
+    """A new controller means a new world: the old widget is gone with it, build a fresh one.
+    None means the controller is gone (main menu, loading): the widget goes with it, so
+    nothing of ours outlives the world it was made for."""
     global _equipped_cache
     _equipped_cache = []
     _destroy_readout()
-    if show_readout.value:
+    if controller is not None and show_readout.value:
         _create_readout(controller)
 
 
@@ -198,7 +213,8 @@ def _create_readout(controller: UObject) -> None:
         candidate.create(controller)
     except Exception as ex:  # noqa: BLE001 - UMG failures must not take the tracker down
         _readout_errors += 1
-        logging.error(f"{LOG_PREFIX} cannot create the damage table: {type(ex).__name__}: {ex}")
+        if _readout_errors <= READOUT_ERRORS_TO_LOG:
+            logging.error(f"{LOG_PREFIX} cannot create the damage table: {type(ex).__name__}: {ex}")
         _give_up_readout_if_needed()
         return
     readout = candidate
@@ -224,7 +240,8 @@ def _on_show_readout_changed(value: bool) -> None:
 
 
 def _refresh_readout() -> None:
-    """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S."""
+    """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S.
+    Uses only this frame's controller wrapper; nothing is kept across frames."""
     global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors
     if readout is None or poller is None or poller.controller is None:
         return
@@ -239,17 +256,21 @@ def _refresh_readout() -> None:
         tracker.close_if_idle(now)
         if pawn is not None and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
-            _equipped_cache = resolver.equipped_weapons(pawn)
+            equipped = resolver.equipped_weapons(pawn)
+            # A vehicle pawn has no equipment slots; keep showing the guns from before.
+            if equipped is not None:
+                _equipped_cache = equipped
         held = resolver.weapon_in_hand(pawn) if pawn is not None else UNKNOWN_SOURCE
         _sample_held_time(held, now)
         rolling.prune(now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter)
         readout.render(rows)
+        _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
         _readout_errors += 1
-        _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
-        _destroy_readout()
+        if _readout_errors <= READOUT_ERRORS_TO_LOG:
+            _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
         _give_up_readout_if_needed()
 
 
@@ -270,7 +291,8 @@ def _sample_held_time(held: Any, now: float) -> None:
 
 def _give_up_readout_if_needed() -> None:
     if _readout_errors >= READOUT_ERRORS_BEFORE_GIVING_UP:
-        logging.error(f"{LOG_PREFIX} damage table disabled for this session after {_readout_errors} errors")
+        _destroy_readout()
+        logging.error(f"{LOG_PREFIX} damage table disabled for this session after {_readout_errors} errors in a row")
 
 
 def _maybe_report_status() -> None:
@@ -292,7 +314,7 @@ def _maybe_report_status() -> None:
         )
     _say(
         f"{poller.events} events, {poller.errors} errors, {poller.overflow_frames} overflow-suspect "
-        f"frames, {poller.ticks} ticks; log: {log_state}"
+        f"frames, {poller.ticks} ticks, {_tick_errors} hook errors; log: {log_state}"
     )
     for error in poller.recent_errors:
         _say(f"   recent error: {error}")

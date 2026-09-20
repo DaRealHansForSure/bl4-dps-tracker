@@ -8,6 +8,10 @@ with the previous frame's values catches every instance (see poc/findings.md, se
 
 This module never imports the SDK: the controller is obtained through a callable and only
 its attributes are read, so the whole path can be exercised with fakes in the tests.
+
+The controller is fetched fresh on every tick and never reused across frames: a cached
+wrapper points at freed memory once its world is torn down, and reading through it crashed
+the game during a character switch (access violation, 2026-09-20).
 """
 
 from __future__ import annotations
@@ -18,8 +22,9 @@ from typing import Any
 
 from .attribution import OTHER_SOURCE, WeaponResolver
 
-CONTROLLER_RETRY_INTERVAL_S = 1.0
 ERRORS_TO_REMEMBER = 3
+# Outside the world (main menu, loading) there is nothing to poll; look again once a second.
+IDLE_CHECK_INTERVAL_S = 1.0
 
 # ERecentPlayerDamageFlags values are bit indexes, not masks: CriticalHit=1 -> 0x2, Healing=2 -> 0x4.
 # Bits 10 and 14 are not in the reflected enum; their meaning was established from recorded
@@ -68,9 +73,11 @@ class DamagePoller:
         self.overflow_frames = 0
         self.recent_errors: list[str] = []
         self.broken_reason = ""
+        # Called with the new controller when one is adopted, and with None when it is lost.
         self.on_controller_changed: Callable[[Any], None] | None = None
         self._dirty_flags: list[int] = []
-        self._last_controller_check = 0.0
+        self._controller_address = 0
+        self._idle_until = 0.0
 
     def tick(self) -> None:
         """Called once per frame from the tick hook. Never raises."""
@@ -78,16 +85,17 @@ class DamagePoller:
         if self.broken_reason:
             return
         now = self._clock()
+        if now < self._idle_until:
+            return
         try:
-            if now - self._last_controller_check >= CONTROLLER_RETRY_INTERVAL_S:
-                self._last_controller_check = now
-                self._refresh_controller()
+            self._refresh_controller()
             if self.controller is None:
+                self._idle_until = now + IDLE_CHECK_INTERVAL_S
                 return
             new_events = self._collect_new_events(now)
         except Exception as ex:  # noqa: BLE001 - nothing may escape into the game thread
             self._note_error(ex)
-            self.controller = None
+            self._drop_controller()
             return
         if new_events:
             self.events += len(new_events)
@@ -96,13 +104,15 @@ class DamagePoller:
     # ------------------------------------------------------------------ controller
 
     def _refresh_controller(self) -> None:
-        """Adopt the current player controller when it appeared or changed (map load, respawn).
-        Reading through a stale controller wrapper is not safe, so this runs every second."""
+        """Take this frame's controller wrapper; adopt it as a new controller when its address
+        differs from the last one (map load, character switch), drop it when there is none."""
         controller = self._resolve_controller()
         if controller is None:
-            self.controller = None
+            self._drop_controller()
             return
-        if self.controller is not None and self._same_object(controller, self.controller):
+        address = int(controller._get_address())
+        if address == self._controller_address:
+            self.controller = controller
             return
         ring = getattr(controller, self._ring_property, None)
         if ring is None:
@@ -113,17 +123,21 @@ class DamagePoller:
                     f"property {self._ring_property} is missing on {controller.Class.Name}; "
                     "the game changed, check the ring_property setting"
                 )
+            self._drop_controller()
             return
         # Baseline the flags so instances from before the resolve are not replayed as new hits.
         self._dirty_flags = [int(ring[index].RepDirtyFlag) for index in range(self._ring_size)]
         self.controller = controller
+        self._controller_address = address
         if self.on_controller_changed is not None:
             self.on_controller_changed(controller)
 
-    @staticmethod
-    def _same_object(first: Any, second: Any) -> bool:
-        # SDK wrappers are new Python objects on every lookup; the path name identifies the actor.
-        return first._path_name() == second._path_name()
+    def _drop_controller(self) -> None:
+        had_controller = self._controller_address != 0
+        self.controller = None
+        self._controller_address = 0
+        if had_controller and self.on_controller_changed is not None:
+            self.on_controller_changed(None)
 
     # ------------------------------------------------------------------ ring diff
 

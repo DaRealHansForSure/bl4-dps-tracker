@@ -125,11 +125,16 @@ class WeaponResolver:
             return UNKNOWN_SOURCE
         return self.resolve_weapon(weapon)
 
-    def equipped_weapons(self, pawn: Any) -> list[DamageSource]:
+    def equipped_weapons(self, pawn: Any) -> list[DamageSource] | None:
         """The weapons in the equipment slots, in slot order. Shield, grenade and repair kit
-        share the same slot array and are skipped by class name."""
+        share the same slot array and are skipped by class name. None when the pawn has no
+        equipment slots at all, which is the case while driving a vehicle."""
+        try:
+            slots = pawn.EquippedInventorySlots.items
+        except AttributeError:
+            return None
         sources: list[DamageSource] = []
-        for slot in pawn.EquippedInventorySlots.items:
+        for slot in slots:
             item = slot.InstancedInventory
             if item is None or str(item.Class.Name) != WEAPON_CLASS_NAME:
                 continue

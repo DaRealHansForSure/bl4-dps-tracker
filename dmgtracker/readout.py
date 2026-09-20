@@ -101,7 +101,10 @@ class Readout:
         if widget is None:
             return
         try:
-            widget.RemoveFromParent()
+            # After a world teardown the engine has already pulled the widget off the screen;
+            # only detach it ourselves while it is still shown.
+            if widget.IsInViewport():
+                widget.RemoveFromParent()
         finally:
             widget.ObjectFlags &= ~ObjectFlags.KEEP_ALIVE
 

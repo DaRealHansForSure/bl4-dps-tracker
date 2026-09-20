@@ -43,7 +43,8 @@ def fake_weapon(instance_id: int, body_path: str) -> SimpleNamespace:
     )
 
 
-def fake_controller(name: str = "OakPlayerController_1", with_ring: bool = True, with_pawn: bool = True):
+def fake_controller(name: str = "OakPlayerController_1", with_ring: bool = True, with_pawn: bool = True,
+                    address: int = 0x1000):
     weapon = fake_weapon(277, "/Game/Body_JAK_SR.Body_JAK_SR")
     pawn = None
     if with_pawn:
@@ -52,6 +53,7 @@ def fake_controller(name: str = "OakPlayerController_1", with_ring: bool = True,
         Pawn=pawn,
         Class=SimpleNamespace(Name="OakPlayerController"),
         _path_name=lambda: f"/Game/Maps/World_P:PersistentLevel.{name}",
+        _get_address=lambda: address,
     )
     if with_ring:
         setattr(controller, RING_PROPERTY, [fake_instance() for _ in range(RING_SIZE)])
@@ -167,14 +169,11 @@ class DamagePollerTests(unittest.TestCase):
         self.assertIsNone(self.poller.controller)
         self.assertEqual(len(self.poller.recent_errors), 1)
 
-    def test_controller_change_is_adopted_after_a_second(self) -> None:
+    def test_controller_change_is_adopted_at_once(self) -> None:
         self.poller.tick()
-        replacement = fake_controller(name="OakPlayerController_2")
+        replacement = fake_controller(name="OakPlayerController_2", address=0x2000)
         write_hit(replacement, 0, 7.0)
         self.current_controller = replacement
-        self.poller.tick()
-        self.assertIs(self.poller.controller, self.controller)
-        self.clock.advance(1.0)
         self.poller.tick()
         self.assertIs(self.poller.controller, replacement)
         # The hit from before the adoption is baseline, not replayed.
@@ -184,17 +183,51 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual([event["dmg"] for event in self.received], [8.0])
         self.assertEqual(self.received[0]["weapon"], "Jakobs Sniper")
 
-    def test_controller_change_callback(self) -> None:
+    def test_controller_change_callback_reports_adoption_and_loss(self) -> None:
         seen = []
         self.poller.on_controller_changed = seen.append
         self.poller.tick()
+        self.poller.tick()
         self.assertEqual(seen, [self.controller])
-
-    def test_no_controller_is_quiet(self) -> None:
         self.current_controller = None
         self.poller.tick()
+        self.poller.tick()
+        self.assertEqual(seen, [self.controller, None])
+        self.current_controller = self.controller
+        self.clock.advance(1.0)
+        self.poller.tick()
+        self.assertEqual(seen, [self.controller, None, self.controller])
+
+    def test_same_controller_is_not_readopted_across_frames(self) -> None:
+        self.poller.tick()
+        write_hit(self.controller, 0, 3.0, flags=WEAPON_FLAG)
+        # A fresh wrapper with the same address is the same controller; hits must not be lost.
+        self.current_controller = fake_controller()
+        setattr(self.current_controller, RING_PROPERTY, getattr(self.controller, RING_PROPERTY))
+        self.poller.tick()
+        self.assertEqual([event["dmg"] for event in self.received], [3.0])
+
+    def test_no_controller_is_quiet_and_backs_off(self) -> None:
+        calls = []
+        self.current_controller = None
+        self.poller._resolve_controller = lambda: calls.append(1)  # noqa: SLF001 - counting lookups
+        self.poller.tick()
+        self.poller.tick()
+        self.poller.tick()
+        self.assertEqual(len(calls), 1, "only one lookup per idle second")
+        self.clock.advance(1.0)
+        self.poller.tick()
+        self.assertEqual(len(calls), 2)
         self.assertIsNone(self.poller.controller)
         self.assertEqual(self.poller.errors, 0)
+
+    def test_menu_controller_backs_off_too(self) -> None:
+        self.current_controller = fake_controller(with_ring=False, with_pawn=False)
+        self.poller.tick()
+        first_ticks = self.poller.ticks
+        self.poller.tick()
+        self.assertEqual(self.poller.ticks, first_ticks + 1)
+        self.assertIsNone(self.poller.controller)
 
     def test_menu_controller_without_ring_is_not_broken(self) -> None:
         self.current_controller = fake_controller(with_ring=False, with_pawn=False)

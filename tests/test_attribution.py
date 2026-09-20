@@ -113,6 +113,10 @@ class WeaponResolverTests(unittest.TestCase):
         labels = [source.label for source in self.resolver.equipped_weapons(pawn)]
         self.assertEqual(labels, ["Vladof Assault Rifle", "Bor SMG"])
 
+    def test_pawn_without_equipment_slots_gives_none(self) -> None:
+        vehicle = SimpleNamespace(Class=SimpleNamespace(Name="OakVehicle"))
+        self.assertIsNone(self.resolver.equipped_weapons(vehicle))
+
 
 if __name__ == "__main__":
     unittest.main()
