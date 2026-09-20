@@ -73,7 +73,7 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertFalse(store.save_if_due(now=120.0), "interval not over")
         self.assertTrue(store.save_if_due(now=120.0, force=True))
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(data["schema"], 2)
+        self.assertEqual(data["schema"], 3)
         reloaded = WeaponStore(self.path)
         reloaded.load()
         self.assertEqual(reloaded.load_error, "")
@@ -97,7 +97,7 @@ class WeaponStoreTests(unittest.TestCase):
         store.add_held("2", "Fast Gun", "", 2.0, 100.0)
         store.add_event(hit(100.0, 5.0, wid="3", weapon="Never Held"))
         self.assertEqual([record.label for record in store.ranking()], ["Fast Gun", "Slow Gun", "Never Held"])
-        store.note_peak("1", "Slow Gun", "", dps=900.0, held_seconds=20.0, now=1.0)
+        store.note_peak("1", "Slow Gun", "", dps=900.0, window_seconds=20.0, now=1.0)
         self.assertEqual([record.label for record in store.ranking(by="peak")][0], "Slow Gun")
         store.add_event(hit(101.0, 5000.0, wid="3", weapon="Never Held"))
         self.assertEqual([record.label for record in store.ranking(by="damage")][0], "Never Held")
@@ -106,12 +106,12 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Fast Gun #2", lines[1])
         self.assertIn("500", lines[1])
 
-    def test_peak_dps_needs_enough_time_in_hand_and_only_rises(self) -> None:
+    def test_peak_dps_needs_a_long_enough_window_and_only_rises(self) -> None:
         store = WeaponStore(self.path)
-        store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=9000.0, held_seconds=3.0, now=100.0)
-        self.assertNotIn(277, store.records, "three seconds in hand is not a peak")
-        store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=1200.0, held_seconds=12.0, now=101.0)
-        store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=800.0, held_seconds=30.0, now=102.0)
+        store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=9000.0, window_seconds=3.0, now=100.0)
+        self.assertNotIn("277", store.records, "three seconds of fighting is not a window")
+        store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=1200.0, window_seconds=12.0, now=101.0)
+        store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=800.0, window_seconds=30.0, now=102.0)
         record = store.records["277"]
         self.assertEqual((record.peak_dps, record.peak_dps_at), (1200.0, 101.0))
         store.save_if_due(now=200.0, force=True)
@@ -142,16 +142,26 @@ class WeaponStoreTests(unittest.TestCase):
 
     def test_peaks_map(self) -> None:
         store = WeaponStore(self.path)
-        store.note_peak("1", "A", "", dps=100.0, held_seconds=20.0, now=1.0)
+        store.note_peak("1", "A", "", dps=100.0, window_seconds=20.0, now=1.0)
         store.add_event(hit(2.0, 5.0, wid="2", weapon="B"))
         self.assertEqual(store.peaks(), {"1": 100.0})
 
     def test_records_without_peak_fields_still_load(self) -> None:
-        self.path.write_text(json.dumps({"schema": 2, "weapons": [{"item_id": "abc", "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
+        self.path.write_text(json.dumps({"schema": 3, "weapons": [{"item_id": "abc", "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
         store = WeaponStore(self.path)
         store.load()
         self.assertEqual(store.records["abc"].peak_dps, 0.0)
         self.assertEqual(store.source_peaks(), {})
+
+    def test_schema_2_keeps_the_records_but_drops_the_in_hand_peaks(self) -> None:
+        self.path.write_text(json.dumps({"schema": 2, "weapons": [{"item_id": "abc", "label": "Old", "body": "", "damage": 10.0, "hits": 2, "peak_dps": 500.0, "peak_dps_at": 9.0}]}), encoding="utf-8")
+        store = WeaponStore(self.path)
+        store.load()
+        self.assertEqual((store.records["abc"].damage, store.records["abc"].hits), (10.0, 2))
+        self.assertEqual((store.records["abc"].peak_dps, store.records["abc"].peak_dps_at), (0.0, 0.0))
+        self.assertEqual(store.peaks_dropped, 1)
+        self.assertTrue(store.save_if_due(now=100.0, force=True), "the dropped peaks are written back")
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["schema"], 3)
 
     def test_schema_1_file_is_set_aside_because_its_ids_were_unstable(self) -> None:
         self.path.write_text(json.dumps({"schema": 1, "weapons": [{"instance_id": 5, "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")

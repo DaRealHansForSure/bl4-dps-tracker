@@ -68,17 +68,20 @@ class BuildRowsTests(unittest.TestCase):
         self.assertEqual(rows[-1].cells, ("Encounter", "400", "400", "100.0"))
         self.assertEqual(rows[-1].style, STYLE_TOTAL)
 
-    def test_weapon_dps_is_measured_over_time_in_hand(self) -> None:
+    def test_every_row_is_damage_over_the_window_time(self) -> None:
         window = window_with(hit(100.0, 1_234_567.0, SNIPER), hit(104.0, 765_433.0, RIFLE), now=110.0)
         for step in range(40):
             window.add_held(100.0 + step * 0.25, source_key(hit(0.0, 0.0, SNIPER)), 0.25)
         window.prune(110.0)
         rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277")
-        # Sniper: 1'234'567 over 10 s in hand. Rifle: no held time, so over the 10 s since the first hit.
+        # Both over the 10 s since the first hit; the time in hand plays no part in the table.
         self.assertEqual(rows[2].cells, ("Jakobs Sniper", "1'234'567", "123'457", "61.7"))
         self.assertEqual(rows[2].style, STYLE_ACTIVE)
         self.assertEqual(rows[1].cells, ("Vladof Assault Rifle", "765'433", "76'543", "38.3"))
         self.assertEqual(rows[10].cells, ("Last 5 min", "2'000'000", "200'000", "100.0"))
+        window.prune(120.0)
+        rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277")
+        self.assertEqual(rows[2].cells[2], "61'728", "ten more seconds of fighting without a hit halve the rate")
 
     def test_non_weapon_rows_keep_their_places_and_sum_their_kind(self) -> None:
         shotgun = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", "278")

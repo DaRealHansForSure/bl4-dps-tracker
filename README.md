@@ -20,10 +20,10 @@ Last 5 min           3'219'066     32'190       100.0       19.8      56
 ```
 
 - Every number covers the **last 5 minutes of fighting**. The clock only runs while a fight is on, so menus, driving, loading and walking between fights do not move the numbers.
-- A weapon row's **DPS is damage per second while that gun was in your hands during fights**. A gun you used for one minute out of five gets its own fair number; that is the column to compare a new gun against an old one.
+- Every row's **DPS is its damage over the window's fighting time**, so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage, `Share [%]` the share of the window total, `Crit [%]` the share of the row's direct hits that were crits (status ticks cannot crit and are left out), `Kills` the kills in the window; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
-- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character: for a gun with at least 10 s in hand inside the window, for Skill and Grenade over at least 10 s of fighting. It only rises; `dmgreset --weapons` clears it.
+- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s of fighting. It only rises; `dmgreset --weapons` clears it.
 - A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
 - Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
 - The table hides in menus, in vehicles and during tunnel transitions. Vehicle damage is not tracked. Healing is never counted.
@@ -45,7 +45,7 @@ Open the console with F6 (in the world, not in the main menu):
 
 While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
 
-- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes, a chart of the window DPS with one line per weapon and source (hover for the values at any moment), and the latest hits as they land.
+- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes, a chart of the window DPS with the weapons and sources stacked under the total (hover for the values at any moment), and the latest hits as they land.
 - **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
 - **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
 - **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.

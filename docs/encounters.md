@@ -38,7 +38,7 @@ Two rates come from that:
 - **DPS** = total / duration: the honest number for the whole fight, including reloads, walking and waiting.
 - **Active DPS** = total / active seconds: the rate while you were actually landing hits.
 
-A weapon's DPS in the table is a third thing (damage per second while the gun was in hand during fights); it belongs to the rolling window, not to encounters, see below.
+The table's DPS column is a third thing: each row's damage over the rolling window's fighting time; it belongs to the window, not to encounters, see below.
 
 ## Where fights show up
 
@@ -54,6 +54,6 @@ The mod keeps the last 1000 closed fights of a session in memory for the in-game
 The table's other rows ("last 5 minutes of fighting") do not use encounters directly. They use a **combat clock** that advances only while a fight is open, from the first hit until the gap closes it, sampled every 250 ms; a step longer than one second (loading screen, pause) is dropped. On that clock:
 
 - the rolling window covers the last `readout_window_minutes` of fighting, so menus, driving and walking between fights leave the numbers where they are;
-- a gun's time in hand accumulates only while a fight is open and the table is visible, which is what its DPS is divided by.
+- a gun's time in hand accumulates only while a fight is open and the table is visible; it feeds the lifetime record's DPS in hand (`dmgweapons`), not the table.
 
 So the encounter gap has a second effect: it decides when the combat clock stops. Fifteen seconds after your last hit, the window and the time in hand freeze until the next hit.

@@ -3,10 +3,11 @@ Lifetime per-weapon record, persisted as JSON next to the session logs.
 
 Answers "which of my guns performs best" across sessions: damage, hits, crits, kills and
 seconds in hand per weapon instance, from which DPS in hand, average hit and crit rate
-follow, plus the peak DPS in hand the live table ever showed for the gun (with at least
-PEAK_MIN_HELD_SECONDS of use inside the window, so one lucky second is not a peak). The
-non-weapon sources (skill, grenade, melee) get a peak too: the highest DPS their table row
-ever showed over a window of at least PEAK_MIN_WINDOW_SECONDS of fighting.
+follow, plus the peak DPS the live table ever showed for the gun: its damage over the
+window's fighting time, over a window of at least PEAK_MIN_WINDOW_SECONDS, so one lucky
+second is not a peak. The non-weapon sources (skill, grenade, melee) get the same peak.
+Files of schema 2 held peaks of the DPS in hand, a different quantity; loading one keeps
+the records and drops those peaks.
 
 Records are keyed by the item id from itemidentity.py (the seed bytes of the item, stable
 across launches). Files written by schema 1 were keyed by the instance id, which shifted
@@ -29,10 +30,12 @@ from .attribution import GRENADE_SOURCE, MELEE_SOURCE, SKILL_SOURCE
 from .formatting import format_number, format_share
 from .itemidentity import short_item_id
 
-STORE_SCHEMA = 2
+STORE_SCHEMA = 3
+# Schema 2 records are the same apart from their peaks, which measured the DPS in hand.
+FIRST_SCHEMA_WITH_WINDOW_PEAKS = 3
+OLDEST_READABLE_SCHEMA = 2
 DEFAULT_SAVE_INTERVAL_S = 30.0
 MIN_HELD_SECONDS_FOR_DPS = 1.0
-PEAK_MIN_HELD_SECONDS = 10.0
 PEAK_MIN_WINDOW_SECONDS = 10.0
 # The non-weapon sources whose row gets a lifetime peak; "other" is unattributed damage.
 PEAK_SOURCE_KINDS = (SKILL_SOURCE.kind, GRENADE_SOURCE.kind, MELEE_SOURCE.kind)
@@ -144,6 +147,7 @@ class WeaponStore:
         self.source_peaks_by_kind: dict[str, SourcePeak] = {}
         self.load_error = ""
         self.set_aside_old_schema: Path | None = None
+        self.peaks_dropped = 0
         self.save_error = ""
         self._lock = threading.Lock()
         self._dirty = False
@@ -159,12 +163,15 @@ class WeaponStore:
             return
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            if int(data.get("schema", 1)) < STORE_SCHEMA:
+            schema = int(data.get("schema", 1))
+            if schema < OLDEST_READABLE_SCHEMA:
                 # Keyed by the unstable instance id: the records cannot be matched to guns.
-                self.set_aside_old_schema = self._set_aside(f"schema{int(data.get('schema', 1))}")
+                self.set_aside_old_schema = self._set_aside(f"schema{schema}")
                 return
             records = [WeaponRecord.from_json(item) for item in data["weapons"]]
             source_peaks = [SourcePeak.from_json(item) for item in data.get("sources", [])]
+            if schema < FIRST_SCHEMA_WITH_WINDOW_PEAKS:
+                self.peaks_dropped = self._drop_peaks(records)
         except (OSError, ValueError, KeyError, TypeError) as ex:
             self.load_error = f"{type(ex).__name__}: {ex}"
             self._set_aside_corrupt_file()
@@ -172,6 +179,19 @@ class WeaponStore:
         with self._lock:
             self.records = {record.item_id: record for record in records}
             self.source_peaks_by_kind = {peak.kind: peak for peak in source_peaks}
+            if self.peaks_dropped:
+                self._dirty = True
+
+    @staticmethod
+    def _drop_peaks(records: list[WeaponRecord]) -> int:
+        """Forget peaks measured as DPS in hand; the window DPS peaks start from zero."""
+        dropped = 0
+        for record in records:
+            if record.peak_dps > 0:
+                record.peak_dps = 0.0
+                record.peak_dps_at = 0.0
+                dropped += 1
+        return dropped
 
     def save_if_due(self, now: float, force: bool = False) -> bool:
         """Write the file when something changed and the save interval has passed (or when
@@ -241,9 +261,10 @@ class WeaponStore:
             record.held_seconds += seconds
             self._dirty = True
 
-    def note_peak(self, item_id: str, label: str, body: str, dps: float, held_seconds: float, now: float) -> None:
-        """Offer the table's current DPS in hand as a peak candidate."""
-        if item_id == "" or held_seconds < PEAK_MIN_HELD_SECONDS:
+    def note_peak(self, item_id: str, label: str, body: str, dps: float, window_seconds: float, now: float) -> None:
+        """Offer a weapon row's current DPS (its window damage over the window's fighting
+        time) as a peak candidate."""
+        if item_id == "" or window_seconds < PEAK_MIN_WINDOW_SECONDS:
             return
         with self._lock:
             record = self._record(item_id, label, body, now)

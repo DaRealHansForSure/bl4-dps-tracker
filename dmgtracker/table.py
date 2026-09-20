@@ -60,8 +60,6 @@ class DamageScope(Protocol):
 
     def dps(self) -> float: ...
 
-    def source_dps(self, totals: SourceTotals) -> float: ...
-
     def other_damage(self) -> float: ...
 
 
@@ -130,6 +128,7 @@ def _weapon_slot_rows(
     scope: DamageScope, equipped: list[DamageSource], held_item_id: str, best: PeakDps | None, crit_and_kills: bool
 ) -> list[TableRow]:
     rows: list[TableRow] = []
+    duration = scope.duration()
     for slot in range(WEAPON_SLOT_ROWS):
         if slot >= len(equipped):
             empty = SourceTotals(SOURCE_WEAPON, EMPTY_SLOT_LABEL, "")
@@ -138,8 +137,10 @@ def _weapon_slot_rows(
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
         style = STYLE_ACTIVE if weapon.item_id == held_item_id else STYLE_ROW
-        # A weapon's DPS is measured over the time it was in hand, so guns compare fairly.
-        row = TableRow(_source_cells(weapon.label, totals, scope.source_dps(totals), scope.total, crit_and_kills), style)
+        # Every row's DPS is its damage over the window's fighting time (a user rule: a gun
+        # that is not firing must come down like any other source; the lifetime record keeps
+        # the DPS in hand for comparing guns), so the rows add up to the window row.
+        row = TableRow(_source_cells(weapon.label, totals, totals.damage / duration, scope.total, crit_and_kills), style)
         if best is not None:
             row = _with_best_cell(row, best.weapons.get(weapon.item_id, 0.0))
         rows.append(row)

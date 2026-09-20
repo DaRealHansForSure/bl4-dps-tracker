@@ -447,15 +447,15 @@ def _hidden_row_kinds() -> frozenset[str]:
 
 
 def _record_peaks(now: float) -> None:
-    """Offer every table row's current DPS to the lifetime record as a peak: a gun's DPS in
-    hand, a non-weapon source's damage over the window's fighting time."""
+    """Offer every table row's current DPS (damage over the window's fighting time) to the
+    lifetime record as a peak."""
     if weapon_store is None:
         return
+    window_seconds = rolling.duration()
     for totals in rolling.by_source.values():
         if totals.kind != "weapon" or totals.item_id == "":
             continue
-        weapon_store.note_peak(totals.item_id, totals.label, "", rolling.source_dps(totals), totals.held_seconds, now)
-    window_seconds = rolling.duration()
+        weapon_store.note_peak(totals.item_id, totals.label, "", totals.damage / window_seconds, window_seconds, now)
     for kind in PEAK_SOURCE_KINDS:
         damage = kind_damage(rolling.by_source, kind)
         weapon_store.note_source_peak(kind, damage / window_seconds, window_seconds, now)
@@ -747,6 +747,8 @@ def _load_weapon_store(path: Path) -> WeaponStore:
         logging.error(f"{LOG_PREFIX} weapon record {store.path} could not be read ({store.load_error}); starting a new one")
     if store.set_aside_old_schema is not None:
         _say(f"weapon record in the old format (keyed by the unstable instance id) set aside as {store.set_aside_old_schema.name}; starting a new one")
+    if store.peaks_dropped:
+        _say(f"weapon record: {store.peaks_dropped} Best DPS value(s) measured as DPS in hand dropped; Best DPS is window DPS now")
     return store
 
 

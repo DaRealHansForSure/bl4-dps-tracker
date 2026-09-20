@@ -420,9 +420,10 @@
   }
 
   // The chart: one sample per table update while fighting, x by sample (a combat timeline
-  // whose labels show the real clock), y by DPS. One line per source row (each weapon,
-  // Skill, Grenade, ...) and the window total on top; a tooltip lists them for the hovered
-  // sample.
+  // whose labels show the real clock), y by DPS. The source rows (each weapon, Skill,
+  // Grenade, ...) are stacked as bands, since every row is its damage over the same window
+  // time they add up to the window total, drawn as the yellow line on top; a tooltip lists
+  // them for the hovered sample.
   const CHART_MARGIN = { left: 8, right: 8, top: 34, bottom: 22 };
   const TIME_LABELS = 5;
   const LABEL_GAP = 12;
@@ -497,12 +498,13 @@
     }
     const series = chartSeries();
     const totals = samples.map(function (sample) { return sample.dps; });
+    stackSeries(series);
     let peak = Math.max.apply(null, totals);
-    series.forEach(function (line) { peak = Math.max(peak, line.peak); });
+    series.forEach(function (line) { peak = Math.max(peak, line.stackPeak); });
     const max = peak || 1;
     drawGridLines(context, geometry, max);
     drawTimeLabels(context, geometry);
-    series.forEach(function (line) { drawLine(context, geometry, line.values, max, line.color, 1.5); });
+    series.forEach(function (line) { drawBand(context, geometry, line, max); });
     drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
     if (peak > 0) {
       drawValueLabels(context, geometry, max);
@@ -511,6 +513,38 @@
     if (hoverIndex >= 0 && hoverIndex < samples.length) {
       drawTooltip(context, geometry, hoverIndex, max, series);
     }
+  }
+
+  // Each line's band runs from the top of the band below it (its base) to its own top.
+  function stackSeries(series) {
+    const count = samples.length;
+    let base = new Array(count).fill(0);
+    series.forEach(function (line) {
+      line.base = base;
+      line.top = line.values.map(function (value, index) { return base[index] + value; });
+      line.stackPeak = Math.max.apply(null, line.top);
+      base = line.top;
+    });
+  }
+
+  function drawBand(context, geometry, line, max) {
+    context.fillStyle = line.color + "59";
+    context.beginPath();
+    line.top.forEach(function (value, index) {
+      const x = sampleX(geometry, index);
+      const y = sampleY(geometry, value, max);
+      if (index === 0) {
+        context.moveTo(x, y);
+      } else {
+        context.lineTo(x, y);
+      }
+    });
+    for (let index = line.base.length - 1; index >= 0; index--) {
+      context.lineTo(sampleX(geometry, index), sampleY(geometry, line.base[index], max));
+    }
+    context.closePath();
+    context.fill();
+    drawLine(context, geometry, line.top, max, line.color, 1);
   }
 
   function drawLine(context, geometry, values, max, color, width) {
@@ -630,17 +664,18 @@
     context.lineTo(x, geometry.bottom);
     context.stroke();
     context.setLineDash([]);
-    // One entry per line: the total first, then the sources with damage at this sample.
-    const entries = [{ label: "Total", color: TOTAL_COLOR, value: sample.dps }];
+    // One entry per band: the total first, then the sources with damage at this sample;
+    // each dot sits on its band's top edge, the total on the line above them all.
+    const entries = [{ label: "Total", color: TOTAL_COLOR, value: sample.dps, at: sample.dps }];
     series.forEach(function (line) {
       if (line.values[index] > 0) {
-        entries.push({ label: line.label, color: line.color, value: line.values[index] });
+        entries.push({ label: line.label, color: line.color, value: line.values[index], at: line.top[index] });
       }
     });
     entries.forEach(function (entry) {
       context.fillStyle = entry.color;
       context.beginPath();
-      context.arc(x, sampleY(geometry, entry.value, max), 4, 0, Math.PI * 2);
+      context.arc(x, sampleY(geometry, entry.at, max), 4, 0, Math.PI * 2);
       context.fill();
     });
     const header = formatTime(sample.t);
