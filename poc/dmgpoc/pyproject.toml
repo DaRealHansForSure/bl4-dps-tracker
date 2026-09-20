@@ -1,0 +1,10 @@
+[project]
+name = "dmgpoc"
+version = "0.0.1"
+description = "Throwaway proof of concept: logs every damage instance the player deals to a JSONL file."
+authors = [{ name = "SevenX" }]
+
+[tool.sdkmod]
+name = "Damage Tracker PoC"
+auto_enable = true
+supported_games = ["BL4"]

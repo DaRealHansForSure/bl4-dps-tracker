@@ -1,0 +1,54 @@
+# PoC findings
+
+Game: Borderlands 4, Steam, `Borderlands4.exe` dated 2026-09-19 (post Sep-18 patch).
+SDK: oak2-mod-manager v0.3 "Whiskey Foxtrot" (pyunrealsdk 1.10.0, unrealsdk 3.2.0, Python 3.14), installed 2026-09-20.
+
+Dev-machine changes outside the repo:
+- `OakGame/Binaries/Win64/Plugins/unrealsdk.user.toml`: `console_key = "F6"`, `external_console = true`, `pyexec_root` -> this `poc/` folder.
+- `sdk_mods/__main__.py` line ~470: `import keybinds` wrapped in `try/except ImportError`. Turned out unnecessary on this build (keybinds loaded fine, see A), harmless to keep.
+- `sdk_mods/dmgpoc/`: copy of `poc/dmgpoc/`, enabled once via the `mods` menu (remembered in `sdk_mods/settings/dmgpoc.json`).
+
+## A. SDK loads on current patch: PASS
+
+- unrealsdk, pyunrealsdk, console_mod_menu and keybinds all initialise on the Sep-19 build. Issue #17 did not reproduce here.
+- Tilde did nothing on this machine (German layout, and BL4 binds Tilde itself). BL4-specific SDK code overwrites the game's console key when `unrealsdk.console_key` is set, so F6 works. `Input.ini` in the user config folder is ignored by the game.
+- The console only opens in the world, not on the main menu.
+
+## B. A hookable function fires per damage instance: PASS, with a different mechanism than planned
+
+- 170 UFunctions with `Damage` in the name exist; 62 plausible ones were hooked. None fired for a gunshot. `log_all_calls` over one shot shows zero weapon/hit/damage functions. BL4 applies damage natively; there is no per-hit function to hook.
+- `add_hook` returns True for paths that do not exist. Validate with `unrealsdk.find_object("Function", path)` first.
+- What works: `OakPlayerController.RecentlyCausedDamageInstances`, a fixed array of 6 `RecentPlayerCausedDamageInstance` structs (the source of the HUD floating numbers). Written round-robin; each write increments that slot's `RepDirtyFlag` (byte). Diffing dirty flags once per frame from a hook on `/Script/GbxUIUMG.GbxUIUMGTickWidget:BP_TickWidget` (~60-100 calls/s) catches every instance. Keying on anything else (target, location) produces false events when a dead target's weak pointer goes null.
+- Struct fields: `TotalDamage` (float), `DamageType` (FGameDataHandle with `bIsDoT`, `ElementalType`, `DamageIconFrameName`, name via repr), `DamagedActor` (weak Actor), `DamageLocation`, `DamageFlags.Flags` (uint32), `DamageSource` (DamageSourceContainer, empty in this replicated copy: `Conv_DamageSourceContainer_String` returns ''), `RepDirtyFlag`.
+- `ERecentPlayerDamageFlags` values are bit indexes, not masks: CriticalHit=1 -> `Flags & 0x2`, Healing=2 -> `0x4`, Shield=4 -> `0x10`, Resist=8 -> `0x100`. Gun hits also carry `0x400` and `0x4000` (meaning unknown, `0x4000` absent on some hits).
+- Weapon attribution: `DamageSource` is empty, so use the weapon in hand at the time of the hit: `pawn.ActiveWeapons.Slots[0].Weapon` (an `OakWeapon`, also present as `pawn.EquippedInventorySlots.items[i].InstancedInventory` for the four weapon slots; slots 4-6 hold Shield, GrenadeGadget, RepairKit). Both arrays are empty right after the controller resolves and fill once the pawn is fully spawned, so read them per hit, not once.
+- Weapon label: the `OakWeapon` actor carries no display name and there is no reflected way to get one (probes 4-9, see below). Use `weapon.BodyData._path_name()`, e.g. `/Game/Gear/Weapons/AssaultRifles/VLA/Body_VLA_AR.Body_VLA_AR`, whose `Body_<MFR>_<TYPE>` stem gives manufacturer (VLA Vladof, JAK Jakobs, TOR Torgue, BOR Borg, ...) and type (AR, SM, SR, SG, PS, HW). Plus `weapon.Item.data.InstanceId` (uint32, distinct per item: 277-280 for the four equipped guns) to keep two guns of the same body apart. Session stability of `InstanceId` is unverified; do not build cross-session aliases on it without checking.
+- Naming dead ends, so nobody repeats them: `Item.data.Identity` (`GbxGame.InventoryIdentity`) is 216 bytes with zero reflected fields, i.e. opaque native data. No class matches InventoryManager/ItemData/Naming; the item system is `GbxGame.GbxItem`/`GbxItemData`/`InventoryItemHandle`/`GbxInventoryChannel`, with names generated natively from Nexus config (`NexusConfigStoreInventoryNamePart`/`NameStrategy`). The HUD is Coherent (`GbxUICoherent`); `OakUIDataCollector_Weapon`/`_ItemCard`/`_WeaponStatus` have no reflected text properties, and a `log_all_calls` trace over weapon swaps shows no UFunction at all (only animation and camera). Hovering a slot in the inventory fires `ui_script_backpack_C:WeaponSlotFocused` with no item data (widget def, position, audio handle). `InventoryItemBlueprintLibrary.GetSummary_InventoryItemSelectionData` takes an `InventoryItemDefProvider` (`{Handle: GameDataHandle, bInstance, Instance}`), i.e. a loot-selection definition, not a player item. The only name-like getter on the weapon actor is `GetAttachParentSocketName`.
+- pyunrealsdk notes from these probes: `UStruct._superfields()` walks the class chain (there is no `_superfield`), `_fields()` and `_properties()` already include inherited members, `find_object` raises `ValueError` rather than returning None, and `GbxDefPtrProperty` values render as `FGbxDefPtr(name, type, {...})` dicts.
+- Target health for the overkill note: `DamagedActor.HealthState.HealthTypeStates[]` (per health type: flesh/armor/shield) and `DamageState`. Not yet mapped.
+- The pawn object changes on respawn; the controller object persisted across the session but may change on map load. Re-resolve `get_pc()` on any read error.
+- Ring overflow: >6 instances in one frame would drop events. Untested (no shotgun available). The HUD has the same limit, so the game probably merges pellets, but verify.
+
+## C. Hooked value == on-screen value: PASS
+
+Three controlled comparisons: 394 shown / 393.6 read, 367 / 367.4, 366 / 366.3. Crit flag matched the visual crit each time. One earlier report of 46 shown vs 48.0 read could not be reproduced; treat as unconfirmed.
+
+## D. Buffer + background flush, no stutter: PASS
+
+`poc/dmgpoc/` implements the mechanism: per-frame diff -> list append -> daemon thread appends JSONL every second to `sdk_mods/settings/dmgpoc.jsonl`. Run on 2026-09-20 (19:08-19:10 local): user loaded in, fought wildlife for about 45 s of damage, idled, then killed `Borderlands4.exe` from Task Manager.
+
+- Mod counters at the last status line: 35 events, 0 errors, 6537 ticks. The JSONL holds exactly 35 complete lines, none truncated. Zero loss.
+- Last hit at 17:09:42.46Z, file mtime 17:09:43.31Z: the batch reached disk 0.85 s after the hit, i.e. inside the 1 s flush interval. The writer never built a backlog (every status line's event count matched the file).
+- Tick rate stayed at 78-95 hook calls per second for the whole session; the per-frame diff plus `_read_slot` did not show up as a hitch in the numbers. Stutter as felt in play: none, the game felt normal.
+- The kill came 20+ s after the last hit, so it did not exercise the worst case directly; the 1 s flush cadence bounds the loss structurally and the writer thread is a daemon, so a hard kill can only lose the current unflushed second.
+- Side finding: the one-off weapon layout dump ran at controller-resolve time, when `ActiveWeapons.Slots` and `EquippedInventorySlots.items` were both still empty, so every event carries `"weapon": "unknown"`. `poc/probe_weapon.py` repeats that dump on demand once weapons are equipped; run it in the next session before building weapon attribution.
+- Data sanity: 7 of 35 hits flagged crit (flags bit 1), all `elem` 0 and `kind` direct, which matches a non-elemental gun against wildlife. Flag values seen: 1024, 1026, 16384, 17408, 17410 (bits 10, 1, 14 plus combos), still undecoded.
+
+## E. On-screen readout from Python: PASS
+
+Added on 2026-09-20 (the numbers belong in the game, not only in the offline report). Two mechanisms checked with `poc/probe_ui.py`:
+
+- Canvas text via a `/Script/Engine.HUD:ReceiveDrawHUD` hook: dead. `pc.MyHUD` is an `OakHUD`, but the event never appears in a 234k-line `log_all_calls` trace, so BL4's HUD (Coherent UI) never calls it.
+- Runtime UMG: works. `WidgetBlueprintLibrary.Create(pc, container_class, pc)` with a concrete native `UserWidget` subclass as container (`UserWidget` itself is abstract; `GbxUIUMGListViewItemWidget` worked, `GbxUIUMGUserWidget` is the cleaner-looking candidate, untested), then `unrealsdk.construct_object("TextBlock", widget.WidgetTree, "DmgTrackerText")`, `widget.WidgetTree.RootWidget = text_block`, `text_block.SetText("...")`, `widget.AddToViewport(10000)`, `widget.SetPositionInViewport(make_struct("Vector2D", X=120, Y=320), True)`. The text rendered above the game HUD in the default 24 pt engine font; `RemoveFromParent()` takes it away. Visibility came back as `SelfHitTestInvisible`, so it does not eat clicks. pyunrealsdk returns `Ellipsis` for void UFunction calls.
+- Not yet tried: font size/colour (`SetFont` with a `SlateFontInfo`, `SetColorAndOpacity` with a `SlateColor`), a multi-line layout (a `VerticalBox` root with several `TextBlock` children), and whether the widget survives a map change (expect not; recreate on controller resolve).
+- Number formatting rule for everything shown to the user: Swiss style, `'` for thousands and `.` for decimals (`12'345.5`).

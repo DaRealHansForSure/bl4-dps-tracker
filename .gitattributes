@@ -1,0 +1,3 @@
+# Line endings: LF everywhere, on every platform. Matches .editorconfig (end_of_line = lf)
+# and overrides any local core.autocrlf setting, so a Windows checkout never turns CRLF.
+* text=auto eol=lf
