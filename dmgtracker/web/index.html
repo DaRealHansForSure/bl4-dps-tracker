@@ -642,7 +642,7 @@
     const line = itemCard.querySelector(".line");
     line.textContent = "";
     // Type, rarity and element as badges, tinted like everywhere else on the page; a gun
-    // without an element says so.
+    // without an element is "Normal", as the hit lists call kinetic damage.
     if (info.label) {
       line.appendChild(badge(info.label, typeClass(info.label)));
     }
@@ -651,7 +651,7 @@
     }
     if (info.element) {
       const none = info.element === "noelement";
-      line.appendChild(badge(none ? "no element" : info.element, none ? "" : elementClass(info.element)));
+      line.appendChild(badge(none ? "Normal" : info.element, none ? "" : elementClass(info.element)));
     }
     itemCard.querySelector(".damage").textContent = info.damage ? "Card damage " + info.damage : "";
     itemCard.querySelector(".code").textContent = info.serial ? info.serial : shortId(itemId);
