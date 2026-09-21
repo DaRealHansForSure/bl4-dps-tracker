@@ -9,7 +9,7 @@ Requirements (formal requirement field): Borderlands 4 PythonSDK (oak2-mod-manag
 
 **See what your guns actually do.**
 
-BL4 Damage Tracker records every damage instance you deal and shows a small table on screen: each equipped weapon with its damage, its DPS while it was in your hands, and its share, plus rows for your action skill, grenades and melee, over the last five minutes of fighting. The numbers stand still while you are in a menu, in a vehicle or walking between fights, and change only when hits land.
+BL4 Damage Tracker records every damage instance you deal and shows a small table on screen: each equipped weapon with its damage, its DPS while it was in your hands, and its share, plus rows for your action skill, grenades and melee, over the last five minutes of play. The numbers stand still while you are in a menu or a loading screen.
 
 The point of it: compare a gun you just found against the ones you carry. A weapon's DPS is measured only over the time you actually used it in fights, so one minute with a new gun gives a number you can put next to the old ones. The mod also keeps a lifetime record per weapon and per character (damage, DPS in hand, peak DPS, hits, average hit, crit share, kills, time in hand), shown with the `dmgweapons` console command, and writes every session to a log you can report on with `dmgreport`.
 
@@ -41,8 +41,9 @@ Tested against the game build of 2026-09-19 with oak2-mod-manager v0.3. A game p
 
 ## Settings
 
-Three menu entries (logging on/off, table on/off, open log folder). Position, size, window length and the rest are in `sdk_mods\settings\dmgtracker.json`; see the README.
+Four menu entries (logging on/off, table on/off, open log folder, web dashboard on/off). Position, size, window length and the rest are in `sdk_mods\settings\dmgtracker.json`; see the README.
 
 ## Changelog
 
+1.1.0: web dashboard at http://127.0.0.1:8765/ (live table over WebSocket, hits with search, weapon Top 10, encounters; also reachable from other devices on the network); Best DPS for Skill and Grenade; weapon records follow the gun across restarts and character switches (records from 1.0.0 are set aside); Melee row hidden by default; table at the left screen border.
 1.0.0: first release.

@@ -132,7 +132,7 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(event["kind"], "direct")
         self.assertEqual(event["src"], "weapon")
         self.assertEqual(event["weapon"], "Jakobs Sniper")
-        self.assertEqual(event["wid"], 277)
+        self.assertEqual(event["wid"], "instance:277")
         self.assertEqual(event["target"], "Char_CatYoung_9")
         self.assertEqual(event["dtype"], "Corrosive")
         self.assertEqual(event["t"], self.clock.now)
@@ -146,7 +146,7 @@ class DamagePollerTests(unittest.TestCase):
         self.assertEqual(self.received, [], "unexplained hits are held back for a late explosion event")
         self.settle()
         first, second = self.received
-        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", 0))
+        self.assertEqual((first["src"], first["weapon"], first["wid"]), ("other", "Other", ""))
         self.assertTrue(first["kill"])
         self.assertEqual(second["src"], "other")
         self.assertFalse(second["kill"])
@@ -201,6 +201,19 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 0, 5.0, flags=WEAPON_FLAG, target=None)
         self.poller.tick()
         self.assertEqual(self.received[0]["target"], "")
+
+    def test_slots_changed_in_one_frame_are_read_in_write_order(self) -> None:
+        self.poller.tick()
+        for slot in range(4):
+            write_hit(self.controller, slot, 10.0 + slot, flags=WEAPON_FLAG, target=f"Char_{slot}")
+        self.poller.tick()
+        self.assertEqual([e["dmg"] for e in self.received], [10.0, 11.0, 12.0, 13.0])
+        # The next three hits wrap around: slots 4, 5 and 0, in that order.
+        write_hit(self.controller, 4, 20.0, flags=WEAPON_FLAG, target="Char_4")
+        write_hit(self.controller, 5, 21.0, flags=WEAPON_FLAG | KILL_FLAG, target="Char_5")
+        write_hit(self.controller, 0, 22.0, flags=WEAPON_FLAG, target="Char_0")
+        self.poller.tick()
+        self.assertEqual([e["dmg"] for e in self.received[4:]], [20.0, 21.0, 22.0])
 
     def test_all_slots_changed_counts_as_overflow_suspect(self) -> None:
         self.poller.tick()
@@ -316,16 +329,16 @@ class DamagePollerTests(unittest.TestCase):
     # ------------------------------------------------------------------ explosions
 
     def test_explosion_before_the_damage_claims_it(self) -> None:
-        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", 281)
+        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", "seed281")
         self.poller.tick()
         self.poller.note_explosion(self.clock.now, torgue)
         self.clock.advance(0.04)
         write_hit(self.controller, 0, 902.8, flags=KILL_FLAG, target="Char_SoldierSMG")
         self.poller.tick()
-        self.assertEqual((self.received[0]["weapon"], self.received[0]["wid"]), ("Torgue Shotgun", 281))
+        self.assertEqual((self.received[0]["weapon"], self.received[0]["wid"]), ("Torgue Shotgun", "seed281"))
 
     def test_explosion_after_the_damage_claims_the_held_event(self) -> None:
-        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", 281)
+        torgue = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", "seed281")
         self.poller.tick()
         write_hit(self.controller, 0, 300.9, flags=0x10, target="Char_GruntSMG")
         self.poller.tick()
@@ -401,6 +414,21 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "grenade", "the skill window closed, the throw window is still open")
 
+    def test_skill_hits_keep_the_skill_window_open(self) -> None:
+        """Tokens attack for seconds after the last script action: the window follows the hits."""
+        self.poller.tick()
+        self.poller.note_skill_activity(self.clock.now)
+        for step in range(12):
+            self.clock.advance(0.5)
+            write_hit(self.controller, step % 6, 239.7, flags=0, target="Char_A_1")
+            self.poller.tick()
+        self.assertEqual({event["src"] for event in self.received}, {"skill"}, "hits up to 6 s after the action")
+        self.clock.advance(2.0)
+        write_hit(self.controller, 0, 239.7, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.settle()
+        self.assertEqual(self.received[-1]["src"], "other", "1.5 s without a skill hit closes the window")
+
     def test_the_swing_end_closes_the_melee_window_early(self) -> None:
         self.poller.tick()
         self.poller.note_skill_activity(self.clock.now)
@@ -430,6 +458,23 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 2, 10136.0, flags=0, target="Char_A_1")
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "skill")
+
+    def test_a_sticky_that_detonates_while_no_gun_is_in_hand_goes_to_the_gun_that_stuck_it(self) -> None:
+        torgue = fake_weapon(281, "/Game/Gear/Weapons/Shotguns/TOR/Body_TOR_SG.Body_TOR_SG")
+        self.hold(torgue)
+        self.poller.tick()
+        write_hit(self.controller, 0, 41.2, flags=WEAPON_FLAG, target="Char_StrikerBasic_1")
+        self.poller.tick()
+        self.clock.advance(1.0)
+        self.hold(None)  # mid swap: the active slot is empty for a moment
+        self.clock.advance(2.0)
+        write_hit(self.controller, 1, 1338.5, flags=WEAPON_FLAG | KILL_FLAG, target="Char_StrikerBasic_1")
+        self.poller.tick()
+        self.assertEqual([e["weapon"] for e in self.received], ["Torgue Shotgun", "Torgue Shotgun"])
+        # A flagged hit on a target the gun never touched falls back to the gun swapped away.
+        write_hit(self.controller, 2, 300.0, flags=WEAPON_FLAG, target="Char_Other_2")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["weapon"], "Torgue Shotgun")
 
     # ------------------------------------------------------------------ the swap rule
 

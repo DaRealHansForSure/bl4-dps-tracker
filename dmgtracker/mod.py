@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -21,19 +22,24 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
+from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
 from .character import CharacterIdentity, read_identity
+from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
+from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
+from .formatting import format_number
+from .itemidentity import ItemIdentityReader
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
 from .report import format_report, gap_for, read_session
-from .stats import EncounterTracker, RollingStats, source_key
-from .table import build_rows
-from .weaponstats import WeaponStore
+from .stats import EncounterTracker, RollingStats, kind_damage, source_key
+from .table import PeakDps, build_rows
+from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
-LOG_SCHEMA_VERSION = 1
+# 2: `wid` and `held` carry the item id (a hex seed, or "instance:<n>" as fallback) instead of the numeric instance id.
+LOG_SCHEMA_VERSION = 2
 SETTINGS_FILE = SETTINGS_DIR / "dmgtracker.json"
 
 # User data belongs under the user's profile, not in the game folder under Program Files.
@@ -53,6 +59,13 @@ GRENADE_EXPLODE_FUNCTION = "/Script/OakGame.GrenadeGadget:ExplodeCallback"
 # in their name (probes 2026-09-20, three characters).
 TRICK_BEGIN_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnBegin_Mut"
 TRICK_END_FUNCTION = "/Script/GbxGame.GbxTrickScript:OnEnd_Mut"
+# Every skill script action (a revolver volley, a dice throw, a Reaper swing) starts through
+# this native function on the script object, whose GetOwner() is the player controller
+# (probe #17, 2026-09-20). Traits and passives fire skill events but no actions.
+SKILL_ACTION_FUNCTION = "/Script/GbxGame.GbxSkillScript:K2_StartSkillAction"
+# The token stack: tokens spawned by a skill are added when they return, and other skills
+# consume them; adding tokens is skill activity as well.
+SKILL_TOKEN_FUNCTION = "/Script/OakGame.GbxSkillTokenProviderStatics:AddToTokenStack"
 SHARED_PLAYER_TRICK_PREFIX = "ATrick_"
 ENEMY_TRICK_PREFIX = "TRAnim_"
 MELEE_TRICK_FRAGMENT = "Melee"
@@ -66,11 +79,18 @@ DEFAULT_STATUS_INTERVAL_S = 60.0
 # swaps and grenade throws in the first real sessions; 15 s keeps a fight together.
 DEFAULT_ENCOUNTER_GAP_S = 15.0
 
-DEFAULT_READOUT_X = 120.0
+DEFAULT_READOUT_X = 32.0
 DEFAULT_READOUT_Y = 320.0
 DEFAULT_READOUT_FONT_SIZE = 30
 DEFAULT_READOUT_COLUMN_GAP = 44.0
+# Widths of Weapon, Total, DPS and Share [%]; the setting readout_column_widths overrides them.
 DEFAULT_READOUT_COLUMN_WIDTHS = [320.0, 240.0, 190.0, 140.0]
+# Widths of the other optional columns, in their order after those: Crit [%], Kills, Best DPS.
+DEFAULT_CRIT_COLUMN_WIDTH = 150.0
+DEFAULT_KILLS_COLUMN_WIDTH = 120.0
+DEFAULT_BEST_COLUMN_WIDTH = 170.0
+FIXED_COLUMN_COUNT = 3
+SHARE_COLUMN_INDEX = 3
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
 DEFAULT_READOUT_WINDOW_MINUTES = 5.0
 READOUT_REFRESH_INTERVAL_S = 0.25
@@ -85,6 +105,10 @@ MAX_LIVE_ENCOUNTERS = 1000
 WEAPON_STORE_NAME = "weapons.json"
 CHARACTERS_DIR_NAME = "characters"
 READOUT_CREATE_RETRY_S = 1.0
+# Time-in-hand lines in the session log, once per second per gun, so the report and the
+# dashboard can compute DPS in hand from the log.
+HELD_LINE_INTERVAL_S = 1.0
+DEFAULT_WEB_PORT = 8765
 
 # ------------------------------------------------------------------ options
 
@@ -103,6 +127,12 @@ open_log_folder = ButtonOption(
     "Open log folder",
     description="Opens the session log folder in Explorer.",
     on_press=lambda _button: _open_log_folder(),
+)
+web_enabled = BoolOption(
+    "Web dashboard",
+    True,
+    description="Serve the dashboard page (live table, hits, weapon ranking, encounters); 'dmgweb' in the console prints the address.",
+    on_change_while_enabled=lambda _option, value: _set_dashboard_enabled(value),
 )
 
 # Mechanism and layout knobs. Hidden from the menu, persisted in the settings file, editable
@@ -123,11 +153,24 @@ readout_column_widths = HiddenOption("readout_column_widths", DEFAULT_READOUT_CO
 readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READOUT_BACKGROUND_ALPHA)
 readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
 readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
+readout_show_best_column = HiddenOption("readout_show_best_column", True)
+readout_show_share_column = HiddenOption("readout_show_share_column", False)
+readout_show_crit_and_kills = HiddenOption("readout_show_crit_and_kills", False)
+# Non-weapon rows to leave out of the table, by source kind: "melee", "grenade", "skill", "other".
+readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
+# The dashboard listens on every interface (0.0.0.0) so other devices on the network can open
+# it; "127.0.0.1" keeps it on this machine.
+web_host = HiddenOption("web_host", DEFAULT_WEB_HOST)
+web_port = HiddenOption("web_port", DEFAULT_WEB_PORT)
+# The dashboard chart's "now": damage per second over this many seconds.
+web_chart_seconds = HiddenOption("web_chart_seconds", DEFAULT_CHART_SECONDS)
 
 # ------------------------------------------------------------------ state
 
-resolver = WeaponResolver()
+identity_reader = ItemIdentityReader()
+resolver = WeaponResolver(identity_reader.item_id)
 poller: DamagePoller | None = None
+dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
 tracker = EncounterTracker(max_closed=MAX_LIVE_ENCOUNTERS)
 rolling = RollingStats(DEFAULT_READOUT_WINDOW_MINUTES * 60.0)
@@ -146,10 +189,13 @@ _transition_hidden = False
 _equipped_cache: list = []
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
-# Clocks: intervals and this combat clock run on time.monotonic(), which cannot jump; event
+# Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
 # timestamps and everything persisted use time.time(), which is comparable across sessions.
-_combat_clock = 0.0
-_last_combat_step = 0.0
+_play_clock = 0.0
+_last_fight_step = 0.0
+_latest_rows: list = []
+_held_pending: dict[str, tuple[str, float]] = {}
+_last_held_flush = 0.0
 
 
 def _say(message: str) -> None:
@@ -184,9 +230,11 @@ def _on_new_events(events: list[dict[str, Any]]) -> None:
         session_log.append(events)
     for event in events:
         tracker.add(event)
-        rolling.add(event, at=_combat_clock)
+        rolling.add(event, at=_play_clock)
         if weapon_store is not None:
             weapon_store.add_event(event)
+    if dashboard is not None:
+        dashboard.publish_hits(events)
 
 
 def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
@@ -209,15 +257,25 @@ def _on_tick(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -
 # ------------------------------------------------------------------ readout
 
 def _readout_layout() -> ReadoutLayout:
-    widths = [float(width) for width in readout_column_widths.value]
-    if len(widths) != 4:
-        widths = list(DEFAULT_READOUT_COLUMN_WIDTHS)
+    """Weapon, Total and DPS always; Share, Crit and Kills, Best DPS by their settings. The
+    first four widths come from the settings, the others have defaults."""
+    configured = [float(width) for width in readout_column_widths.value]
+    if len(configured) < len(DEFAULT_READOUT_COLUMN_WIDTHS):
+        configured = list(DEFAULT_READOUT_COLUMN_WIDTHS)
+    widths = configured[:FIXED_COLUMN_COUNT]
+    if readout_show_share_column.value:
+        widths.append(configured[SHARE_COLUMN_INDEX])
+    if readout_show_crit_and_kills.value:
+        widths.extend([DEFAULT_CRIT_COLUMN_WIDTH, DEFAULT_KILLS_COLUMN_WIDTH])
+    if readout_show_best_column.value:
+        widths.append(DEFAULT_BEST_COLUMN_WIDTH)
+    columns = len(widths)
     return ReadoutLayout(
         x=float(readout_x.value),
         y=float(readout_y.value),
         font_size=int(readout_font_size.value),
         column_gap=float(readout_column_gap.value),
-        column_widths=(widths[0], widths[1], widths[2], widths[3]),
+        column_widths=tuple(widths[:columns]),
         background_alpha=float(readout_background_alpha.value),
     )
 
@@ -257,14 +315,16 @@ def _check_character(controller: UObject, pawn: Any) -> None:
     _reset_live_stats()
     if session_log is not None:
         session_log.append([{"character": identity.to_json(), "t": time.time()}])
+    if dashboard is not None:
+        dashboard.publish_character(identity.to_json())
     _say(f"character: {identity.display} ({identity.class_name}), key {identity.key[:8]}, record {weapon_store.path}")
 
 
 def _reset_live_stats() -> None:
-    global tracker, rolling, _combat_clock, _equipped_cache
+    global tracker, rolling, _play_clock, _equipped_cache
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
-    _combat_clock = 0.0
+    _play_clock = 0.0
     _equipped_cache = []
 
 
@@ -307,7 +367,7 @@ def _refresh_readout() -> None:
     """Hide in menus every frame, refresh the numbers every READOUT_REFRESH_INTERVAL_S.
     Uses only this frame's controller wrapper; nothing is kept across frames."""
     global _last_readout_refresh, _last_equipment_refresh, _equipped_cache, _readout_errors, _transition_hidden
-    global _last_readout_create
+    global _last_readout_create, _latest_rows
     if poller is None or poller.controller is None:
         return
     try:
@@ -321,7 +381,9 @@ def _refresh_readout() -> None:
                 _create_readout(controller)
             if readout is None:
                 return
-        readout.set_visible(_should_show_table(controller, pawn))
+        in_play = _should_show_table(controller, pawn)
+        readout.set_visible(in_play)
+        readout.fade(now)
         if now - _last_readout_refresh < READOUT_REFRESH_INTERVAL_S:
             return
         _last_readout_refresh = now
@@ -334,7 +396,7 @@ def _refresh_readout() -> None:
             _transition_hidden = True
             readout.set_visible(False)
         tracker.close_if_idle(wall_now)
-        _advance_combat_clock(now)
+        _advance_play_clock(now, _in_play(controller, pawn))
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
@@ -345,17 +407,40 @@ def _refresh_readout() -> None:
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
-        rolling.prune(_combat_clock)
+        rolling.prune(_play_clock)
         _record_peaks(wall_now)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
-        rows = build_rows(rolling, float(readout_window_minutes.value), _equipped_cache, held.instance_id, encounter)
-        readout.render(rows)
+        best = _peak_dps() if readout_show_best_column.value else None
+        rows = build_rows(
+            rolling,
+            float(readout_window_minutes.value),
+            _equipped_cache,
+            held.item_id,
+            encounter,
+            best,
+            _hidden_row_kinds(),
+            bool(readout_show_crit_and_kills.value),
+            bool(readout_show_share_column.value),
+        )
+        _latest_rows = rows
+        readout.render(rows, now)
+        if dashboard is not None:
+            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache])
+        _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
         _readout_errors += 1
         if _readout_errors <= READOUT_ERRORS_TO_LOG:
             _say(f"damage table error #{_readout_errors}: {type(ex).__name__}: {ex}")
         _give_up_readout_if_needed()
+
+
+def _in_play(controller: UObject, pawn: Any) -> bool:
+    """Whether the window's time should pass: a pawn (on foot or driving), no menu or pause
+    menu, no transition. Field reads only."""
+    if pawn is None or controller.bShowMouseCursor or _transition_hidden:
+        return False
+    return not pawn.bHidden
 
 
 def _should_show_table(controller: UObject, pawn: Any) -> bool:
@@ -367,27 +452,50 @@ def _should_show_table(controller: UObject, pawn: Any) -> bool:
     return not pawn.bHidden
 
 
+def _peak_dps() -> PeakDps:
+    if weapon_store is None:
+        return PeakDps({}, {})
+    return PeakDps(weapon_store.peaks(), weapon_store.source_peaks())
+
+
+def _hidden_row_kinds() -> frozenset[str]:
+    try:
+        return frozenset(str(kind) for kind in readout_hidden_rows.value)
+    except TypeError:
+        return frozenset()
+
+
 def _record_peaks(now: float) -> None:
-    """Offer every gun's current window DPS in hand to the lifetime record as a peak."""
+    """Offer every table row's current DPS (damage over the window's fighting time) to the
+    lifetime record as a peak."""
     if weapon_store is None:
         return
+    window_seconds = rolling.duration()
     for totals in rolling.by_source.values():
-        if totals.kind != "weapon" or totals.instance_id == 0:
+        if totals.kind != "weapon" or totals.item_id == "":
             continue
-        weapon_store.note_peak(totals.instance_id, totals.label, "", rolling.source_dps(totals), totals.held_seconds, now)
+        weapon_store.note_peak(totals.item_id, totals.label, "", totals.damage / window_seconds, window_seconds, now)
+    for kind in PEAK_SOURCE_KINDS:
+        damage = kind_damage(rolling.by_source, kind)
+        weapon_store.note_source_peak(kind, damage / window_seconds, window_seconds, now)
 
 
-def _advance_combat_clock(now: float) -> None:
-    """Run the combat clock while an encounter is open. A long gap between samples is a
-    pause or a loading screen, not fighting, and is dropped."""
-    global _last_held_sample, _combat_clock, _last_combat_step
+def _advance_play_clock(now: float, in_play: bool) -> None:
+    """Run the play clock while the player is in play: with a pawn, not in a menu (the pause
+    menu included), not in a transition. Fighting or not, the window's time passes, so a
+    source that stops dealing damage comes down (a user rule); menus, pauses and loading
+    screens (a long gap between samples) do not count. The step doubles as the time-in-hand
+    sample, but only while a fight is open: the lifetime record's DPS in hand stays about
+    fighting."""
+    global _last_held_sample, _play_clock, _last_fight_step
     elapsed = now - _last_held_sample
     _last_held_sample = now
-    _last_combat_step = 0.0
-    if tracker.current is None or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+    _last_fight_step = 0.0
+    if not in_play or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
         return
-    _combat_clock += elapsed
-    _last_combat_step = elapsed
+    _play_clock += elapsed
+    if tracker.current is not None:
+        _last_fight_step = elapsed
 
 
 def _sample_held_time(held: Any) -> None:
@@ -395,12 +503,29 @@ def _sample_held_time(held: Any) -> None:
     can be measured over the time it was actually used in fights. Menus, vehicles and
     transitions hide the table and do not count; neither does carrying a gun around
     between fights, which would otherwise dilute its number."""
-    if _last_combat_step <= 0 or not readout.visible() or held.instance_id == 0:
+    if _last_fight_step <= 0 or not readout.visible() or held.item_id == "":
         return
-    key = source_key({"src": held.kind, "weapon": held.label, "wid": held.instance_id})
-    rolling.add_held(_combat_clock, key, _last_combat_step)
+    key = source_key({"src": held.kind, "weapon": held.label, "wid": held.item_id})
+    rolling.add_held(_play_clock, key, _last_fight_step)
     if weapon_store is not None:
-        weapon_store.add_held(held.instance_id, held.label, held.body, _last_combat_step, time.time())
+        weapon_store.add_held(held.item_id, held.label, held.body, _last_fight_step, time.time())
+    _label, seconds = _held_pending.get(held.item_id, (held.label, 0.0))
+    _held_pending[held.item_id] = (held.label, seconds + _last_fight_step)
+
+
+def _flush_held_lines(now: float) -> None:
+    """Write the accumulated time in hand as one compact line per gun, once a second, so the
+    report and the dashboard can compute DPS in hand from the log."""
+    global _last_held_flush
+    if not _held_pending or now - _last_held_flush < HELD_LINE_INTERVAL_S:
+        return
+    _last_held_flush = now
+    if session_log is not None and logging_enabled.value:
+        lines = [{"t": now, "held": item_id, "weapon": label, "s": round(seconds, 3)} for item_id, (label, seconds) in _held_pending.items()]
+        session_log.append(lines)
+    _held_pending.clear()
+
+
 
 
 def _give_up_readout_if_needed() -> None:
@@ -521,6 +646,29 @@ def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunc
         pass
 
 
+def _on_skill_action(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    """A skill script of some actor starts an action; only the local player's scripts count.
+    The script's owner is the player controller, read through its no-argument getter."""
+    try:
+        if poller is None or poller.controller is None:
+            return
+        owner = obj.GetOwner()
+        if owner is None or int(owner._get_address()) != int(poller.controller._get_address()):
+            return
+        poller.note_skill_activity(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
+def _on_skill_token(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
+    """A static call with no owner; only the local player's skills run this code here."""
+    try:
+        if poller is not None:
+            poller.note_skill_activity(time.time())
+    except Exception:  # noqa: BLE001 - a hook may never raise into the game
+        pass
+
+
 def _on_trick_end(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     try:
         if poller is None:
@@ -540,6 +688,8 @@ SOURCE_HOOKS = (
     (GRENADE_EXPLODE_FUNCTION, "grenade-explode", _on_grenade_exploded, "grenade"),
     (TRICK_BEGIN_FUNCTION, "trick-begin", _on_trick_begin, "melee and skill"),
     (TRICK_END_FUNCTION, "trick-end", _on_trick_end, "skill"),
+    (SKILL_ACTION_FUNCTION, "skill-action", _on_skill_action, "skill"),
+    (SKILL_TOKEN_FUNCTION, "skill-token", _on_skill_token, "skill"),
 )
 
 
@@ -582,12 +732,12 @@ def _remove_tick_hook() -> None:
 
 def on_enable() -> None:
     global poller, session_log, tracker, rolling, weapon_store, character
-    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _combat_clock
+    global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
     _last_status_time = time.monotonic()
     _last_held_sample = time.monotonic()
-    _combat_clock = 0.0
+    _play_clock = 0.0
     tracker = EncounterTracker(gap_s=float(encounter_gap_s.value), max_closed=MAX_LIVE_ENCOUNTERS)
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
     character = None
@@ -604,6 +754,8 @@ def on_enable() -> None:
     if session_log is not None:
         # The writer thread wakes every flush interval; let it save the weapon record too.
         session_log.add_flush_listener(_save_weapon_store_if_due)
+    if web_enabled.value:
+        _start_dashboard()
     if not _install_tick_hook():
         return
     _install_source_hooks()
@@ -616,7 +768,55 @@ def _load_weapon_store(path: Path) -> WeaponStore:
     store.load()
     if store.load_error:
         logging.error(f"{LOG_PREFIX} weapon record {store.path} could not be read ({store.load_error}); starting a new one")
+    if store.set_aside_old_schema is not None:
+        _say(f"weapon record in the old format (keyed by the unstable instance id) set aside as {store.set_aside_old_schema.name}; starting a new one")
+    if store.peaks_dropped:
+        _say(f"weapon record: {store.peaks_dropped} Best DPS value(s) measured as DPS in hand dropped; Best DPS is window DPS now")
     return store
+
+
+def _dashboard_sources() -> DashboardSources:
+    return DashboardSources(
+        version=_mod_version(),
+        log_dir=_log_dir(),
+        weapon_store=lambda: weapon_store,
+        character=lambda: None if character is None else character.to_json(),
+        session_path=lambda: None if session_log is None else session_log.path,
+        window_minutes=lambda: float(readout_window_minutes.value),
+        encounter_gap_s=lambda: float(encounter_gap_s.value),
+    )
+
+
+def _start_dashboard() -> None:
+    global dashboard
+    if dashboard is not None:
+        return
+    candidate = Dashboard(
+        int(web_port.value), _dashboard_sources(), _say, host=str(web_host.value), chart_seconds=float(web_chart_seconds.value)
+    )
+    if not candidate.start():
+        logging.error(f"{LOG_PREFIX} dashboard not started on {web_host.value}:{web_port.value}: {candidate.start_error}")
+        return
+    dashboard = candidate
+    _say(f"dashboard at {' or '.join(candidate.urls())}")
+
+
+def _stop_dashboard() -> None:
+    global dashboard
+    if dashboard is None:
+        return
+    try:
+        dashboard.stop()
+    except Exception as ex:  # noqa: BLE001 - shutting down must not fail the disable
+        logging.error(f"{LOG_PREFIX} dashboard stop: {type(ex).__name__}: {ex}")
+    dashboard = None
+
+
+def _set_dashboard_enabled(enabled: bool) -> None:
+    if enabled:
+        _start_dashboard()
+    else:
+        _stop_dashboard()
 
 
 def _save_weapon_store_if_due(_batch: list[dict[str, Any]]) -> None:
@@ -647,6 +847,7 @@ def on_disable() -> None:
     global poller, session_log, weapon_store
     _remove_tick_hook()
     _destroy_readout()
+    _stop_dashboard()
     if weapon_store is not None:
         weapon_store.save_if_due(time.time(), force=True)
         if weapon_store.save_error:
@@ -668,12 +869,31 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
     if weapon_store is None or character is None:
         logging.info(f"{LOG_PREFIX} no character loaded yet (the mod must be enabled and you must be in the world)")
         return
-    logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}):")
-    for line in weapon_store.format_ranking(limit=args.limit):
+    logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}), by {args.by}:")
+    for line in weapon_store.format_ranking(limit=args.limit, by=args.by):
+        logging.info(line)
+    for line in weapon_store.format_source_peaks():
         logging.info(line)
 
 
 dmgweapons_command.add_argument("-n", "--limit", type=int, default=15, help="how many weapons to list")
+dmgweapons_command.add_argument("--by", choices=("dps", "peak", "damage"), default="dps", help="sort order (default: DPS in hand)")
+
+
+@command("dmgweb", description="Print the dashboard address; --open opens it in the browser.")
+def dmgweb_command(args: argparse.Namespace) -> None:
+    if dashboard is None:
+        reason = "disabled in the mod menu" if not web_enabled.value else "not running (see the log for the reason)"
+        logging.info(f"{LOG_PREFIX} dashboard {reason}")
+        return
+    for url in dashboard.urls():
+        logging.info(f"{LOG_PREFIX} dashboard: {url}")
+    logging.info(f"{LOG_PREFIX} {dashboard.client_count()} client(s) connected, {dashboard.errors} errors")
+    if args.open:
+        webbrowser.open(dashboard.url)
+
+
+dmgweb_command.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
 
 
 @command("dmgreport", description="Report over the current session: encounters, per-weapon numbers, optionally the last N seconds.")
@@ -683,7 +903,7 @@ def dmgreport_command(args: argparse.Namespace) -> None:
         return
     try:
         session = read_session(session_log.path)
-        lines = format_report(session, gap_for(session, args.gap), args.last)
+        lines = format_report(session, gap_for(session, args.gap), args.last, None if args.all else args.top)
     except Exception as ex:  # noqa: BLE001 - a report failure is worth a line, not a stack in the console
         logging.error(f"{LOG_PREFIX} report failed: {type(ex).__name__}: {ex}")
         return
@@ -693,6 +913,43 @@ def dmgreport_command(args: argparse.Namespace) -> None:
 
 dmgreport_command.add_argument("--last", type=float, default=None, metavar="SECONDS", help="also average the final N seconds")
 dmgreport_command.add_argument("--gap", type=float, default=None, metavar="SECONDS", help="seconds without a hit that end an encounter")
+dmgreport_command.add_argument("--top", type=int, default=10, metavar="N", help="only the N largest encounters per character")
+dmgreport_command.add_argument("--all", action="store_true", help="every encounter")
+
+
+@command("dmgstatus", description="Show the tracker's state: counters, hooks, character, files.")
+def dmgstatus_command(args: argparse.Namespace) -> None:
+    if poller is None:
+        logging.info(f"{LOG_PREFIX} not enabled")
+        return
+    logging.info(f"{LOG_PREFIX} v{_mod_version()}; tick hook on {tick_function.value}")
+    logging.info(
+        f"{LOG_PREFIX} {poller.events} events, {poller.ignored_events} ignored (vehicle), {poller.ignored_heals} heals dropped, "
+        f"{poller.errors} errors, {poller.overflow_frames} overflow-suspect frames, {poller.ticks} ticks, {_tick_errors} hook errors"
+    )
+    if poller.broken_reason:
+        logging.info(f"{LOG_PREFIX} tracking stopped: {poller.broken_reason}")
+    if character is not None:
+        logging.info(f"{LOG_PREFIX} character: {character.display} ({character.class_name}), key {character.key[:8]}")
+    else:
+        logging.info(f"{LOG_PREFIX} character: not known yet")
+    if weapon_store is not None:
+        logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
+    identity_state = f"{identity_reader.fallbacks} fallback(s) to the instance id"
+    if identity_reader.last_error:
+        identity_state += f", last error: {identity_reader.last_error}"
+    logging.info(f"{LOG_PREFIX} item identity: {identity_state}")
+    if session_log is not None:
+        logging.info(
+            f"{LOG_PREFIX} session log: {session_log.path} ({session_log.written} written, {session_log.buffered()} buffered, "
+            f"{session_log.write_errors} write errors)"
+        )
+    table_state = "shown" if readout is not None and readout.visible() else ("created, hidden" if readout is not None else "not created")
+    logging.info(f"{LOG_PREFIX} table: {table_state}; play clock {format_number(_play_clock)} s; window {readout_window_minutes.value} min")
+    if dashboard is not None:
+        logging.info(f"{LOG_PREFIX} dashboard: {dashboard.url} ({dashboard.client_count()} client(s), {dashboard.errors} errors)")
+    else:
+        logging.info(f"{LOG_PREFIX} dashboard: not running")
 
 
 @command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's.")
@@ -739,6 +996,7 @@ mod = build_mod(
         logging_enabled,
         show_readout,
         open_log_folder,
+        web_enabled,
         log_dir,
         tick_function,
         ring_property,
@@ -755,10 +1013,17 @@ mod = build_mod(
         readout_background_alpha,
         readout_window_minutes,
         readout_show_encounter_row,
+        readout_show_best_column,
+        readout_show_share_column,
+        readout_show_crit_and_kills,
+        readout_hidden_rows,
+        web_host,
+        web_port,
+        web_chart_seconds,
     ],
     keybinds=[],
     hooks=[],
-    commands=[dmgweapons_command, dmgreport_command, dmgreset_command],
+    commands=[dmgweapons_command, dmgreport_command, dmgstatus_command, dmgreset_command, dmgweb_command],
     on_enable=on_enable,
     on_disable=on_disable,
 )

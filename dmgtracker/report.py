@@ -7,6 +7,8 @@ Runs outside the game with the standard library only:
     python dmgtracker/report.py path/to/session.jsonl
     python dmgtracker/report.py --last 300           average over the final five minutes
     python dmgtracker/report.py --gap 30             end an encounter after 30 s without a hit
+    python dmgtracker/report.py --top 5              only the five largest encounters (default 10)
+    python dmgtracker/report.py --all                every encounter
 
 The in-game `dmgreport` command runs the same functions on the current session and prints
 to the SDK console. Encounters and the per-source split come from stats.py, so the report
@@ -30,6 +32,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dmgtracker.formatting import format_duration, format_number, format_share  # noqa: E402
+from dmgtracker.itemidentity import short_item_id  # noqa: E402
 from dmgtracker.stats import ENCOUNTER_GAP_S, Encounter, EncounterTracker, target_family  # noqa: E402
 from dmgtracker.weaponstats import WeaponRecord  # noqa: E402
 
@@ -38,16 +41,19 @@ LATEST_POINTER_NAME = "latest-session.txt"
 SESSION_GLOB = "session-*.jsonl"
 TARGET_PREFIX = "Char_"
 TOP_TARGETS = 3
+DEFAULT_TOP_ENCOUNTERS = 10
 SOURCE_WEAPON = "weapon"
 KIND_DOT = "dot"
 
 
 @dataclass
 class CharacterSection:
-    """The events played with one character; identity is None before the first marker."""
+    """The events played with one character; identity is None before the first marker.
+    `held` holds the time-in-hand lines ({"t", "held": instance id, "weapon", "s"})."""
 
     identity: dict[str, str] | None
     events: list[dict[str, Any]] = field(default_factory=list)
+    held: list[dict[str, Any]] = field(default_factory=list)
 
     def title(self) -> str:
         if self.identity is None:
@@ -114,6 +120,8 @@ def read_session(path: Path) -> Session:
                     sections[-1].identity = record["character"]
             elif "dmg" in record:
                 sections[-1].events.append(record)
+            elif "held" in record:
+                sections[-1].held.append(record)
     for section in sections:
         section.events.sort(key=lambda event: float(event["t"]))
     return Session(path, meta, sections)
@@ -129,28 +137,33 @@ def encounters_for(events: list[dict[str, Any]], gap_s: float) -> list[Encounter
     return tracker.closed
 
 
-def weapon_records_for(events: list[dict[str, Any]]) -> list[SessionWeapon]:
-    """Per-weapon totals for the session, ranked by damage. The log has no time in hand, so
-    held_seconds is the number of seconds in which the weapon landed a hit (active time)."""
-    weapons: dict[int, SessionWeapon] = {}
-    active_seconds: dict[int, set[int]] = {}
+def weapon_records_for(events: list[dict[str, Any]], held: list[dict[str, Any]] | None = None) -> list[SessionWeapon]:
+    """Per-weapon totals for the session, ranked by damage. Time in hand comes from the
+    held lines; a log without them (older versions) falls back to active time, the number
+    of seconds in which the weapon landed a hit."""
+    weapons: dict[str, SessionWeapon] = {}
+    active_seconds: dict[str, set[int]] = {}
+    held_seconds: dict[str, float] = {}
+    for line in held or []:
+        item_id = str(line.get("held", ""))
+        held_seconds[item_id] = held_seconds.get(item_id, 0.0) + float(line.get("s", 0.0))
     for event in events:
         if event.get("src") != SOURCE_WEAPON:
             continue
-        instance_id = int(event.get("wid", 0))
-        weapon = weapons.get(instance_id)
+        item_id = str(event.get("wid", ""))
+        weapon = weapons.get(item_id)
         if weapon is None:
-            record = WeaponRecord(instance_id, str(event.get("weapon", "Unknown")), str(event.get("body", "")), first_seen=float(event["t"]))
+            record = WeaponRecord(item_id, str(event.get("weapon", "Unknown")), str(event.get("body", "")), first_seen=float(event["t"]))
             weapon = SessionWeapon(record)
-            weapons[instance_id] = weapon
-            active_seconds[instance_id] = set()
+            weapons[item_id] = weapon
+            active_seconds[item_id] = set()
         weapon.record.add(event)
         weapon.record.last_seen = float(event["t"])
-        active_seconds[instance_id].add(int(float(event["t"])))
+        active_seconds[item_id].add(int(float(event["t"])))
         if event.get("kind") == KIND_DOT:
             weapon.status_damage += float(event["dmg"])
-    for instance_id, weapon in weapons.items():
-        weapon.record.held_seconds = float(len(active_seconds[instance_id]))
+    for item_id, weapon in weapons.items():
+        weapon.record.held_seconds = held_seconds.get(item_id, float(len(active_seconds[item_id])))
     return sorted(weapons.values(), key=lambda weapon: weapon.record.damage, reverse=True)
 
 
@@ -165,7 +178,15 @@ def last_seconds_average(events: list[dict[str, Any]], seconds: float) -> tuple[
 
 # ------------------------------------------------------------------ text
 
-def format_report(session: Session, gap_s: float, last_seconds: float | None = None) -> list[str]:
+def format_report(
+    session: Session,
+    gap_s: float,
+    last_seconds: float | None = None,
+    top_encounters: int | None = DEFAULT_TOP_ENCOUNTERS,
+) -> list[str]:
+    """The whole report as text lines. `top_encounters` limits the fights printed per
+    character to the largest N (None prints every one); the session summary always covers
+    all of them."""
     lines: list[str] = []
     events = session.all_events()
     started = session.meta.get("started")
@@ -178,8 +199,8 @@ def format_report(session: Session, gap_s: float, last_seconds: float | None = N
             continue
         lines.append("")
         lines.append(section.title())
-        lines.extend(_format_encounters(section.events, gap_s))
-        lines.extend(_format_weapons(section.events))
+        lines.extend(_format_encounters(section.events, gap_s, top_encounters))
+        lines.extend(_format_weapons(section.events, section.held))
     if last_seconds:
         total, per_second = last_seconds_average(events, last_seconds)
         lines.append("")
@@ -187,10 +208,17 @@ def format_report(session: Session, gap_s: float, last_seconds: float | None = N
     return lines
 
 
-def _format_encounters(events: list[dict[str, Any]], gap_s: float) -> list[str]:
+def _format_encounters(events: list[dict[str, Any]], gap_s: float, top: int | None) -> list[str]:
     encounters = encounters_for(events, gap_s)
     lines: list[str] = []
+    shown = set(range(len(encounters)))
+    if top is not None and len(encounters) > top:
+        largest = sorted(range(len(encounters)), key=lambda index: encounters[index].total, reverse=True)[:top]
+        shown = set(largest)
+        lines.append(f"  (showing the {top} largest of {len(encounters)} encounters; --all shows every one)")
     for index, encounter in enumerate(encounters, start=1):
+        if index - 1 not in shown:
+            continue
         started = time.strftime("%H:%M:%S", time.localtime(encounter.started))
         lines.append(
             f"  Encounter {index:>2}  {started}  {format_duration(encounter.duration()):>5}  "
@@ -201,7 +229,7 @@ def _format_encounters(events: list[dict[str, Any]], gap_s: float) -> list[str]:
         targets = ", ".join(f"{_target_label(name)} x{count}" for name, count in encounter.top_targets(TOP_TARGETS))
         lines.append(f"      targets: {targets}")
         for totals in sorted(encounter.by_source.values(), key=lambda item: item.damage, reverse=True):
-            label = totals.label if totals.kind != SOURCE_WEAPON else f"{totals.label} #{totals.instance_id}"
+            label = totals.label if totals.kind != SOURCE_WEAPON else f"{totals.label} {short_item_id(totals.item_id)}"
             lines.append(f"      {label:28} {format_number(totals.damage):>12}  {format_share(totals.damage, encounter.total):>5} %")
     if not encounters:
         lines.append("  no encounters")
@@ -215,16 +243,19 @@ def _format_encounters(events: list[dict[str, Any]], gap_s: float) -> list[str]:
     return lines
 
 
-def _format_weapons(events: list[dict[str, Any]]) -> list[str]:
-    weapons = weapon_records_for(events)
+def _format_weapons(events: list[dict[str, Any]], held: list[dict[str, Any]]) -> list[str]:
+    weapons = weapon_records_for(events, held)
     if not weapons:
         return []
-    lines = ["  Weapons (active DPS = damage over the seconds in which the gun landed hits):"]
-    lines.append(f"    {'Weapon':26} {'Damage':>12} {'Active DPS':>11} {'Hits':>6} {'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'Status %':>9}")
+    if held:
+        lines = ["  Weapons (DPS in hand = damage over the fighting time the gun was in hand):"]
+    else:
+        lines = ["  Weapons (no time-in-hand data in this log; DPS = damage over the seconds in which the gun landed hits):"]
+    lines.append(f"    {'Weapon':30} {'Damage':>12} {'DPS':>11} {'Hits':>6} {'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'Status %':>9}")
     for weapon in weapons:
         record = weapon.record
         lines.append(
-            f"    {record.label[:22] + ' #' + str(record.instance_id):26} {format_number(record.damage):>12} "
+            f"    {record.label[:22] + ' ' + short_item_id(record.item_id):30} {format_number(record.damage):>12} "
             f"{format_number(record.dps_in_hand()):>11} {record.hits:>6} {format_number(record.average_hit()):>9} "
             f"{record.crit_share():>7} {record.kills:>6} {format_share(weapon.status_damage, record.damage):>9}"
         )
@@ -245,6 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last", type=float, default=None, metavar="SECONDS", help="also average the final N seconds of the log")
     parser.add_argument("--gap", type=float, default=None, metavar="SECONDS", help="seconds without a hit that end an encounter (default: the session's setting)")
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR, help="where the sessions are")
+    parser.add_argument("--top", type=int, default=DEFAULT_TOP_ENCOUNTERS, metavar="N", help="print only the N largest encounters per character")
+    parser.add_argument("--all", action="store_true", help="print every encounter")
     return parser
 
 
@@ -261,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no session file found (looked in {args.log_dir})")
         return 1
     session = read_session(path)
-    for line in format_report(session, gap_for(session, args.gap), args.last):
+    for line in format_report(session, gap_for(session, args.gap), args.last, None if args.all else args.top):
         print(line)
     return 0
 

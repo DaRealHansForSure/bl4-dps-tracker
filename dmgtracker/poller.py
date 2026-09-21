@@ -45,6 +45,7 @@ from .attribution import (
     OTHER_SOURCE,
     SKILL_SOURCE,
     SOURCE_WEAPON,
+    UNKNOWN_SOURCE,
     DamageSource,
     WeaponResolver,
 )
@@ -86,9 +87,14 @@ MELEE_WINDOW_S = 1.0
 # When the swing trick ends, the melee window closes a few frames later: skill hits landing
 # in the same second as a knife swing are otherwise indistinguishable from the knife's hit.
 MELEE_END_GRACE_S = 0.15
-# An action skill chains tricks with gaps of up to about 1.5 s while it runs; each trick
-# start or end keeps the window open this much longer.
+# An action skill chains tricks and script actions with gaps of up to about 1.5 s while it
+# runs; each trick start or end and each script action keeps the window open this much longer.
 SKILL_WINDOW_S = 3.0
+# A running skill keeps hitting long after its last script action (the Rogue's tokens attack
+# for six seconds after the dice are thrown), so every hit credited to the skill keeps the
+# window open this much longer: the window follows the skill's own damage and closes once
+# the hits stop.
+SKILL_HIT_GRACE_S = 1.5
 
 # The swap rule: a sticky detonates when its gun is swapped away, and the ring shows the hit
 # with the new gun already in hand, within about 0.3 s of the swap being observed. The grace
@@ -136,6 +142,9 @@ class DamagePoller:
         # Called with the new controller when one is adopted, and with None when it is lost.
         self.on_controller_changed: Callable[[Any], None] | None = None
         self._dirty_flags: list[int] = []
+        # The slot the game wrote last: the ring is filled circularly, so the slots that
+        # changed in one frame are read starting after it, in the order the hits happened.
+        self._last_written_slot = -1
         self._controller_address = 0
         self._idle_until = 0.0
         self._last_hit_by_target: dict[str, tuple[DamageSource, float]] = {}
@@ -181,15 +190,16 @@ class DamagePoller:
         self._melee_until = min(self._melee_until, now + MELEE_END_GRACE_S)
 
     def note_skill_activity(self, now: float) -> None:
-        """An action skill trick started or ended; the skill is running."""
-        self._skill_until = now + SKILL_WINDOW_S
+        """A skill script started an action, or an action skill trick started or ended: the
+        skill is running."""
+        self._skill_until = max(self._skill_until, now + SKILL_WINDOW_S)
 
     def note_weapon_in_hand(self, now: float, held: DamageSource) -> None:
         """Called by the refresh loop; a change of the held weapon starts the swap grace."""
         current = self._current_held
-        if current is not None and held.instance_id == current.instance_id:
+        if current is not None and held.item_id == current.item_id:
             return
-        if current is not None and current.instance_id != 0:
+        if current is not None and current.item_id != "":
             self._previous_held = current
             self._swapped_at = now
             self._hits_since_swap = set()
@@ -255,6 +265,7 @@ class DamagePoller:
             return
         # Baseline the flags so instances from before the resolve are not replayed as new hits.
         self._dirty_flags = [int(ring[index].RepDirtyFlag) for index in range(self._ring_size)]
+        self._last_written_slot = self._ring_size - 1
         self.controller = controller
         self._controller_address = address
         if self.on_controller_changed is not None:
@@ -275,14 +286,14 @@ class DamagePoller:
         # Damage dealt from a vehicle is not the player's gun play; it is dropped, but the
         # flags still advance so those hits are not replayed once the player is on foot.
         tracking = self._resolver.is_character(pawn)
-        changed: list[Any] = []
+        changed_slots: list[int] = []
         for index in range(self._ring_size):
-            instance = ring[index]
-            dirty = int(instance.RepDirtyFlag)
+            dirty = int(ring[index].RepDirtyFlag)
             if dirty == self._dirty_flags[index]:
                 continue
             self._dirty_flags[index] = dirty
-            changed.append(instance)
+            changed_slots.append(index)
+        changed = [ring[index] for index in self._in_write_order(changed_slots)]
         if len(changed) == self._ring_size:
             # Every slot changed within one frame: the ring may have wrapped and dropped hits.
             self.overflow_frames += 1
@@ -309,6 +320,16 @@ class DamagePoller:
                 ready_now.append(event)
         return ready_now
 
+    def _in_write_order(self, slots: list[int]) -> list[int]:
+        """The changed slots in the order the game filled them: continuing around the ring
+        from the slot after the last one written."""
+        if not slots:
+            return slots
+        start = (self._last_written_slot + 1) % self._ring_size
+        ordered = sorted(slots, key=lambda slot: (slot - start) % self._ring_size)
+        self._last_written_slot = ordered[-1]
+        return ordered
+
     @staticmethod
     def _should_hold(event: dict[str, Any]) -> bool:
         return event["kind"] == KIND_DIRECT and event["src"] == OTHER_SOURCE.kind
@@ -333,6 +354,8 @@ class DamagePoller:
             kind = KIND_DIRECT
             source = self._direct_source(flags, target_name, flagged_targets, pawn, now)
             self._remember_hit(target_name, source, now)
+            if source is SKILL_SOURCE:
+                self._skill_until = max(self._skill_until, now + SKILL_HIT_GRACE_S)
         event = {
             "t": now,
             "dmg": float(instance.TotalDamage),
@@ -352,7 +375,7 @@ class DamagePoller:
         event["src"] = source.kind
         event["weapon"] = source.label
         event["body"] = source.body
-        event["wid"] = source.instance_id
+        event["wid"] = source.item_id
 
     # ------------------------------------------------------------------ attribution
 
@@ -381,11 +404,26 @@ class DamagePoller:
             remembered = self._last_hit_by_target.get(target_name)
             if remembered is not None:
                 last_source, when = remembered
-                if last_source.instance_id == previous.instance_id and now - when <= STICK_WINDOW_S:
+                if last_source.item_id == previous.item_id and now - when <= STICK_WINDOW_S:
                     return previous
         if target_name:
             self._hits_since_swap.add(target_name)
+        if held.item_id == "":
+            return self._gun_without_one_in_hand(target_name, now)
         return held
+
+    def _gun_without_one_in_hand(self, target_name: str, now: float) -> DamageSource:
+        """Gun damage while no gun resolves (mid swap, the slot empty for a moment): a sticky
+        or an explosive round of a gun that is no longer in hand. The gun that last hit this
+        target within the stick window, else the gun swapped away, else unknown."""
+        remembered = self._last_hit_by_target.get(target_name) if target_name else None
+        if remembered is not None:
+            last_source, when = remembered
+            if last_source.kind == SOURCE_WEAPON and now - when <= STICK_WINDOW_S:
+                return last_source
+        if self._previous_held is not None and self._previous_held.item_id != "":
+            return self._previous_held
+        return UNKNOWN_SOURCE
 
     def _recent_explosion_source(self, now: float) -> DamageSource | None:
         for when, source in reversed(self._explosions):

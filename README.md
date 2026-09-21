@@ -7,23 +7,25 @@ Single player. Tested against the game build of 2026-09-19 with oak2-mod-manager
 ## What you see
 
 ```
-Weapon                   Total        DPS   Share [%]
-Vladof Assault Rifle   442'795     26'047        13.8      <- the gun in hand is yellow
-Jakobs Shotgun         237'166     29'646         7.4
-Vladof SMG             207'749     18'886         6.5
-Torgue Pistol          168'461      7'657         5.2
-Skill                2'034'870     20'349        63.2
-Grenade                120'322      1'204         3.7
-Melee                        0          0         0.0
-Other                    7'703         77         0.2
+Weapon                   Total        DPS   Best DPS
+Vladof Assault Rifle   442'795     26'047     31'202      <- the gun in hand is yellow
+Jakobs Shotgun         237'166     29'646     29'646
+Vladof SMG             207'749     18'886     22'410
+Torgue Pistol          168'461      7'657      9'980
+Skill                2'034'870     20'349     24'118
+Grenade                120'322      1'204      3'350
+Other                    7'703         77
 
-Last 5 min           3'219'066     32'190       100.0
+Last 5 min           3'219'066     32'190
 ```
 
-- Every number covers the **last 5 minutes of fighting**. The clock only runs while a fight is on, so menus, driving, loading and walking between fights do not move the numbers.
-- A weapon row's **DPS is damage per second while that gun was in your hands during fights**. A gun you used for one minute out of five gets its own fair number; that is the column to compare a new gun against an old one.
-- `Total` is the window damage, `Share [%]` the share of the window total.
-- Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
+- Every number covers the **last 5 minutes of play**. The window's clock runs whether you are fighting or not, so a source that stops dealing damage comes down; it stops only in menus (the pause menu included), during loading screens and in tunnel transitions, where the numbers hold still.
+- Every row's **DPS is its damage over the window's fighting time**, so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
+- `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
+- A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
+- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s. It only rises; `dmgreset --weapons` clears it.
+- A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
+- Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
 - The table hides in menus, in vehicles and during tunnel transitions. Vehicle damage is not tracked. Healing is never counted.
 - Numbers use Swiss formatting: `'` for thousands, `.` for decimals.
 
@@ -36,6 +38,19 @@ Open the console with F6 (in the world, not in the main menu):
 | `dmgweapons` | Rank the current character's weapons over all sessions: DPS in hand, peak DPS, damage, hits, average hit, crit share, kills, minutes in hand. `-n 30` for a longer list. |
 | `dmgreport` | Report over the current session: each fight (total, duration, DPS, active DPS, targets, kills, crit share, per-source split), a session summary, a weapons table. `--last 300` adds the average over the final five minutes, `--gap 30` changes the fight boundary. |
 | `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. |
+| `dmgweb` | Print the dashboard address (`--open` opens it in the browser). |
+| `dmgstatus` | Counters, hooks, character, files, item identity, dashboard. |
+
+## Web dashboard
+
+While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
+
+- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the five-minute average dashed, a tooltip for any moment; and the latest hits as they land.
+- **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
+- **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
+- **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.
+
+The live tab updates itself; the other tabs read the files when you open them or press Reload. "Web dashboard" in the mod menu turns the server on and off; `web_port` and `web_host` in the settings file change the address (`127.0.0.1` keeps it on this machine). Windows may ask once whether the game may accept network connections; that prompt is for the dashboard, and the answer only matters for other devices. The server is read-only and runs on its own threads, never on the game's.
 
 ## Files
 
@@ -53,9 +68,15 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | Setting | Default | Meaning |
 |---|---|---|
 | `log_dir` | `%LOCALAPPDATA%\BL4DamageTracker\logs` | where sessions are written; environment variables allowed |
-| `readout_window_minutes` | `5.0` | the table's window, in minutes of fighting |
+| `readout_window_minutes` | `5.0` | the table's window, in minutes of play |
 | `readout_show_encounter_row` | `false` | add an `Encounter` row (the current fight, for bosses) |
-| `readout_x`, `readout_y` | `120`, `320` | position of the table |
+| `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |
+| `readout_show_best_column` | `true` | the `Best DPS` column |
+| `readout_show_share_column` | `false` | the `Share [%]` column |
+| `readout_show_crit_and_kills` | `false` | the `Crit [%]` and `Kills` columns |
+| `readout_hidden_rows` | `["melee"]` | non-weapon rows to leave out: `melee`, `grenade`, `skill`, `other` |
+| `web_host`, `web_port` | `0.0.0.0`, `8765` | where the dashboard listens (`127.0.0.1` for this machine only) |
+| `web_chart_seconds` | `30` | the chart window the dashboard starts with (10, 30, 60 or 120) |
 | `readout_font_size` | `30` | font size |
 | `readout_column_gap`, `readout_column_widths` | `44`, `[320, 240, 190, 140]` | column layout |
 | `readout_background_alpha` | `0.6` | background darkness |
@@ -71,6 +92,10 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 **Manual**: extract the release zip into the game folder (`...\Steam\steamapps\common\Borderlands 4\`), which puts `sdk_mods\dmgtracker.sdkmod` in place.
 
 First launch: open the console in the world, type `mods`, and enable "BL4 Damage Tracker". It stays enabled afterwards.
+
+## How a fight is counted
+
+A fight (encounter) starts with the first damage instance you deal and ends after `encounter_gap_s` seconds (default 15) without any hit; nothing else defines it, not the enemies, not your health. Per fight the mod counts total damage, hits, crits, kills, status damage, the split per source, the targets, and two rates: DPS (total over the fight's length) and active DPS (total over the seconds in which a hit landed). The same rule drives a gun's time in hand for the lifetime record; the table's `Last X min` rows run on play time instead. Details, consequences (two groups within 15 s are one fight, a boss phase longer than the gap splits a fight) and where fights show up: [`docs/encounters.md`](docs/encounters.md).
 
 ## How it works, in one paragraph
 

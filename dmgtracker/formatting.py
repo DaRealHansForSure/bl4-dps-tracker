@@ -28,3 +28,11 @@ def format_duration(seconds: float) -> str:
     whole_seconds = int(round(seconds))
     minutes, remainder = divmod(whole_seconds, 60)
     return f"{minutes}:{remainder:02d}"
+
+
+def parse_number(text: str) -> float:
+    """The value of a number as format_number wrote it; 0 for anything that is not one."""
+    try:
+        return float(text.replace(THOUSANDS_SEPARATOR, ""))
+    except ValueError:
+        return 0.0

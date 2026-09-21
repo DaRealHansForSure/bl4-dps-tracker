@@ -168,9 +168,11 @@ One commit per step, messages in the existing style.
 
 Decided on 2026-09-20: display name "BL4 Damage Tracker", author "DaRealHansForSure"; readout position defaults to (120, 320) and is changed through the settings file; `dmgreport` prints to the SDK console only.
 
-## Future extension: local web dashboard
+## Local web dashboard (built 2026-09-20, in the mod)
 
-Wanted later: a web page served locally that shows every collected stat and updates live over a WebSocket stream. Design intent so v1 does not stand in its way:
+Built differently from the plan below: live data goes over a WebSocket from the mod itself, on an existing library instead of a hand-written one. `dmgtracker/dashboard.py` runs the vendored `websockets` package (`dmgtracker/_vendor`, pure Python, BSD) on `web_host:web_port` (default `0.0.0.0:8765`) in daemon threads; plain HTTP (the page in `dmgtracker/web/index.html`, the JSON API from `dmgtracker/webdata.py`) is answered from the library's `process_request` hook, `/ws` pushes the table rows, every flushed hit batch and character changes. The game thread only calls `publish_*()`, which copy under a lock. The mod menu's "Web dashboard" toggle starts and stops it, `dmgweb` prints the address.
+
+The original design intent, kept for the record:
 
 - The dashboard is a separate process (`webstats/`, not part of the `.sdkmod`), which tails the session file named in `latest-session.txt` and pushes each new event line to the browser. Live latency is the flush interval (1 s). The game process never hosts a web server, so a dashboard bug can never stall the game thread.
 - It reuses `stats.py` and `formatting.py` for encounters, averages and number formatting, so the page, the readout and the report show the same numbers.

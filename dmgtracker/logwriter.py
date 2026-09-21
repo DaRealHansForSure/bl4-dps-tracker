@@ -48,6 +48,7 @@ class SessionLog:
         self._writer: threading.Thread | None = None
         self._file: Any = None
         self._listeners: list[FlushListener] = []
+        self._tick_listeners: list[Callable[[], None]] = []
 
     # ------------------------------------------------------------------ game thread
 
@@ -64,6 +65,11 @@ class SessionLog:
         """Register a callable that receives every batch right after it reached the disk.
         Runs on the writer thread; a listener that raises is counted as a write error."""
         self._listeners.append(listener)
+
+    def add_tick_listener(self, listener: Callable[[], None]) -> None:
+        """Register a callable that runs on the writer thread once per flush interval,
+        whether or not anything was written; for periodic work like publishing state."""
+        self._tick_listeners.append(listener)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -97,6 +103,12 @@ class SessionLog:
     def _writer_loop(self) -> None:
         while not self._stop.wait(self.flush_interval_s):
             self._flush()
+            for listener in self._tick_listeners:
+                try:
+                    listener()
+                except Exception as ex:  # noqa: BLE001 - a broken listener must not stop logging
+                    self.write_errors += 1
+                    self.last_error = f"tick listener {type(ex).__name__}: {ex}"
 
     def _flush(self) -> None:
         with self._lock:

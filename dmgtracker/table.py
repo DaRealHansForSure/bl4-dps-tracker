@@ -5,10 +5,11 @@ Kept apart from the rendering so the layout can be tested without the game. read
 turns these rows into UMG cells.
 
 The layout is fixed: every row has a permanent position, nothing appears, disappears or
-reorders while playing (a user rule). Four weapon slot rows in slot order, then the four
-non-weapon sources in a fixed order, a spacer, the window total row, and the optional
-encounter row. The table is a rolling view: every number covers the last X minutes of
-fighting. The encounter row is meant for boss fights.
+reorders while playing (a user rule). Four weapon slot rows in slot order, then the
+non-weapon sources in a fixed order (a setting can leave some of them out, Melee by
+default), a spacer, the window total row, and the optional encounter row. The table is a
+rolling view: every number covers the last X minutes of fighting. The encounter row is
+meant for boss fights.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from .attribution import (
     DamageSource,
 )
 from .formatting import format_number, format_share
-from .stats import Encounter, SourceKey, SourceTotals
+from .stats import Encounter, SourceKey, SourceTotals, kind_totals, scope_totals
 
 STYLE_HEADER = "header"
 STYLE_ROW = "row"
@@ -33,10 +34,13 @@ STYLE_ACTIVE = "active"
 STYLE_TOTAL = "total"
 STYLE_SPACER = "spacer"
 
-HEADER_CELLS = ("Weapon", "Total", "DPS", "Share [%]")
-EMPTY_CELLS = ("", "", "", "")
+HEADER_CELLS = ("Weapon", "Total", "DPS")
+SHARE_HEADER_CELL = "Share [%]"
+CRIT_AND_KILLS_HEADER_CELLS = ("Crit [%]", "Kills")
+BEST_HEADER_CELL = "Best DPS"
 EMPTY_SLOT_LABEL = "-"
 ENCOUNTER_LABEL = "Encounter"
+BASE_COLUMNS = len(HEADER_CELLS)
 
 WEAPON_SLOT_ROWS = 4
 # Fixed order of the non-weapon rows, always shown.
@@ -57,15 +61,22 @@ class DamageScope(Protocol):
 
     def dps(self) -> float: ...
 
-    def source_dps(self, totals: SourceTotals) -> float: ...
-
     def other_damage(self) -> float: ...
 
 
 @dataclass(frozen=True)
 class TableRow:
-    cells: tuple[str, str, str, str]
+    cells: tuple[str, ...]
     style: str
+
+
+@dataclass(frozen=True)
+class PeakDps:
+    """Lifetime peaks for the Best DPS column: per weapon item id, and per non-weapon
+    source kind ("skill", "grenade", ...)."""
+
+    weapons: dict[str, float]
+    sources: dict[str, float]
 
 
 def window_label(window_minutes: float) -> str:
@@ -81,66 +92,115 @@ def build_rows(
     window: DamageScope,
     window_minutes: float,
     equipped: list[DamageSource],
-    held_instance_id: int,
+    held_item_id: str,
     encounter: Encounter | None = None,
+    best: PeakDps | None = None,
+    hidden_kinds: frozenset[str] = frozenset(),
+    crit_and_kills: bool = False,
+    share: bool = True,
 ) -> list[TableRow]:
-    """The complete table for the current state; the row count only depends on whether an
-    encounter row is requested."""
-    rows = [TableRow(HEADER_CELLS, STYLE_HEADER)]
-    rows.extend(_weapon_slot_rows(window, equipped, held_instance_id))
-    rows.extend(_non_weapon_rows(window))
-    rows.append(TableRow(EMPTY_CELLS, STYLE_SPACER))
-    rows.append(_total_row(window_label(window_minutes), window))
+    """The complete table for the current state. The row count only depends on the settings
+    (encounter row, hidden non-weapon rows), never on the data. Optional columns, in this
+    order after Weapon, Total and DPS: Share [%] (`share`), Crit [%] and Kills
+    (`crit_and_kills`), then Best DPS (`best`, the lifetime peak DPS of each weapon and
+    non-weapon source)."""
+    columns = TableColumns(share, crit_and_kills)
+    header = HEADER_CELLS
+    if share:
+        header += (SHARE_HEADER_CELL,)
+    if crit_and_kills:
+        header += CRIT_AND_KILLS_HEADER_CELLS
+    if best is not None:
+        header += (BEST_HEADER_CELL,)
+    count = len(header)
+    rows = [TableRow(header, STYLE_HEADER)]
+    rows.extend(_weapon_slot_rows(window, equipped, held_item_id, best, columns))
+    rows.extend(_non_weapon_rows(window, hidden_kinds, best, columns))
+    rows.append(TableRow(("",) * count, STYLE_SPACER))
+    rows.append(_total_row(window_label(window_minutes), window, columns))
     if encounter is not None:
-        rows.append(_total_row(ENCOUNTER_LABEL, encounter))
-    return rows
+        rows.append(_total_row(ENCOUNTER_LABEL, encounter, columns))
+    return [_padded(row, count) for row in rows]
 
 
-def _weapon_slot_rows(scope: DamageScope, equipped: list[DamageSource], held_instance_id: int) -> list[TableRow]:
+@dataclass(frozen=True)
+class TableColumns:
+    """Which optional value columns a row carries."""
+
+    share: bool
+    crit_and_kills: bool
+
+
+def _padded(row: TableRow, columns: int) -> TableRow:
+    if len(row.cells) == columns:
+        return row
+    cells = tuple(row.cells[:columns]) + ("",) * max(columns - len(row.cells), 0)
+    return TableRow(cells, row.style)
+
+
+def _weapon_slot_rows(
+    scope: DamageScope, equipped: list[DamageSource], held_item_id: str, best: PeakDps | None, columns: TableColumns
+) -> list[TableRow]:
     rows: list[TableRow] = []
+    duration = scope.duration()
     for slot in range(WEAPON_SLOT_ROWS):
         if slot >= len(equipped):
-            rows.append(TableRow((EMPTY_SLOT_LABEL, "0", "0", format_share(0.0, 0.0)), STYLE_ROW))
+            empty = SourceTotals(SOURCE_WEAPON, EMPTY_SLOT_LABEL, "")
+            rows.append(TableRow(_source_cells(EMPTY_SLOT_LABEL, empty, 0.0, scope.total, columns), STYLE_ROW))
             continue
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
-        style = STYLE_ACTIVE if weapon.instance_id == held_instance_id else STYLE_ROW
-        rows.append(_weapon_row(weapon.label, totals, scope, style))
+        style = STYLE_ACTIVE if weapon.item_id == held_item_id else STYLE_ROW
+        # Every row's DPS is its damage over the window's fighting time (a user rule: a gun
+        # that is not firing must come down like any other source; the lifetime record keeps
+        # the DPS in hand for comparing guns), so the rows add up to the window row.
+        row = TableRow(_source_cells(weapon.label, totals, totals.damage / duration, scope.total, columns), style)
+        if best is not None:
+            row = _with_best_cell(row, best.weapons.get(weapon.item_id, 0.0))
+        rows.append(row)
     return rows
 
 
-def _non_weapon_rows(scope: DamageScope) -> list[TableRow]:
+def _non_weapon_rows(
+    scope: DamageScope, hidden_kinds: frozenset[str], best: PeakDps | None, columns: TableColumns
+) -> list[TableRow]:
     rows: list[TableRow] = []
     duration = scope.duration()
     for source in NON_WEAPON_SOURCES:
-        damage = sum(totals.damage for totals in scope.by_source.values() if totals.kind == source.kind)
-        rows.append(_damage_row(source.label, damage, duration, scope.total, STYLE_ROW))
+        if source.kind in hidden_kinds:
+            continue
+        totals = kind_totals(scope.by_source, source.kind)
+        row = TableRow(_source_cells(source.label, totals, totals.damage / duration, scope.total, columns), STYLE_ROW)
+        if best is not None:
+            row = _with_best_cell(row, best.sources.get(source.kind, 0.0))
+        rows.append(row)
     return rows
+
+
+def _source_cells(label: str, totals: SourceTotals, dps: float, scope_total: float, columns: TableColumns) -> tuple[str, ...]:
+    """Label, Total, DPS, then the share, the crit rate and the kills when those columns are on."""
+    cells = [label, format_number(totals.damage), format_number(dps)]
+    if columns.share:
+        cells.append(format_share(totals.damage, scope_total))
+    if columns.crit_and_kills:
+        cells.append(format_share(totals.crits, totals.direct_hits))
+        cells.append(format_number(totals.kills))
+    return tuple(cells)
+
+
+def _with_best_cell(row: TableRow, peak: float) -> TableRow:
+    """Append the Best DPS cell; blank until there is a peak."""
+    return TableRow(row.cells + (format_number(peak) if peak > 0 else "",), row.style)
 
 
 def _totals_for(scope: DamageScope, weapon: DamageSource) -> SourceTotals:
     for totals in scope.by_source.values():
-        if totals.kind == SOURCE_WEAPON and totals.instance_id == weapon.instance_id:
+        if totals.kind == SOURCE_WEAPON and totals.item_id == weapon.item_id:
             return totals
-    return SourceTotals(weapon.kind, weapon.label, weapon.instance_id)
+    return SourceTotals(weapon.kind, weapon.label, weapon.item_id)
 
 
-def _weapon_row(label: str, totals: SourceTotals, scope: DamageScope, style: str) -> TableRow:
-    """A weapon's DPS is measured over the time it was in hand, so guns compare fairly."""
-    cells = (
-        label,
-        format_number(totals.damage),
-        format_number(scope.source_dps(totals)),
-        format_share(totals.damage, scope.total),
-    )
-    return TableRow(cells, style)
-
-
-def _damage_row(label: str, damage: float, duration: float, total: float, style: str) -> TableRow:
-    cells = (label, format_number(damage), format_number(damage / duration), format_share(damage, total))
-    return TableRow(cells, style)
-
-
-def _total_row(label: str, scope: DamageScope) -> TableRow:
-    cells = (label, format_number(scope.total), format_number(scope.dps()), format_share(scope.total, scope.total))
-    return TableRow(cells, STYLE_TOTAL)
+def _total_row(label: str, scope: DamageScope, columns: TableColumns) -> TableRow:
+    totals = scope_totals(scope.by_source)
+    totals.damage = scope.total
+    return TableRow(_source_cells(label, totals, scope.dps(), scope.total, columns), STYLE_TOTAL)
