@@ -92,6 +92,8 @@
   canvas { flex: 1 1 0; height: 0; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
   .muted { color: var(--muted); }
   .item-id { font-size: 0.85em; }
+  .inline-badge { vertical-align: 1px; margin-left: 2px; }
+  .badges { display: flex; gap: 4px; flex-wrap: wrap; }
   .has-thumbnail { cursor: help; }
   /* The item card: the gun's picture and what the inventory says about it, shown next to
      the pointer while it rests on a weapon name. */
@@ -577,13 +579,26 @@
     const td = cell(itemNames[itemId] || label);
     if (itemId) {
       td.className = rarityClass(itemId);
-      const id = document.createElement("span");
-      id.className = "muted item-id";
-      id.textContent = " " + shortId(itemId);
-      td.appendChild(id);
+      const element = elementBadge(itemId);
+      if (element) {
+        td.appendChild(document.createTextNode(" "));
+        td.appendChild(element);
+      }
       showItemCardOnHover(td, itemId);
     }
     return td;
+  }
+
+  // The gun's element as a badge beside its name, nothing for a kinetic gun; the id is
+  // on the item card.
+  function elementBadge(itemId) {
+    const info = itemInfos[itemId];
+    if (!info || !info.element || info.element === "noelement") {
+      return null;
+    }
+    const span = badge(info.element, elementClass(info.element));
+    span.classList.add("inline-badge");
+    return span;
   }
 
   // What the inventory said about each named item (rarity, element, the card's damage
@@ -1336,10 +1351,12 @@
     if (w.name) {
       td.className = rarityClass(w.item_id);
       const label = document.createElement("div");
-      const badge = document.createElement("span");
-      badge.className = "badge " + typeClass(w.label);
-      badge.textContent = w.label;
-      label.appendChild(badge);
+      label.className = "badges";
+      label.appendChild(badge(w.label, typeClass(w.label)));
+      const element = elementBadge(w.item_id);
+      if (element) {
+        label.appendChild(element);
+      }
       td.appendChild(label);
     }
     if (w.item_id) {
