@@ -132,6 +132,8 @@ class Dashboard:
         self._rows_sample: Message | None = None
         self._rows_dirty = False
         self._last_rows: list[TableRow] = []
+        self._slot_item_ids: list[str] = []
+        self._item_names: dict[str, str] = {}
         self._pending_hits: list[Message] = []
         self._pending_character: dict[str, str] | None = None
         self._history: deque[Message] = deque(maxlen=CHART_HISTORY)
@@ -213,20 +215,27 @@ class Dashboard:
 
     # ------------------------------------------------------------------ publishing (other threads)
 
-    def publish_rows(self, rows: list[TableRow], slot_item_ids: list[str] | None = None) -> None:
+    def publish_rows(
+        self, rows: list[TableRow], slot_item_ids: list[str] | None = None, item_names: dict[str, str] | None = None
+    ) -> None:
         """The table as the game shows it; only a change wakes the broadcaster.
         `slot_item_ids` names the gun in each weapon slot, so the chart's "now" can be
-        matched to the slot rows by item."""
-        if rows == self._last_rows:
+        matched to the slot rows by item, and `item_names` gives the page the item names
+        of those guns (the table itself carries the short type labels)."""
+        slot_item_ids = list(slot_item_ids or [])
+        item_names = dict(item_names or {})
+        if rows == self._last_rows and slot_item_ids == self._slot_item_ids and item_names == self._item_names:
             return
         self._last_rows = rows
         rows_json = [{"cells": list(row.cells), "style": row.style} for row in rows]
         now = time.time()
         with self._wake:
             instant = self._instant_dps(now)
-            sample = _window_sample(rows, now, instant, slot_item_ids or [])
+            sample = _window_sample(rows, now, instant, slot_item_ids)
             self._rows_json = rows_json
             self._rows_sample = sample
+            self._slot_item_ids = slot_item_ids
+            self._item_names = item_names
             self._rows_dirty = True
             if sample is not None:
                 self._history.append(sample)
@@ -318,7 +327,14 @@ class Dashboard:
             messages.append({"type": "character", "character": self._pending_character})
             self._pending_character = None
         if self._rows_dirty:
-            messages.append({"type": "table", "rows": self._rows_json, "t": time.time(), "sample": self._rows_sample})
+            messages.append({
+                "type": "table",
+                "rows": self._rows_json,
+                "t": time.time(),
+                "sample": self._rows_sample,
+                "slots": self._slot_item_ids,
+                "names": self._item_names,
+            })
             self._rows_dirty = False
         if self._pending_hits:
             messages.append({"type": "hits", "events": self._pending_hits})
@@ -340,6 +356,8 @@ class Dashboard:
         with self._state_lock:
             rows = self._rows_json
             history = list(self._history)
+            slots = list(self._slot_item_ids)
+            names = dict(self._item_names)
         return {
             "type": "hello",
             "version": self.sources.version,
@@ -348,6 +366,8 @@ class Dashboard:
             "chart_seconds": self.chart_seconds,
             "chart_windows": list(CHART_WINDOWS_S),
             "rows": rows,
+            "slots": slots,
+            "names": names,
             "recent": self._recent_hits_from_file(),
             "history": history,
         }

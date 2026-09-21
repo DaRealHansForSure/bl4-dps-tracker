@@ -106,6 +106,23 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Fast Gun #2", lines[1])
         self.assertIn("500", lines[1])
 
+    def test_item_name_is_stored_shown_and_saved(self) -> None:
+        store = WeaponStore(self.path, save_interval_s=30.0)
+        store.add_held("ddbe5d", "Jakobs Shotgun", "Body_JAK_SG", 2.0, 100.0)
+        self.assertEqual(store.name_for("ddbe5d"), "")
+        self.assertTrue(store.set_name("ddbe5d", "Maintained Screeching T.K's Wave", "Jakobs Shotgun", "Body_JAK_SG", 101.0))
+        self.assertFalse(store.set_name("ddbe5d", "Maintained Screeching T.K's Wave", "Jakobs Shotgun", "Body_JAK_SG", 102.0), "same name again")
+        self.assertEqual(store.name_for("ddbe5d"), "Maintained Screeching T.K's Wave")
+        self.assertEqual(store.records["ddbe5d"].display_label(), "Maintained Screeching T.K's Wave")
+        self.assertIn("Maintained Screeching  ddbe5d", store.format_ranking()[1], "22 characters of the name, then the id")
+        self.assertTrue(store.set_name("new", "Lionized Parasite", "Vladof SMG", "Body_VLA_SM", 103.0), "a gun seen by name first gets a record")
+        self.assertEqual((store.records["new"].label, store.records["new"].body), ("Vladof SMG", "Body_VLA_SM"))
+        self.assertTrue(store.save_if_due(now=200.0, force=True))
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.name_for("ddbe5d"), "Maintained Screeching T.K's Wave")
+        self.assertEqual(reloaded.name_for("missing"), "")
+
     def test_peak_dps_needs_a_long_enough_window_and_only_rises(self) -> None:
         store = WeaponStore(self.path)
         store.note_peak("277", "Jakobs Sniper", "Body_JAK_SR", dps=9000.0, window_seconds=3.0, now=100.0)

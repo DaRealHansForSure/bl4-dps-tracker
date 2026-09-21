@@ -7,3 +7,5 @@ poc/*.jsonl
 
 # IDE state (PyCharm / IntelliJ)
 .idea/
+poc/inbox/
+poc/runs/

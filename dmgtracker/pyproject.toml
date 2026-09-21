@@ -1,6 +1,6 @@
 [project]
 name = "dmgtracker"
-version = "1.1.0"
+version = "1.2.0"
 description = "Logs every damage instance you deal and shows a per-weapon damage table on screen."
 authors = [{ name = "DaRealHansForSure" }]
 

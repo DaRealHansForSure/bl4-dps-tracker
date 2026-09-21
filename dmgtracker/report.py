@@ -255,7 +255,7 @@ def _format_weapons(events: list[dict[str, Any]], held: list[dict[str, Any]]) ->
     for weapon in weapons:
         record = weapon.record
         lines.append(
-            f"    {record.label[:22] + ' ' + short_item_id(record.item_id):30} {format_number(record.damage):>12} "
+            f"    {record.display_label()[:22] + ' ' + short_item_id(record.item_id):30} {format_number(record.damage):>12} "
             f"{format_number(record.dps_in_hand()):>11} {record.hits:>6} {format_number(record.average_hit()):>9} "
             f"{record.crit_share():>7} {record.kills:>6} {format_share(weapon.status_damage, record.damage):>9}"
         )

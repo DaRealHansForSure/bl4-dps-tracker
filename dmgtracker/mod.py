@@ -22,12 +22,13 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, WeaponResolver
+from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
 from .character import CharacterIdentity, read_identity
 from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
 from .formatting import format_number
-from .itemidentity import ItemIdentityReader
+from .itemidentity import ItemIdentityReader, short_item_id
+from .itemnames import ItemCardReader, NameMatcher, layout_for_build
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -95,6 +96,10 @@ DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
 DEFAULT_READOUT_WINDOW_MINUTES = 5.0
 READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
+# How long a failed item card read rests before the next try.
+ITEM_NAMES_RETRY_S = 30.0
+GAME_INSTANCE_CLASS = "OakGameInstance"
+BUILD_VERSION_LIBRARY = "KismetSystemLibrary"
 # A held-time sample longer than this means the game was paused or loading, not playing.
 MAX_HELD_SAMPLE_S = 1.0
 # Consecutive refresh failures before the table is taken down for the session. A failure
@@ -156,6 +161,9 @@ readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 readout_show_best_column = HiddenOption("readout_show_best_column", True)
 readout_show_share_column = HiddenOption("readout_show_share_column", False)
 readout_show_crit_and_kills = HiddenOption("readout_show_crit_and_kills", False)
+# The in-game table names guns by manufacturer and type ("Jakobs Shotgun"), which fits its
+# width; the dashboard shows the item name ("Maintained Screeching T.K's Wave") regardless.
+readout_item_names = HiddenOption("readout_item_names", False)
 # Non-weapon rows to leave out of the table, by source kind: "melee", "grenade", "skill", "other".
 readout_hidden_rows = HiddenOption("readout_hidden_rows", [SOURCE_MELEE])
 # The dashboard listens on every interface (0.0.0.0) so other devices on the network can open
@@ -169,6 +177,8 @@ web_chart_seconds = HiddenOption("web_chart_seconds", DEFAULT_CHART_SECONDS)
 
 identity_reader = ItemIdentityReader()
 resolver = WeaponResolver(identity_reader.item_id)
+card_reader: ItemCardReader | None = None
+name_matcher = NameMatcher()
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -187,6 +197,9 @@ _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
 _transition_hidden = False
 _equipped_cache: list = []
+_game_instance_address = 0
+_item_names_retry_at = 0.0
+_item_names_reported = False
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
 # Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
@@ -290,6 +303,85 @@ def _on_controller_changed(controller: UObject | None) -> None:
     _destroy_readout()
     if controller is not None and show_readout.value:
         _create_readout(controller)
+
+
+# ------------------------------------------------------------------ item names
+
+def _prepare_item_names() -> None:
+    """Pick the item card layout for this game build. An unknown build gets the latest
+    layout and one warning; the content validation guards the read either way."""
+    global card_reader, _game_instance_address, _item_names_retry_at
+    _game_instance_address = 0
+    _item_names_retry_at = 0.0
+    build = ""
+    try:
+        build = str(unrealsdk.find_class(BUILD_VERSION_LIBRARY).ClassDefaultObject.GetBuildVersion())
+    except Exception as ex:  # noqa: BLE001 - without a build string the latest layout is tried
+        logging.warning(f"{LOG_PREFIX} game build unknown ({type(ex).__name__}: {ex}); trying the latest item name layout")
+    layout, verified = layout_for_build(build)
+    if build and not verified:
+        logging.warning(f"{LOG_PREFIX} game build {build!r} is not verified for item names; trying the layout of build {layout.changelist}")
+    card_reader = ItemCardReader(layout)
+
+
+def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float) -> None:
+    """Read the equipped weapons' item names from the game's item cards into the weapon
+    record. Runs until every equipped gun has a confirmed name; a failed read is quiet
+    apart from one warning and rests before the next try."""
+    global _game_instance_address, _item_names_retry_at, _item_names_reported
+    if card_reader is None or weapon_store is None or now < _item_names_retry_at:
+        return
+    item_ids = [weapon.item_id for weapon in equipped]
+    if all(weapon_store.name_for(item_id) for item_id in item_ids) and name_matcher.confirmed(item_ids):
+        return
+    try:
+        if not _game_instance_address:
+            _game_instance_address = _find_game_instance()
+        cards = card_reader.cards(_game_instance_address) if _game_instance_address else []
+    except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
+        card_reader.last_error = f"{type(ex).__name__}: {ex}"
+        cards = []
+    if not cards:
+        _item_names_retry_at = now + ITEM_NAMES_RETRY_S
+        _game_instance_address = 0
+        if not _item_names_reported:
+            _item_names_reported = True
+            logging.warning(f"{LOG_PREFIX} item names unavailable ({card_reader.last_error or 'no item cards'}); guns keep their type labels")
+        return
+    names = name_matcher.match(item_ids, cards)
+    for weapon in equipped:
+        name = names.get(weapon.item_id)
+        if name and weapon_store.set_name(weapon.item_id, name, weapon.label, weapon.body, wall_now):
+            _say(f"{weapon.label} {short_item_id(weapon.item_id)} is {name}")
+
+
+def _find_game_instance() -> int:
+    """The address of the live game instance object, 0 when there is none."""
+    for candidate in unrealsdk.find_all(GAME_INSTANCE_CLASS, exact=False):
+        if not str(candidate.Name).startswith("Default__"):
+            return int(candidate._get_address())
+    return 0
+
+
+def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
+    """item id -> item name for the equipped weapons whose name is known."""
+    if weapon_store is None:
+        return {}
+    names: dict[str, str] = {}
+    for weapon in equipped:
+        name = weapon_store.name_for(weapon.item_id)
+        if name:
+            names[weapon.item_id] = name
+    return names
+
+
+def _with_item_names(equipped: list[DamageSource]) -> list[DamageSource]:
+    """The equipped weapons labelled by item name where one is known."""
+    names = _item_names_for(equipped)
+    return [
+        DamageSource(weapon.kind, names.get(weapon.item_id, weapon.label), weapon.body, weapon.item_id)
+        for weapon in equipped
+    ]
 
 
 # ------------------------------------------------------------------ characters
@@ -403,7 +495,8 @@ def _refresh_readout() -> None:
             _check_character(controller, pawn)
             equipped = resolver.equipped_weapons(pawn)
             if equipped is not None:
-                _equipped_cache = equipped
+                _learn_item_names(equipped, wall_now, now)
+                _equipped_cache = _with_item_names(equipped) if readout_item_names.value else equipped
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
@@ -425,7 +518,7 @@ def _refresh_readout() -> None:
         _latest_rows = rows
         readout.render(rows, now)
         if dashboard is not None:
-            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache])
+            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache], _item_names_for(_equipped_cache))
         _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -742,6 +835,7 @@ def on_enable() -> None:
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
     character = None
     weapon_store = None
+    _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
         ring_property=str(ring_property.value),

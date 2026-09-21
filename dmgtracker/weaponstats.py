@@ -50,6 +50,9 @@ class WeaponRecord:
     item_id: str
     label: str
     body: str
+    # The item name as the inventory shows it ("Maintained Screeching T.K's Wave"), read
+    # from the game's item cards (itemnames.py); empty until it was read once.
+    name: str = ""
     damage: float = 0.0
     hits: int = 0
     # Hits that are not status ticks; only those can be crits, so the crit rate is over them.
@@ -100,12 +103,17 @@ class WeaponRecord:
     def crit_share(self) -> str:
         return format_share(self.crits, self.direct_hits)
 
+    def display_label(self) -> str:
+        """The item name when it is known, the manufacturer-and-type label otherwise."""
+        return self.name or self.label
+
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WeaponRecord:
         return cls(
             item_id=str(data["item_id"]),
             label=str(data.get("label", UNKNOWN_LABEL)),
             body=str(data.get("body", "")),
+            name=str(data.get("name", "")),
             damage=float(data.get("damage", 0.0)),
             hits=int(data.get("hits", 0)),
             # Records written before direct hits were counted: treat every hit as direct.
@@ -287,6 +295,21 @@ class WeaponStore:
             peak.peak_dps_at = now
             self._dirty = True
 
+    def set_name(self, item_id: str, name: str, label: str, body: str, now: float) -> bool:
+        """Remember the item name of a weapon; True when it is new or changed."""
+        with self._lock:
+            record = self._record(item_id, label, body, now)
+            if record.name == name:
+                return False
+            record.name = name
+            self._dirty = True
+            return True
+
+    def name_for(self, item_id: str) -> str:
+        """The stored item name of a weapon, '' when none was read yet."""
+        record = self.records.get(item_id)
+        return record.name if record is not None else ""
+
     def _record(self, item_id: str, label: str, body: str, now: float) -> WeaponRecord:
         record = self.records.get(item_id)
         if record is None:
@@ -340,7 +363,7 @@ class WeaponStore:
         for position, record in enumerate(self.ranking(by)[:limit], start=1):
             minutes = record.held_seconds / 60.0
             lines.append(
-                f"{position:>2}  {record.label[:22] + ' ' + short_item_id(record.item_id):30} "
+                f"{position:>2}  {record.display_label()[:22] + ' ' + short_item_id(record.item_id):30} "
                 f"{format_number(record.dps_in_hand()):>12} {format_number(record.peak_dps):>10} "
                 f"{format_number(record.damage):>14} {record.hits:>6} {format_number(record.average_hit()):>9} "
                 f"{record.crit_share():>7} {record.kills:>6} {format_number(minutes, decimals=1) + ' min':>9}"

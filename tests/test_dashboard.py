@@ -108,12 +108,15 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual([event["dmg"] for event in hello["recent"]], [50.0, 100.0], "the session's newest hits, newest first")
             self.assertEqual(hello["history"], [])
             rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "1'000", "250", "100.0"), "active"), TableRow(("Last 5 min", "1'000", "12'345.6", "100.0"), "total")]
-            self.dashboard.publish_rows(rows)
-            self.dashboard.publish_rows(rows)
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"})
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"})
             table = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(table["type"], "table")
             self.assertEqual(table["rows"][:2], [{"cells": ["Weapon", "Total"], "style": "header"}, {"cells": ["Jakobs Sniper", "1'000", "250", "100.0"], "style": "active"}])
             self.assertEqual((table["sample"]["dps"], table["sample"]["total"]), (12345.6, 1000.0))
+            self.assertEqual((table["slots"], table["names"]), (["seed277"], {"seed277": "Hunted Kettled Rangefinder"}))
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder", "other": "Lionized Parasite"})
+            self.assertEqual(json.loads(client.recv(RECV_TIMEOUT_S))["names"]["other"], "Lionized Parasite", "a new name alone is a change")
             self.dashboard.publish_hits([hit(6.0, 42.0)])
             hits = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual((hits["type"], len(hits["events"]), hits["events"][0]["dmg"]), ("hits", 1, 42.0))
@@ -124,6 +127,7 @@ class DashboardTests(unittest.TestCase):
             with connect(self.url.replace("http://", "ws://") + "ws") as second:
                 second_hello = json.loads(second.recv(RECV_TIMEOUT_S))
                 self.assertEqual(second_hello["rows"][1]["cells"][0], "Jakobs Sniper", "a new client gets the latest table at once")
+                self.assertEqual((second_hello["slots"], second_hello["names"]["seed277"]), (["seed277"], "Hunted Kettled Rangefinder"))
                 self.assertEqual(second_hello["history"], [], "the character switch above emptied the chart history")
             empty_slots = [TableRow(("-", "0", "0", "0.0"), "row")] * 3
             self.dashboard.publish_rows(rows[:2] + empty_slots + [TableRow(("Skill", "300", "40", "15.0"), "row"), TableRow(("Last 5 min", "2'000", "500", "100.0"), "total")])

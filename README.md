@@ -23,6 +23,7 @@ Last 5 min           3'219'066     32'190
 - Every row's **DPS is its damage over the window's fighting time**, so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
+- Guns carry their **item name** ("Maintained Screeching T.K's Wave"), read from the game's own item cards a second after they are equipped and kept in the weapon record. The in-game table keeps the short manufacturer-and-type label for width (`readout_item_names` switches it to the item name); the dashboard shows the item name with the item id, and `dmgweapons` and the reports use it too.
 - `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s. It only rises; `dmgreset --weapons` clears it.
 - A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
 - Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
@@ -45,7 +46,7 @@ Open the console with F6 (in the world, not in the main menu):
 
 While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
 
-- **Live**: the same table as in the game, pushed over a WebSocket whenever it changes; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the five-minute average dashed, a tooltip for any moment; and the latest hits as they land.
+- **Live**: the same table as in the game (guns by item name, with their id), pushed over a WebSocket whenever it changes; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the five-minute average dashed, a tooltip for any moment; and the latest hits as they land.
 - **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
 - **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
 - **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.
@@ -75,6 +76,7 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | `readout_show_share_column` | `false` | the `Share [%]` column |
 | `readout_show_crit_and_kills` | `false` | the `Crit [%]` and `Kills` columns |
 | `readout_hidden_rows` | `["melee"]` | non-weapon rows to leave out: `melee`, `grenade`, `skill`, `other` |
+| `readout_item_names` | `false` | label the in-game weapon rows with the item name instead of manufacturer and type (the dashboard always shows the item name) |
 | `web_host`, `web_port` | `0.0.0.0`, `8765` | where the dashboard listens (`127.0.0.1` for this machine only) |
 | `web_chart_seconds` | `30` | the chart window the dashboard starts with (10, 30, 60 or 120) |
 | `readout_font_size` | `30` | font size |
@@ -103,7 +105,7 @@ BL4 applies damage natively; no Unreal function fires per hit. The local player 
 
 ## Known limitations
 
-- Weapon names are manufacturer plus type ("Jakobs Sniper #277"); the game exposes no item display name at runtime. The number after `#` is the item's id, stable across sessions, so two Jakobs snipers stay apart.
+- Item names come from the game's item card model, found through two native pointers of the current game build and checked by content ([`docs/item-names.md`](docs/item-names.md)). After a game patch the mod may not find them; it then logs one line and the guns keep their manufacturer-and-type labels ("Jakobs Sniper", with the item id after it), which is also what a gun shows until its name was read.
 - Damage that lands in the same frame as a knife swing during a running action skill cannot be told from the swing and counts as melee.
 - A very fast burst of more than six instances within one frame could overflow the game's ring; the log window reports such frames.
 - Untested in co-op.
