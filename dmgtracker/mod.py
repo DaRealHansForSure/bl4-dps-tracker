@@ -1057,10 +1057,13 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} dashboard: not running")
 
 
-@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's; --names forgets the stored item names only.")
+@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's; --names forgets the stored item names only (of this character, with --all of every character).")
 def dmgreset_command(args: argparse.Namespace) -> None:
     if poller is None:
         logging.info(f"{LOG_PREFIX} the mod is not enabled")
+        return
+    if args.names and args.all:
+        _forget_all_item_names()
         return
     if args.names:
         _forget_item_names()
@@ -1075,21 +1078,48 @@ def dmgreset_command(args: argparse.Namespace) -> None:
 
 dmgreset_command.add_argument("--weapons", action="store_true", help="also start a fresh lifetime record for the current character")
 dmgreset_command.add_argument("--all", action="store_true", help="also start fresh lifetime records for every character")
-dmgreset_command.add_argument("--names", action="store_true", help="only forget this character's stored item names; they are read from the game again")
+dmgreset_command.add_argument("--names", action="store_true", help="only forget the stored item names (this character's, with --all every character's); they are read from the game again")
 
 
 def _forget_item_names() -> None:
     """Drop the stored item names of the current character and read them afresh."""
-    global _item_names_unavailable_since, _item_names_reported
+    _start_item_names_over()
     if weapon_store is None:
         logging.info(f"{LOG_PREFIX} no character loaded, no names to forget")
         return
     cleared = weapon_store.clear_names()
+    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's UI models")
+
+
+def _forget_all_item_names() -> None:
+    """Drop the stored item names of every character's record, the current one included."""
+    _start_item_names_over()
+    cleared = weapon_store.clear_names() if weapon_store is not None else 0
+    characters_dir = _log_dir().parent / CHARACTERS_DIR_NAME
+    records = 0
+    for record_path in characters_dir.glob(f"*/{WEAPON_STORE_NAME}"):
+        if weapon_store is not None and record_path == weapon_store.path:
+            continue
+        store = WeaponStore(record_path)
+        store.load()
+        if store.load_error or store.set_aside_old_schema is not None:
+            logging.warning(f"{LOG_PREFIX} {record_path}: not readable, names left alone")
+            continue
+        records += 1
+        count = store.clear_names()
+        if count:
+            store.save_if_due(time.time(), force=True)
+        cleared += count
+    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten across {records + (1 if weapon_store is not None else 0)} character record(s); they are read again from the game's UI models")
+
+
+def _start_item_names_over() -> None:
+    """The reader and the warning state forget everything; the next read starts afresh."""
+    global _item_names_unavailable_since, _item_names_reported
     _item_names_unavailable_since = 0.0
     _item_names_reported = False
     if name_reader is not None:
         name_reader.forget()
-    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's UI models")
 
 
 def _reset_current_weapon_record() -> None:
