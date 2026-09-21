@@ -591,9 +591,14 @@
 
   // The gun's element as a badge beside its name, nothing for a kinetic gun; the id is
   // on the item card.
+  // The inventory calls kinetic damage "noelement" on a card and "impact" in its list.
+  function isKinetic(element) {
+    return !element || element === "noelement" || element === "impact";
+  }
+
   function elementBadge(itemId) {
     const info = itemInfos[itemId];
-    if (!info || !info.element || info.element === "noelement") {
+    if (!info || isKinetic(info.element)) {
       return null;
     }
     const span = badge(info.element, elementClass(info.element));
@@ -668,7 +673,7 @@
       line.appendChild(badge(info.rarity, "rarity-badge rarity-" + info.rarity));
     }
     if (info.element) {
-      const none = info.element === "noelement";
+      const none = isKinetic(info.element);
       line.appendChild(badge(none ? "Normal" : info.element, none ? "" : elementClass(info.element)));
     }
     itemCard.querySelector(".damage").textContent = info.damage ? "Card damage " + info.damage : "";
