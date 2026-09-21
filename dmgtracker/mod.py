@@ -35,7 +35,7 @@ from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
 from .report import format_report, gap_for, read_session
-from .stats import DamageRate, EncounterTracker, RollingStats, fight_rate, source_key
+from .stats import DamageRate, EncounterTracker, RollingStats, source_key
 from .table import PeakDps, build_rows
 from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
 
@@ -96,6 +96,9 @@ FIXED_COLUMN_COUNT = 3
 SHARE_COLUMN_INDEX = 3
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
 DEFAULT_READOUT_WINDOW_MINUTES = 5.0
+# The DPS column is damage per second right now: a row's hits of the last so many seconds
+# over the seconds in which it landed one. Totals stay over the window.
+DEFAULT_READOUT_DPS_SECONDS = 10.0
 READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
 # How long an equipped gun may stay without an item name before one warning is logged;
@@ -169,6 +172,7 @@ readout_column_gap = HiddenOption("readout_column_gap", DEFAULT_READOUT_COLUMN_G
 readout_column_widths = HiddenOption("readout_column_widths", DEFAULT_READOUT_COLUMN_WIDTHS)
 readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READOUT_BACKGROUND_ALPHA)
 readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
+readout_dps_seconds = HiddenOption("readout_dps_seconds", DEFAULT_READOUT_DPS_SECONDS)
 readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 readout_show_best_column = HiddenOption("readout_show_best_column", True)
 readout_show_share_column = HiddenOption("readout_show_share_column", False)
@@ -592,10 +596,10 @@ def _refresh_readout() -> None:
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
         rolling.prune(_play_clock)
-        # The DPS column rates the open fight: its damage so far over its seconds so far,
-        # per source. Between fights it reads zero; the totals keep the window's damage.
-        fight = fight_rate(tracker.current, wall_now)
-        _record_peaks(wall_now, fight)
+        # The DPS column is damage per second right now: each row's hits of the last
+        # seconds over the seconds in which it hit. The totals keep the window's damage.
+        now_rate = rolling.recent(float(readout_dps_seconds.value))
+        _record_peaks(wall_now, now_rate)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best = _peak_dps() if readout_show_best_column.value else None
         rows = build_rows(
@@ -608,7 +612,7 @@ def _refresh_readout() -> None:
             _hidden_row_kinds(),
             bool(readout_show_crit_and_kills.value),
             bool(readout_show_share_column.value),
-            fight,
+            now_rate,
         )
         _latest_rows = rows
         readout.render(rows, now)
@@ -653,18 +657,18 @@ def _hidden_row_kinds() -> frozenset[str]:
         return frozenset()
 
 
-def _record_peaks(now: float, fight: DamageRate) -> None:
-    """Offer every table row's current DPS (the open fight's rate, what the DPS column
-    shows) to the lifetime record as a peak; a fight counts once it is long enough."""
-    if weapon_store is None or fight.seconds <= 0:
+def _record_peaks(now: float, now_rate: DamageRate) -> None:
+    """Offer every table row's current DPS (what the DPS column shows) to the lifetime
+    record as a peak."""
+    if weapon_store is None:
         return
-    for key in fight.by_source:
+    for key in now_rate.damage_by_source:
         kind, label, item_id = key
         if kind != "weapon" or item_id == "":
             continue
-        weapon_store.note_peak(item_id, label, "", fight.rate(key), fight.seconds, now)
+        weapon_store.note_peak(item_id, label, "", now_rate.rate(key), now_rate.seconds, now)
     for kind in PEAK_SOURCE_KINDS:
-        weapon_store.note_source_peak(kind, fight.kind_rate(kind), fight.seconds, now)
+        weapon_store.note_source_peak(kind, now_rate.kind_rate(kind), now_rate.seconds, now)
 
 
 def _advance_play_clock(now: float, in_play: bool) -> None:

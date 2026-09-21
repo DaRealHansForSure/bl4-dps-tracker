@@ -74,33 +74,38 @@ def target_family(target_name: str) -> str:
 
 @dataclass
 class DamageRate:
-    """Damage over a span of seconds, per source key and in total: what a DPS column
-    divides. An empty span rates everything at zero."""
+    """Damage per second right now: each source's hits of the last `seconds` over the
+    seconds in which that source landed one, so a gun that did 40'000 in one second reads
+    40'000, sustained fire reads its sustained rate, and a source that stopped reads zero
+    once its last hit is older than the span. Nothing here is an average over a fight or
+    a window."""
 
     seconds: float
     total: float
-    by_source: dict[SourceKey, float] = field(default_factory=dict)
+    active_seconds: set[int] = field(default_factory=set)
+    damage_by_source: dict[SourceKey, float] = field(default_factory=dict)
+    active_by_source: dict[SourceKey, set[int]] = field(default_factory=dict)
 
     def rate(self, key: SourceKey | None = None) -> float:
-        """Damage per second of one source (None: of everything)."""
-        damage = self.total if key is None else self.by_source.get(key, 0.0)
-        return damage / self.seconds if self.seconds > 0 else 0.0
+        """Damage per active second of one source (None: of everything)."""
+        if key is None:
+            return _per_active_second(self.total, self.active_seconds)
+        return _per_active_second(self.damage_by_source.get(key, 0.0), self.active_by_source.get(key, set()))
 
     def kind_rate(self, kind: str) -> float:
-        """Damage per second of every source of a kind together (melee from several
-        labels, say)."""
-        damage = sum(amount for key, amount in self.by_source.items() if key[0] == kind)
-        return damage / self.seconds if self.seconds > 0 else 0.0
+        """Damage per active second of every source of a kind together (melee from several
+        labels, say): their damage over the seconds in which any of them hit."""
+        damage = 0.0
+        active: set[int] = set()
+        for key, amount in self.damage_by_source.items():
+            if key[0] == kind:
+                damage += amount
+                active |= self.active_by_source.get(key, set())
+        return _per_active_second(damage, active)
 
 
-def fight_rate(fight: Encounter | None, now: float) -> DamageRate:
-    """The rate of the open fight so far: its damage over the seconds since its first hit,
-    idle moments inside the fight included, so it is the fight's honest DPS at this moment
-    and sinks while nothing lands. No open fight rates everything at zero."""
-    if fight is None:
-        return DamageRate(0.0, 0.0)
-    seconds = max(now - fight.started, MIN_DURATION_S)
-    return DamageRate(seconds, fight.total, {key: totals.damage for key, totals in fight.by_source.items()})
+def _per_active_second(damage: float, active: set[int]) -> float:
+    return damage / len(active) if active else 0.0
 
 
 @dataclass
@@ -364,6 +369,25 @@ class RollingStats:
             return self.window_s
         since_first_hit = self._now - self._first_hit
         return max(min(self.window_s, since_first_hit), MIN_DURATION_S)
+
+    def recent(self, seconds: float) -> DamageRate:
+        """The damage per second right now: every source's hits of the last `seconds` (on
+        the window's clock) over the seconds in which it landed one. Walks the newest
+        events only, so it costs the hits of those seconds, not the window's. Call after
+        prune()."""
+        cutoff = self._now - seconds
+        rate = DamageRate(seconds, 0.0)
+        for at, event in reversed(self._events):
+            if at < cutoff:
+                break
+            damage = float(event["dmg"])
+            second = int(float(event["t"]))
+            key = source_key(event)
+            rate.total += damage
+            rate.active_seconds.add(second)
+            rate.damage_by_source[key] = rate.damage_by_source.get(key, 0.0) + damage
+            rate.active_by_source.setdefault(key, set()).add(second)
+        return rate
 
 
     def dps(self) -> float:

@@ -98,15 +98,16 @@ def build_rows(
     hidden_kinds: frozenset[str] = frozenset(),
     crit_and_kills: bool = False,
     share: bool = True,
-    fight: DamageRate | None = None,
+    now_rate: DamageRate | None = None,
 ) -> list[TableRow]:
     """The complete table for the current state. The row count only depends on the settings
     (encounter row, hidden non-weapon rows), never on the data. Optional columns, in this
     order after Weapon, Total and DPS: Share [%] (`share`), Crit [%] and Kills
     (`crit_and_kills`), then Best DPS (`best`, the lifetime peak DPS of each weapon and
-    non-weapon source). With `fight`, the DPS column is the open fight's rate (zero between
-    fights); without it, the window average."""
-    columns = TableColumns(share, crit_and_kills, fight)
+    non-weapon source). With `now_rate`, the DPS column is each row's damage per second
+    right now (its hits of the last seconds over the seconds in which it hit); without
+    it, the window average."""
+    columns = TableColumns(share, crit_and_kills, now_rate)
     header = HEADER_CELLS
     if share:
         header += (SHARE_HEADER_CELL,)
@@ -127,18 +128,18 @@ def build_rows(
 
 @dataclass(frozen=True)
 class TableColumns:
-    """Which optional value columns a row carries, and the fight the DPS column rates
+    """Which optional value columns a row carries, and the rate the DPS column shows
     (None: the window average)."""
 
     share: bool
     crit_and_kills: bool
-    fight: DamageRate | None = None
+    now_rate: DamageRate | None = None
 
     def dps(self, key: SourceKey | None, window_damage: float, window_duration: float) -> float:
-        """The DPS cell of a row: the fight's rate of its source (None: of everything), or
-        the window average when no fight was given."""
-        if self.fight is not None:
-            return self.fight.rate(key)
+        """The DPS cell of a row: its source's damage per second right now (None: of
+        everything), or the window average when no rate was given."""
+        if self.now_rate is not None:
+            return self.now_rate.rate(key)
         return window_damage / window_duration
 
 
@@ -162,8 +163,8 @@ def _weapon_slot_rows(
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
         style = STYLE_ACTIVE if weapon.item_id == held_item_id else STYLE_ROW
-        # The DPS of a gun is its rate in the open fight (the lifetime record keeps the DPS
-        # in hand for comparing guns across fights).
+        # The DPS of a gun is what it does per second right now (the lifetime record keeps
+        # the DPS in hand for comparing guns across fights).
         dps = columns.dps((SOURCE_WEAPON, weapon.label, weapon.item_id), totals.damage, duration)
         row = TableRow(_source_cells(weapon.label, totals, dps, scope.total, columns), style)
         if best is not None:
@@ -191,10 +192,10 @@ def _non_weapon_rows(
 
 def _kind_dps(scope: DamageScope, kind: str, window_damage: float, duration: float, columns: TableColumns) -> float:
     """A non-weapon row gathers every source of its kind (melee from several labels, say),
-    so its fight rate is the sum over those sources."""
-    if columns.fight is None:
+    so its rate is over those sources together."""
+    if columns.now_rate is None:
         return window_damage / duration
-    return columns.fight.kind_rate(kind)
+    return columns.now_rate.kind_rate(kind)
 
 
 def _source_cells(label: str, totals: SourceTotals, dps: float, scope_total: float, columns: TableColumns) -> tuple[str, ...]:

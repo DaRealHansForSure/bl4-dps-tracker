@@ -138,7 +138,7 @@
         <table id="live-table"><tbody></tbody></table>
       </div>
       <div class="card chart">
-        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the fight's DPS so far</span></h2>
+        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the table's DPS</span></h2>
         <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
@@ -738,7 +738,7 @@
 
   function drawLegend(context, geometry, series) {
     // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
-    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: "Fight", color: AVERAGE_COLOR }].concat(
+    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: "Table", color: AVERAGE_COLOR }].concat(
       series.map(function (line) { return { label: seriesLabel(line), color: line.color }; })
     );
     context.font = "11px sans-serif";
@@ -853,7 +853,7 @@
       context.fill();
     });
     function entryText(entry) {
-      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (fight: " + formatNumber(entry.average, 0) + ")";
+      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (table: " + formatNumber(entry.average, 0) + ")";
     }
     showChartTooltip(formatTime(sample.t), entries.map(function (entry) { return { color: entry.color, text: entryText(entry) }; }),
       formatNumber(sample.total, 0) + " damage in the window");
