@@ -22,7 +22,7 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import GRENADE_LABEL, SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
+from .attribution import GRENADE_LABEL, SOURCE_GRENADE, SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
 from .character import CharacterIdentity, read_identity
 from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
@@ -37,7 +37,7 @@ from .readout import Readout, ReadoutLayout
 from .report import format_report, gap_for, read_session
 from .stats import DamageRate, EncounterTracker, RollingStats, source_key
 from .table import PeakDps, build_rows
-from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
+from .weaponstats import PEAK_SOURCE_KINDS, RECORDED_KINDS, WeaponStore
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
@@ -677,6 +677,7 @@ def _refresh_readout() -> None:
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
+        _sample_grenade_time()
         rolling.prune(_play_clock)
         # The DPS column is damage per second right now: each row's hits of the last
         # seconds over the seconds in which it hit. The totals keep the window's damage.
@@ -748,9 +749,9 @@ def _record_peaks(now: float, now_rate: DamageRate) -> None:
         return
     for key in now_rate.damage_by_source:
         kind, label, item_id = key
-        if kind != "weapon" or item_id == "":
+        if kind not in RECORDED_KINDS or item_id == "":
             continue
-        weapon_store.note_peak(item_id, label, "", now_rate.rate(key), now_rate.seconds, now)
+        weapon_store.note_peak(item_id, label, "", now_rate.rate(key), now_rate.seconds, now, kind)
     for kind in PEAK_SOURCE_KINDS:
         weapon_store.note_source_peak(kind, now_rate.kind_rate(kind), now_rate.seconds, now)
 
@@ -803,6 +804,22 @@ def _sample_held_time(held: Any) -> None:
         weapon_store.add_held(held.item_id, held.label, held.body, _last_fight_step, time.time())
     _label, seconds = _held_pending.get(held.item_id, (held.label, 0.0))
     _held_pending[held.item_id] = (held.label, seconds + _last_fight_step)
+
+
+def _sample_grenade_time() -> None:
+    """Credit the equipped grenade with the same fighting time as the gun in hand, so its
+    lifetime record has a DPS over the fights it was equipped in."""
+    grenade_id = _gadget_ids.get(GRENADE_LABEL, "")
+    if _last_fight_step <= 0 or not readout.visible() or grenade_id == "" or weapon_store is None:
+        return
+    weapon_store.add_held(grenade_id, GRENADE_LABEL, "", _last_fight_step, time.time(), SOURCE_GRENADE)
+
+
+def _count_grenade_throw(now: float) -> None:
+    """One more throw of the equipped grenade, for its lifetime damage per throw."""
+    grenade_id = _gadget_ids.get(GRENADE_LABEL, "")
+    if weapon_store is not None and grenade_id != "":
+        weapon_store.add_throw(grenade_id, GRENADE_LABEL, now)
 
 
 def _flush_held_lines(now: float) -> None:
@@ -885,7 +902,9 @@ def _on_projectile_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: B
 def _on_grenade_thrown(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     try:
         if poller is not None and _is_player_pawn(obj):
-            poller.note_grenade_thrown(time.time())
+            now = time.time()
+            poller.note_grenade_thrown(now)
+            _count_grenade_throw(now)
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 
@@ -1190,7 +1209,10 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} no character loaded yet (the mod must be enabled and you must be in the world)")
         return
     logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}), by {args.by}:")
-    for line in weapon_store.format_ranking(limit=args.limit, by=args.by, names=name_store.names() if name_store is not None else None):
+    names = name_store.names() if name_store is not None else None
+    for line in weapon_store.format_ranking(limit=args.limit, by=args.by, names=names):
+        logging.info(line)
+    for line in weapon_store.format_grenade_ranking(by=args.by, names=names):
         logging.info(line)
     for line in weapon_store.format_source_peaks():
         logging.info(line)

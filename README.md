@@ -36,7 +36,7 @@ Open the console with F6 (in the world, not in the main menu):
 
 | Command | What it does |
 |---|---|
-| `dmgweapons` | Rank the current character's weapons over all sessions: DPS in hand, peak DPS, damage, hits, average hit, crit share, kills, minutes in hand. `-n 30` for a longer list. |
+| `dmgweapons` | Rank the current character's weapons over all sessions: DPS in hand, peak DPS, damage, hits, average hit, crit share, kills, minutes in hand; then the grenades with their throws and damage per throw. `-n 30` for a longer list. |
 | `dmgreport` | Report over the current session: each fight (total, duration, DPS, active DPS, targets, kills, crit share, per-source split), a session summary, a weapons table. `--last 300` adds the average over the final five minutes, `--gap 30` changes the fight boundary. |
 | `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. `--names` only forgets the stored item names (one table for every character), which are then read from the game again. |
 | `dmgweb` | Print the dashboard address (`--open` opens it in the browser). |
@@ -48,7 +48,7 @@ While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at y
 
 - **Live**: the same table as in the game (guns by item name in their rarity colour, with their id; the grenade by its name too), pushed over a WebSocket whenever it changes; rest the pointer on a name for the item card: the gun's picture as the inventory renders it, rarity, element, the card's damage figure and the item code; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the table's DPS dashed, the fights shaded, a tooltip for any moment, and a legend whose entries hide or show their lines; and the latest hits as they land.
 - **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions. The element of each hit is a badge (Normal for kinetic damage, "status" for a status effect tick), and a W or G in front of the source says whether a gun or the grenade dealt it, both by their item names.
-- **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10 (pictures included, the type as a tinted badge), the guns of one manufacturer and type compared with each other, the full list, and the best DPS of Skill, Grenade and Melee.
+- **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10 (pictures included, the type as a tinted badge), the guns of one manufacturer and type compared with each other, the full list, the best DPS of Skill, Grenade and Melee, and the grenades ranked the same way: DPS while equipped, best DPS, damage, throws and damage per throw.
 - **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.
 
 The live tab updates itself; the other tabs read the files when you open them or press Reload. "Web dashboard" in the mod menu turns the server on and off; `web_port` and `web_host` in the settings file change the address (`127.0.0.1` keeps it on this machine). Windows may ask once whether the game may accept network connections; that prompt is for the dashboard, and the answer only matters for other devices. The server is read-only and runs on its own threads, never on the game's.
@@ -58,7 +58,7 @@ The live tab updates itself; the other tabs read the files when you open them or
 Everything the mod writes goes to `%LOCALAPPDATA%\BL4DamageTracker\` (`C:\Users\<you>\AppData\Local\BL4DamageTracker\`):
 
 - `logs\session-<date>-<time>.jsonl`: one file per game launch, one JSON line per hit, plus a meta line and a marker line whenever you switch character. The newest 20 sessions are kept. `latest-session.txt` names the running one.
-- `characters\<character id>\weapons.json`: that character's lifetime weapon record.
+- `characters\<character id>\weapons.json`: that character's lifetime weapon record (the grenades included, as records of kind `grenade`).
 
 Use the "Open log folder" button in the mod menu to get there.
 

@@ -276,6 +276,13 @@
           <tbody></tbody>
         </table>
       </div>
+      <div class="card wide">
+        <h2>Grenades of this character <span class="muted">every grenade that dealt damage, ranked like above</span></h2>
+        <table id="weapons-grenades" class="ranked">
+          <thead><tr><th>#</th><th></th><th>Grenade</th><th>DPS equipped</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Throws</th><th>Per throw</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>Equipped</th><th>First seen</th><th>Last seen</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -391,7 +398,12 @@
     "Hits": "Lifetime number of hits, status ticks included.",
     "Avg hit": "Lifetime damage over the number of hits.",
     "First seen": "The first session that saw the gun.",
-    "Last seen": "The last session that saw the gun."
+    "Last seen": "The last session that saw the gun.",
+    "Grenade": "The equipped grenade, by its item name once the inventory has been open (its hits carry its id from the first second in the world).",
+    "DPS equipped": "Lifetime damage of the grenade over the fighting time it was equipped: what it added per second of fighting, cooldowns included.",
+    "Equipped": "Fighting time with the grenade equipped (a fight is open from a hit until 15 s after the last one).",
+    "Throws": "How often the grenade was thrown.",
+    "Per throw": "Lifetime damage over the number of throws: what one throw did on average, every enemy it hit included."
   };
 
   function annotateHeaders() {
@@ -1409,6 +1421,8 @@
   const allBody = document.querySelector("#weapons-all tbody");
   const typesBody = document.querySelector("#weapons-types tbody");
   const sourcesBody = document.querySelector("#weapons-sources tbody");
+  const grenadesBody = document.querySelector("#weapons-grenades tbody");
+  const GRENADE_COLUMNS = document.querySelectorAll("#weapons-grenades th").length;
   const SOURCE_LABELS = { skill: "Skill", grenade: "Grenade", melee: "Melee" };
 
   // Item name with the type label under it; the type label alone until the name is known.
@@ -1425,20 +1439,28 @@
   }
 
   function weaponNameCell(w) {
+    return itemNameCell(w, true);
+  }
+
+  // The item's name in its rarity colour with its badges under it: the element, and the
+  // type where it tells something (in a list of grenades it does not).
+  function itemNameCell(item, withTypeBadge) {
     const td = cell("");
-    td.appendChild(nameSpan(w.name || w.label, w.item_id));
-    if (w.name) {
+    td.appendChild(nameSpan(item.name || item.label, item.item_id));
+    if (item.name) {
       const label = document.createElement("div");
       label.className = "badges";
-      label.appendChild(badge(w.label, typeClass(w.label)));
-      const element = elementBadge(w.item_id);
+      if (withTypeBadge) {
+        label.appendChild(badge(item.label, typeClass(item.label)));
+      }
+      const element = elementBadge(item.item_id);
       if (element) {
         label.appendChild(element);
       }
       td.appendChild(label);
     }
-    if (w.item_id) {
-      showItemCardOnHover(td, w.item_id);
+    if (item.item_id) {
+      showItemCardOnHover(td, item.item_id);
     }
     return td;
   }
@@ -1504,11 +1526,41 @@
     return rows;
   }
 
+  // The grenades' rows, one per grenade that dealt damage: the guns' numbers, "in hand"
+  // being equipped time, plus the throws and the damage per throw.
+  function grenadeRows(grenades) {
+    if (grenades.length === 0) {
+      const note = cell("no grenade damage yet", "muted");
+      note.colSpan = GRENADE_COLUMNS;
+      return [row([note])];
+    }
+    return grenades.map(function (g) {
+      return row([
+        cell(String(g.rank), "rank"),
+        thumbnailCell(g),
+        itemNameCell(g, false),
+        cell(formatNumber(g.dps_in_hand, 0)),
+        cell(formatNumber(g.peak_dps, 0)),
+        cell(formatDateTime(g.peak_dps_at)),
+        cell(formatNumber(g.damage, 0)),
+        cell(formatNumber(g.throws, 0)),
+        cell(formatNumber(g.damage_per_throw, 0)),
+        cell(formatNumber(g.hits, 0)),
+        cell(formatNumber(g.average_hit, 0)),
+        cell(formatNumber(100 * g.crit_share, 1)),
+        cell(formatNumber(g.kills, 0)),
+        cell(formatDuration(g.held_seconds)),
+        cell(formatDateTime(g.first_seen)),
+        cell(formatDateTime(g.last_seen))
+      ]);
+    });
+  }
+
   function loadWeapons() {
     loadItems().then(function () { return fetch("/api/weapons?by=" + encodeURIComponent(weaponsBy.value)); }).then(function (r) { return r.json(); }).then(function (data) {
       const who = data.character ? data.character.name + " (" + data.character.class + ")" : "no character loaded";
       document.getElementById("weapons-character").textContent = who;
-      data.weapons.forEach(function (w) { if (w.name) { itemNames[w.item_id] = w.name; } });
+      data.weapons.concat(data.grenades || []).forEach(function (w) { if (w.name) { itemNames[w.item_id] = w.name; } });
       fill(topBody, data.top.map(function (w) {
         return row([
           cell(String(w.rank), "rank"),
@@ -1545,6 +1597,7 @@
         const peak = data.sources[kind];
         return row([cell(SOURCE_LABELS[kind]), cell(peak ? formatNumber(peak, 0) : "")]);
       }));
+      fill(grenadesBody, grenadeRows(data.grenades || []));
     });
   }
 

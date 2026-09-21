@@ -58,6 +58,42 @@ class WeaponStoreTests(unittest.TestCase):
         store.add_event(hit(101.0, 30.0, kind="heal"))
         self.assertEqual(store.records, {})
 
+    def test_the_grenade_gets_a_record_of_its_own(self) -> None:
+        store = WeaponStore(self.path)
+        store.add_event(hit(100.0, 400.0, wid="277"))
+        store.add_throw("nade", "Grenade", 100.5)
+        store.add_event(hit(101.0, 3000.0, wid="nade", weapon="Grenade", body="", src="grenade"))
+        store.add_event(hit(101.0, 1000.0, wid="nade", weapon="Grenade", body="", src="grenade", kill=True))
+        store.add_throw("nade", "Grenade", 105.0)
+        store.add_held("nade", "Grenade", "", 8.0, 106.0, kind="grenade")
+        store.note_peak("nade", "Grenade", "", 4000.0, 10.0, 106.0, kind="grenade")
+        store.add_event(hit(107.0, 50.0, wid="", weapon="Grenade", body="", src="grenade"))
+        grenade = store.records["nade"]
+        self.assertEqual((grenade.kind, grenade.throws, grenade.damage, grenade.hits, grenade.kills), ("grenade", 2, 4000.0, 2, 1))
+        self.assertEqual((grenade.damage_per_throw(), grenade.dps_in_hand(), grenade.peak_dps), (2000.0, 500.0, 4000.0))
+        self.assertEqual(store.records["277"].kind, "weapon")
+        self.assertEqual(store.records["277"].damage_per_throw(), 0.0, "a gun has no throws")
+        self.assertNotIn("", store.records, "a grenade hit without an id has no record")
+        self.assertEqual([record.item_id for record in store.ranking()], ["277"], "the weapons' ranking has no grenade")
+        self.assertEqual([record.item_id for record in store.ranking("damage", "grenade")], ["nade"])
+        self.assertEqual(store.peaks(), {"nade": 4000.0}, "the peaks map has both kinds")
+        lines = store.format_grenade_ranking(names={"nade": "Cheeky Fireball"})
+        self.assertEqual(len(lines), 2)
+        self.assertIn("Cheeky Fireball nade", lines[1])
+        self.assertIn("2'000", lines[1], "the damage per throw")
+        self.assertEqual(WeaponStore(self.path).format_grenade_ranking(), [], "nothing without grenades")
+        self.assertTrue(store.save_if_due(now=200.0, force=True))
+        reloaded = WeaponStore(self.path)
+        reloaded.load()
+        self.assertEqual((reloaded.records["nade"].kind, reloaded.records["nade"].throws), ("grenade", 2))
+
+    def test_records_written_before_the_grenades_had_records_are_weapons(self) -> None:
+        self.path.write_text(json.dumps({"schema": 3, "weapons": [{"item_id": "abc", "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
+        store = WeaponStore(self.path)
+        store.load()
+        self.assertEqual((store.records["abc"].kind, store.records["abc"].throws), ("weapon", 0))
+        self.assertEqual([record.item_id for record in store.ranking()], ["abc"])
+
     def test_unknown_label_is_replaced_by_the_real_one(self) -> None:
         store = WeaponStore(self.path)
         store.add_held("5", "Unknown", "", 0.25, 100.0)
@@ -73,7 +109,7 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertFalse(store.save_if_due(now=120.0), "interval not over")
         self.assertTrue(store.save_if_due(now=120.0, force=True))
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(data["schema"], 3)
+        self.assertEqual(data["schema"], 4)
         reloaded = WeaponStore(self.path)
         reloaded.load()
         self.assertEqual(reloaded.load_error, "")
@@ -184,7 +220,7 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertEqual((store.records["abc"].peak_dps, store.records["abc"].peak_dps_at), (0.0, 0.0))
         self.assertEqual(store.peaks_dropped, 1)
         self.assertTrue(store.save_if_due(now=100.0, force=True), "the dropped peaks are written back")
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["schema"], 3)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["schema"], 4)
 
     def test_schema_1_file_is_set_aside_because_its_ids_were_unstable(self) -> None:
         self.path.write_text(json.dumps({"schema": 1, "weapons": [{"instance_id": 5, "label": "Old", "body": "", "damage": 10.0}]}), encoding="utf-8")
