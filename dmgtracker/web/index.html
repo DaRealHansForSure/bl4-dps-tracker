@@ -316,6 +316,8 @@
   const liveBody = document.querySelector("#live-table tbody");
   const feedBody = document.querySelector("#feed tbody");
   const chart = document.getElementById("chart");
+  // The chart samples, one per second from the mod while a table exists; as many as the
+  // mod keeps for a page that connects later.
   const samples = [];
   const MAX_SAMPLES = 300;
   const MAX_FEED = 50;
@@ -368,7 +370,8 @@
     } else if (data.type === "table") {
       rememberNames(data.slots, data.names);
       renderLive(data.rows);
-      recordSample(data.sample || sampleFromRows(data.rows, data.t));
+    } else if (data.type === "sample") {
+      recordSample(data.sample);
     } else if (data.type === "hits") {
       addFeed(data.events);
     } else if (data.type === "character") {
@@ -425,29 +428,6 @@
     fill(liveBody, trs);
   }
 
-  // The same sample the server builds, for a mod that does not send one yet (an older
-  // build still running in the game while the page was updated).
-  function sampleFromRows(rows, t) {
-    const sources = [];
-    let windowRow = null;
-    rows.forEach(function (r, position) {
-      if (r.cells.length < 3) {
-        return;
-      }
-      const label = String(r.cells[0]);
-      if (r.style === "total" && label.indexOf("Last ") === 0) {
-        windowRow = r;
-      } else if ((r.style === "row" || r.style === "active") && label !== "-") {
-        const slot = position >= 1 && position <= WEAPON_SLOTS ? position - 1 : -1;
-        sources.push({ key: slot >= 0 ? "slot" + slot + ":" + label : label, label: label, slot: slot, dps: parseSwiss(r.cells[2]) });
-      }
-    });
-    if (!windowRow) {
-      return null;
-    }
-    return { t: t, dps: parseSwiss(windowRow.cells[2]), total: parseSwiss(windowRow.cells[1]), sources: sources };
-  }
-
   function recordSample(sample) {
     if (!sample) {
       return;
@@ -459,12 +439,11 @@
     drawChart();
   }
 
-  // The chart: one sample per table update while fighting, x by sample (a combat timeline
-  // whose labels show the real clock), y by DPS. It shows what is happening now: the damage
-  // per second of the last chartSeconds, the sources stacked as bands under the yellow total
-  // line, and the table's window average as a dashed line for reference. A tooltip lists
-  // them for the hovered sample. A mod that sends no "now" (an older build) falls back to
-  // the window values.
+  // The chart: one sample per second, x by sample (a timeline whose labels show the real
+  // clock), y by DPS. It shows what is happening now: the damage per second of the last
+  // chartSeconds, which keeps falling after the last hit, the sources stacked as bands
+  // under the yellow total line, and the table's window average as a dashed line for
+  // reference. A tooltip lists them for the hovered sample.
   let chartSeconds = 30;
   let windowMinutes = 5;
   const AVERAGE_COLOR = "#9aa3ad";

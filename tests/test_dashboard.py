@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -32,6 +33,29 @@ def fetch(url: str) -> tuple[int, dict[str, str], bytes]:
 def fetch_json(url: str) -> tuple[int, dict]:
     status, _headers, body = fetch(url)
     return status, json.loads(body.decode("utf-8"))
+
+
+def recv_typed(client, expected: str) -> dict:
+    """The next message of the expected type; the chart samples that arrive on their own
+    every second are skipped, anything else is a failure."""
+    for _attempt in range(20):
+        message = json.loads(client.recv(RECV_TIMEOUT_S))
+        if message["type"] == expected:
+            return message
+        if message["type"] != "sample":
+            raise AssertionError(f"expected a {expected} message, got {message['type']}")
+    raise AssertionError(f"no {expected} message among the last 20")
+
+
+def wait_for_sample(dashboard: Dashboard, dps: float) -> None:
+    """Until the broadcaster took the sample of a table just published (it samples once a
+    second, on its own thread)."""
+    for _attempt in range(60):
+        history = list(dashboard._history)
+        if history and history[-1]["dps"] == dps:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"no sample with DPS {dps} within 3 s")
 
 
 class DashboardTests(unittest.TestCase):
@@ -113,30 +137,33 @@ class DashboardTests(unittest.TestCase):
             table = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(table["type"], "table")
             self.assertEqual(table["rows"][:2], [{"cells": ["Weapon", "Total"], "style": "header"}, {"cells": ["Jakobs Sniper", "1'000", "250", "100.0"], "style": "active"}])
-            self.assertEqual((table["sample"]["dps"], table["sample"]["total"]), (12345.6, 1000.0))
             self.assertEqual((table["slots"], table["names"]), (["seed277"], {"seed277": "Hunted Kettled Rangefinder"}))
+            sample = json.loads(client.recv(RECV_TIMEOUT_S))
+            self.assertEqual(sample["type"], "sample", "the first chart sample follows the first table at once")
+            self.assertEqual((sample["sample"]["dps"], sample["sample"]["total"]), (12345.6, 1000.0))
             self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder", "other": "Lionized Parasite"})
-            self.assertEqual(json.loads(client.recv(RECV_TIMEOUT_S))["names"]["other"], "Lionized Parasite", "a new name alone is a change")
+            self.assertEqual(recv_typed(client, "table")["names"]["other"], "Lionized Parasite", "a new name alone is a change")
             self.dashboard.publish_hits([hit(6.0, 42.0)])
-            hits = json.loads(client.recv(RECV_TIMEOUT_S))
-            self.assertEqual((hits["type"], len(hits["events"]), hits["events"][0]["dmg"]), ("hits", 1, 42.0))
+            hits = recv_typed(client, "hits")
+            self.assertEqual((len(hits["events"]), hits["events"][0]["dmg"]), (1, 42.0))
             self.dashboard.publish_character({"key": "x", "class": "Char_DarkSiren", "name": "DarkSiren"})
-            character = json.loads(client.recv(RECV_TIMEOUT_S))
-            self.assertEqual((character["type"], character["character"]["name"]), ("character", "DarkSiren"))
+            character = recv_typed(client, "character")
+            self.assertEqual(character["character"]["name"], "DarkSiren")
             self.assertEqual(self.dashboard.client_count(), 1)
             with connect(self.url.replace("http://", "ws://") + "ws") as second:
                 second_hello = json.loads(second.recv(RECV_TIMEOUT_S))
                 self.assertEqual(second_hello["rows"][1]["cells"][0], "Jakobs Sniper", "a new client gets the latest table at once")
                 self.assertEqual((second_hello["slots"], second_hello["names"]["seed277"]), (["seed277"], "Hunted Kettled Rangefinder"))
-                self.assertEqual(second_hello["history"], [], "the character switch above emptied the chart history")
+                self.assertNotIn(12345.6, [sample["dps"] for sample in second_hello["history"]], "the character switch above emptied the chart history")
             empty_slots = [TableRow(("-", "0", "0", "0.0"), "row")] * 3
             self.dashboard.publish_rows(rows[:2] + empty_slots + [TableRow(("Skill", "300", "40", "15.0"), "row"), TableRow(("Last 5 min", "2'000", "500", "100.0"), "total")], ["seed277"])
+            wait_for_sample(self.dashboard, 500.0)
             with connect(self.url.replace("http://", "ws://") + "ws") as third:
                 history = json.loads(third.recv(RECV_TIMEOUT_S))["history"]
-                self.assertEqual([(sample["dps"], sample["total"]) for sample in history], [(500.0, 2000.0)])
-                self.assertGreater(history[0]["t"], 0)
+                self.assertEqual((history[-1]["dps"], history[-1]["total"]), (500.0, 2000.0))
+                self.assertGreater(history[-1]["t"], 0)
                 self.assertEqual(
-                    history[0]["sources"],
+                    history[-1]["sources"],
                     [
                         {"key": "slot0:Jakobs Sniper", "label": "Jakobs Sniper", "slot": 0, "item": "seed277", "dps": 250.0, "now": ZERO_NOW},
                         {"key": "Skill", "label": "Skill", "slot": -1, "item": "", "dps": 40.0, "now": ZERO_NOW},
@@ -164,6 +191,7 @@ class DashboardTests(unittest.TestCase):
             TableRow(("Last 5 min", "2'000", "25", "100.0"), "total"),
         ]
         self.dashboard.publish_rows(rows, ["seed277"])
+        wait_for_sample(self.dashboard, 25.0)
         with connect(self.url.replace("http://", "ws://") + "ws") as client:
             hello = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(hello["chart_seconds"], 30.0)
