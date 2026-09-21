@@ -123,11 +123,30 @@ committed and not guard pages: a read that touches a guard page disarms it, and 
 whose stack it guarded crashes later. The scan pauses every 8 MB; the game thread only ever
 reads remembered addresses.
 
-Not covered: backpack items (no actor, not needed for damage) and the thumbnails. The
-card's render target could be exported with `KismetRenderingLibrary.ExportRenderTarget`
-(the `OakThumbnailManager` keeps them in `RenderedThumbnails`, a map pyunrealsdk cannot
-read but whose raw elements are `{key 8 bytes, UTextureRenderTarget2D*, hash links}`, key
-not yet understood); that is a feature for later.
+## Gadgets
+
+The grenade, the shield, the class mod, the repair kit and the enhancement sit in the
+same slot array as the guns (`EquippedInventorySlots`, `attribution.equipped_gadgets`) and
+have item ids the same way. Only the inventory list names them (they have no item card),
+so the mod asks the reader for them (`names_of_items`) only once a menu with the cursor
+has been open in the session, which is when the list first exists; a list-only scan (no
+node search) finds it, 3 s live. The equipped grenade's item id is handed to the poller
+(`set_grenade`), so grenade hits carry it (`wid`) and the dashboard names the Grenade row
+and the grenade's hits like a gun's. Pictures are exported for gadgets the same way.
+
+## Thumbnails
+
+The card's render target (`OakInventoryThumbnail_...`, 512 x 256, RGBA16f) is exported
+with `KismetRenderingLibrary.ExportRenderTarget`, which writes an OpenEXR (ZIP, half
+floats); `dmgtracker/thumbnails.py` decodes it with the standard library into
+`BL4DamageTracker	humbnails\<item id>.png`. The export flushes the renderer (10 ms), so
+it runs only while a menu with the cursor is open, one item per refresh; the conversion
+runs on the writer thread and yields every scanline. The `OakThumbnailManager` keeps the
+targets in `RenderedThumbnails`, a `TMap` pyunrealsdk cannot read; its raw elements are
+`{key 8 bytes, UTextureRenderTarget2D*, hash links}` with a key that is neither the
+instance id nor the seed (not needed: the card names the target).
+
+Not covered: backpack items (no actor, not needed for damage).
 
 ## Tools
 
