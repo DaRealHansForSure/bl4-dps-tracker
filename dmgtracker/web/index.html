@@ -98,6 +98,14 @@
   #item-card img { display: block; width: 320px; height: 160px; object-fit: contain; }
   #item-card .name { font-weight: 600; font-size: 14px; margin-top: 6px; }
   #item-card .code { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 4px; }
+  #item-card .line { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  /* A rarity as a badge keeps its colour as text on a tinted ground, not the gradient. */
+  .badge.rarity-badge { background: rgba(255, 255, 255, 0.08); -webkit-background-clip: border-box; background-clip: border-box; -webkit-text-fill-color: currentcolor; text-shadow: none; }
+  .badge.rarity-badge.rarity-pearl { color: #6fe8dc; background: rgba(111, 232, 220, 0.14); }
+  .badge.rarity-badge.rarity-legendary { background: rgba(255, 176, 46, 0.14); }
+  .badge.rarity-badge.rarity-epic { background: rgba(178, 92, 255, 0.14); }
+  .badge.rarity-badge.rarity-rare { background: rgba(74, 143, 255, 0.14); }
+  .badge.rarity-badge.rarity-uncommon { background: rgba(79, 211, 90, 0.14); }
   /* Rarity colours as the game shows them; legendary glows orange, pearlescent shimmers
      cyan to violet like the pearl frame of the weapon wheel. */
   .rarity-common { color: #d0d3d8; }
@@ -510,14 +518,18 @@
     return elementNames[String(elem)] || String(elem);
   }
 
+  function badge(text, className) {
+    const span = document.createElement("span");
+    span.className = "badge " + (className || "");
+    span.textContent = text;
+    return span;
+  }
+
   // A cell holding one badge (blank when there is nothing to say), tinted by a class.
   function badgeCell(text, className) {
     const td = cell("");
     if (text) {
-      const badge = document.createElement("span");
-      badge.className = "badge " + (className || "");
-      badge.textContent = text;
-      td.appendChild(badge);
+      td.appendChild(badge(text, className));
     }
     return td;
   }
@@ -627,11 +639,20 @@
     const name = itemCard.querySelector(".name");
     name.textContent = itemNames[itemId] || info.name || info.label || shortId(itemId);
     name.className = "name " + (info.rarity ? "rarity-" + info.rarity : "");
-    const parts = [];
-    if (info.label) { parts.push(info.label); }
-    if (info.rarity) { parts.push(info.rarity); }
-    if (info.element && info.element !== "noelement") { parts.push(info.element); }
-    itemCard.querySelector(".line").textContent = parts.join("  ");
+    const line = itemCard.querySelector(".line");
+    line.textContent = "";
+    // Type, rarity and element as badges, tinted like everywhere else on the page; a gun
+    // without an element says so.
+    if (info.label) {
+      line.appendChild(badge(info.label, typeClass(info.label)));
+    }
+    if (info.rarity) {
+      line.appendChild(badge(info.rarity, "rarity-badge rarity-" + info.rarity));
+    }
+    if (info.element) {
+      const none = info.element === "noelement";
+      line.appendChild(badge(none ? "no element" : info.element, none ? "" : elementClass(info.element)));
+    }
     itemCard.querySelector(".damage").textContent = info.damage ? "Card damage " + info.damage : "";
     itemCard.querySelector(".code").textContent = info.serial ? info.serial : shortId(itemId);
   }
