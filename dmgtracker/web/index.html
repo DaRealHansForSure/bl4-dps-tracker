@@ -107,6 +107,21 @@
   img.thumb { width: 64px; height: 32px; object-fit: contain; vertical-align: middle; display: block; }
   td.thumb-cell { width: 68px; padding-top: 2px; padding-bottom: 2px; }
   tr.group-header td { color: var(--muted); font-weight: 600; padding-top: 10px; }
+  /* The chart's legend: an HTML row above the canvas, each entry a switch for its line. */
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 0 6px; font-size: 12px; color: var(--muted); }
+  .legend .entry { cursor: pointer; user-select: none; white-space: nowrap; }
+  .legend .entry:hover { color: var(--text); }
+  .legend .entry.off { opacity: 0.45; text-decoration: line-through; }
+  .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 4px; margin-right: 5px; }
+  /* The manufacturer-and-type label of a gun as a badge, tinted by the gun's type. */
+  .badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 11px; line-height: 17px; font-weight: 600;
+    background: rgba(255, 255, 255, 0.08); color: var(--muted); margin-top: 2px; }
+  .badge.type-pistol { color: #9ecbff; background: rgba(158, 203, 255, 0.14); }
+  .badge.type-smg { color: #e6a7ff; background: rgba(230, 167, 255, 0.14); }
+  .badge.type-shotgun { color: #ffb37a; background: rgba(255, 179, 122, 0.14); }
+  .badge.type-assault { color: #b8f28b; background: rgba(184, 242, 139, 0.14); }
+  .badge.type-sniper { color: #7fe3ff; background: rgba(127, 227, 255, 0.14); }
+  .badge.type-heavy { color: #ff8a8a; background: rgba(255, 138, 138, 0.14); }
   /* The chart's tooltip lives on the body, so the panel's edge cannot cut it off. */
   #chart-tooltip { position: fixed; display: none; padding: 6px 8px; font-size: 12px; line-height: 16px;
     background: rgba(20, 22, 26, 0.95); border: 1px solid #2f343d; border-radius: 6px; color: #e8e8e8;
@@ -155,7 +170,8 @@
         <table id="live-table"><tbody></tbody></table>
       </div>
       <div class="card chart">
-        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the table's DPS</span></h2>
+        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the table's DPS; click a name to hide or show it</span></h2>
+        <div id="chart-legend" class="legend"></div>
         <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
@@ -644,7 +660,7 @@
   function sourceNowOf(source) {
     return pickNow(source.now, source.dps);
   }
-  const CHART_MARGIN = { left: 8, right: 8, top: 34, bottom: 22 };
+  const CHART_MARGIN = { left: 8, right: 8, top: 14, bottom: 22 };
   const TIME_LABELS = 5;
   const LABEL_GAP = 12;
   const GRID_STEPS = 3;
@@ -739,25 +755,32 @@
       context.fillText("waiting for a fight", geometry.left, geometry.top);
       return;
     }
-    const series = chartSeries();
+    const allSeries = chartSeries();
+    renderLegend(allSeries);
+    const series = allSeries.filter(function (line) { return !hiddenLines.has(line.key); });
+    const showNow = !hiddenLines.has(NOW_KEY);
+    const showTable = !hiddenLines.has(TABLE_KEY);
     const totals = samples.map(nowOf);
     const averages = samples.map(function (sample) { return sample.dps; });
     stackSeries(series);
-    let peak = Math.max(Math.max.apply(null, totals), Math.max.apply(null, averages));
+    let peak = Math.max(showNow ? Math.max.apply(null, totals) : 0, showTable ? Math.max.apply(null, averages) : 0);
     series.forEach(function (line) { peak = Math.max(peak, line.stackPeak); });
     const max = peak || 1;
     drawFights(context, geometry);
     drawGridLines(context, geometry, max);
     drawTimeLabels(context, geometry);
     series.forEach(function (line) { drawBand(context, geometry, line, max); });
-    context.setLineDash([4, 4]);
-    drawLine(context, geometry, averages, max, AVERAGE_COLOR, 1.5);
-    context.setLineDash([]);
-    drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
+    if (showTable) {
+      context.setLineDash([4, 4]);
+      drawLine(context, geometry, averages, max, AVERAGE_COLOR, 1.5);
+      context.setLineDash([]);
+    }
+    if (showNow) {
+      drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
+    }
     if (peak > 0) {
       drawValueLabels(context, geometry, max);
     }
-    drawLegend(context, geometry, series);
     if (hoverIndex >= 0 && hoverIndex < samples.length) {
       drawTooltip(context, geometry, hoverIndex, max, series);
     }
@@ -817,28 +840,43 @@
     return (series.itemId && itemNames[series.itemId]) || series.label;
   }
 
-  function drawLegend(context, geometry, series) {
-    // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
-    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: "Table", color: AVERAGE_COLOR }].concat(
-      series.map(function (line) { return { label: seriesLabel(line), color: line.color }; })
+  // The legend above the canvas: one entry per line, a click hides or shows it. The
+  // entries are rebuilt only when the set of lines changes, so a click never lands on a
+  // freshly replaced element.
+  const chartLegend = document.getElementById("chart-legend");
+  const NOW_KEY = "now";
+  const TABLE_KEY = "table";
+  const hiddenLines = new Set();
+  let legendSignature = "";
+
+  function renderLegend(series) {
+    const entries = [{ key: NOW_KEY, label: "Now", color: TOTAL_COLOR }, { key: TABLE_KEY, label: "Table", color: AVERAGE_COLOR }].concat(
+      series.map(function (line) { return { key: line.key, label: seriesLabel(line), color: line.color }; })
     );
-    context.font = "11px sans-serif";
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    const y = 10;
-    let x = geometry.left;
+    const signature = entries.map(function (entry) { return entry.key + "=" + entry.label; }).join("|");
+    if (signature === legendSignature) {
+      return;
+    }
+    legendSignature = signature;
+    chartLegend.textContent = "";
     entries.forEach(function (entry) {
-      const width = context.measureText(entry.label).width + 20;
-      if (x + width > geometry.right) {
-        return;
-      }
-      context.fillStyle = entry.color;
-      context.beginPath();
-      context.arc(x + 5, y, 4, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#9aa3ad";
-      context.fillText(entry.label, x + 13, y);
-      x += width;
+      const span = document.createElement("span");
+      span.className = "entry" + (hiddenLines.has(entry.key) ? " off" : "");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = entry.color;
+      span.appendChild(dot);
+      span.appendChild(document.createTextNode(entry.label));
+      span.addEventListener("click", function () {
+        if (hiddenLines.has(entry.key)) {
+          hiddenLines.delete(entry.key);
+        } else {
+          hiddenLines.add(entry.key);
+        }
+        span.classList.toggle("off", hiddenLines.has(entry.key));
+        drawChart();
+      });
+      chartLegend.appendChild(span);
     });
   }
 
@@ -1150,13 +1188,27 @@
   const SOURCE_LABELS = { skill: "Skill", grenade: "Grenade", melee: "Melee" };
 
   // Item name with the type label under it; the type label alone until the name is known.
+  // The gun's type from its manufacturer-and-type label, for the badge's tint.
+  function typeClass(label) {
+    const text = String(label || "").toLowerCase();
+    const types = ["pistol", "smg", "shotgun", "assault", "sniper", "heavy"];
+    for (let index = 0; index < types.length; index++) {
+      if (text.indexOf(types[index]) >= 0) {
+        return "type-" + types[index];
+      }
+    }
+    return "";
+  }
+
   function weaponNameCell(w) {
     const td = cell(w.name || w.label);
     if (w.name) {
       td.className = rarityClass(w.item_id);
       const label = document.createElement("div");
-      label.className = "muted";
-      label.textContent = w.label;
+      const badge = document.createElement("span");
+      badge.className = "badge " + typeClass(w.label);
+      badge.textContent = w.label;
+      label.appendChild(badge);
       td.appendChild(label);
     }
     if (w.item_id) {
