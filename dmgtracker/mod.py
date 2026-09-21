@@ -206,6 +206,9 @@ _thumbnails_tried: set[str] = set()
 _thumbnail_conversions: list[tuple[str, Path, Path]] = []
 _thumbnail_errors = 0
 _element_names_cache: dict[int, str] | None = None
+# Whether a menu with the cursor has been open this session: the inventory list, which
+# alone names the gadgets, exists only from the first inventory screen on.
+_menu_seen = False
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -421,8 +424,9 @@ def _item_info(name: str, label: str, card: ItemCard | None, now: float) -> Item
 
 
 def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
-    """The equipped gadgets (the grenade, say) have item ids like the guns and the
-    inventory list names them; no scan is started for them, they come along with it."""
+    """The equipped gadgets (the grenade, say) have item ids like the guns, and the
+    inventory list names them, so they are asked for only once a menu has been open
+    this session (before that a scan for the list finds nothing)."""
     global _gadget_ids
     if name_reader is None or name_store is None:
         return
@@ -433,7 +437,7 @@ def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
         seed = seed_of(item_id)
         if seed is not None and (not name_store.name_for(item_id) or _thumbnail_wanted(item_id)):
             unnamed[seed] = (item_id, label)
-    if not unnamed:
+    if not unnamed or not _menu_seen:
         return
     for seed, name in name_reader.names_of_items(list(unnamed)).items():
         item_id, label = unnamed[seed]
@@ -485,8 +489,11 @@ def _queue_thumbnail(item_id: str, label: str, card: ItemCard | None) -> None:
 def _export_thumbnail_if_in_menu(controller: UObject) -> None:
     """One export per refresh while a menu with the cursor is open: the engine's export
     flushes the renderer, which must never cost a frame of play."""
-    global _thumbnail_errors
-    if not _thumbnail_exports or _thumbnails_dir is None or not controller.bShowMouseCursor:
+    global _thumbnail_errors, _menu_seen
+    if not controller.bShowMouseCursor:
+        return
+    _menu_seen = True
+    if not _thumbnail_exports or _thumbnails_dir is None:
         return
     item_id, (path, label) = next(iter(_thumbnail_exports.items()))
     del _thumbnail_exports[item_id]
@@ -990,7 +997,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir
+    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
@@ -1006,6 +1013,7 @@ def on_enable() -> None:
     _thumbnail_exports.clear()
     _thumbnails_tried.clear()
     _thumbnail_conversions.clear()
+    _menu_seen = False
     _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
