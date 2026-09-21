@@ -75,6 +75,11 @@ LIST_REREAD_INTERVAL_S = 5.0
 # time: the first scan of a session often runs before the UI has built its models.
 SCAN_RETRY_FIRST_S = 15.0
 SCAN_RETRY_MAX_S = 600.0
+# The scan reads the regions around the last model it found first (a 1 GB window), or,
+# knowing none, the address band the UI's allocator used in every session seen so far
+# (0x31.. to 0x34..); the rest of the heaps follows, so the order only changes the time.
+SCAN_HINT_RADIUS = 512 * 1024 * 1024
+DEFAULT_SCAN_BAND = (0x300000000, 0x380000000)
 MEM_COMMIT = 0x1000
 MEM_PRIVATE = 0x20000
 PAGE_NOACCESS = 0x01
@@ -328,9 +333,11 @@ class ItemNameReader:
         self._list_address: int | None = None
         self._last_list_read = 0.0
         self._scan: threading.Thread | None = None
+        self._scan_hint: int | None = None
         self._next_scan_at = 0.0
         self._retry_s = SCAN_RETRY_FIRST_S
         self.scans = 0
+        self.last_scan_s = 0.0
         self.last_error = ""
 
     # ------------------------------------------------------------------ game thread
@@ -429,11 +436,13 @@ class ItemNameReader:
 
     def _scan_in_background(self, seed: bytes) -> None:
         self.scans += 1
+        started = time.perf_counter()
         try:
             found = self._scan_for(seed)
         except Exception as ex:  # noqa: BLE001 - a scan that fails is a scan that found nothing
             self.last_error = f"{type(ex).__name__}: {ex}"
             found = False
+        self.last_scan_s = time.perf_counter() - started
         if found:
             self._retry_s = SCAN_RETRY_FIRST_S
             return
@@ -445,7 +454,7 @@ class ItemNameReader:
         cards near it) and as an inventory record. True once the seed has a name or its
         slot record and cards were found (the name follows with the confirming read)."""
         since_rest = 0
-        for base, size in self._regions():
+        for base, size in self._scan_order(list(self._regions())):
             for chunk_start in range(base, base + size, SCAN_CHUNK_BYTES):
                 chunk = self._read(chunk_start, min(SCAN_CHUNK_BYTES + SCAN_OVERLAP_BYTES, base + size - chunk_start))
                 if chunk is None:
@@ -462,6 +471,17 @@ class ItemNameReader:
         self.last_error = f"no UI model holds the seed {seed.hex()[:6]}"
         return False
 
+    def _scan_order(self, regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """The regions near the last found model (or in the default band) first, the rest
+        after them, each part in address order."""
+        if self._scan_hint is not None:
+            low, high = self._scan_hint - SCAN_HINT_RADIUS, self._scan_hint + SCAN_HINT_RADIUS
+        else:
+            low, high = DEFAULT_SCAN_BAND
+        near = [region for region in regions if region[0] < high and region[0] + region[1] > low]
+        far = [region for region in regions if not (region[0] < high and region[0] + region[1] > low)]
+        return near + far
+
     def _learn_around(self, hit: int, seed: bytes) -> bool:
         """One hit of the seed: an inventory record gives the name at once, a slot record
         gives the models to confirm on the next read."""
@@ -469,6 +489,7 @@ class ItemNameReader:
         if self._list_record_at(list_record) is not None:
             list_address = self._list_start(list_record)
             self._list_address = list_address
+            self._scan_hint = list_address
             self._last_list_read = self._clock()
             self._learn_from_list(list_address)
             if seed in self._names:
@@ -482,6 +503,7 @@ class ItemNameReader:
             return False
         models = EquippedModels(slots_address, cards_address)
         self._models = models
+        self._scan_hint = slots_address
         return self._learn_from_models(models) and seed in self._last_pairs
 
     def _cards_near(self, slots_address: int, slots: list[SlotRecord]) -> int | None:

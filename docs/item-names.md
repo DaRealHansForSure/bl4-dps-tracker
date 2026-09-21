@@ -75,6 +75,10 @@ So `dmgtracker/itemnames.py` finds them by content, on a thread of its own:
    read-write region (7.3 GB, 52k regions) for those twelve bytes takes 8 s once the read
    buffer is copied by its read length (`ctypes.string_at(buffer, got)`); copying an 8 MB
    `buffer.raw` for each of 45k tiny regions is what made earlier scans take minutes.
+   The regions within 512 MB of the last model found come first, or, knowing none, the
+   band 0x300000000-0x380000000 where the UI's allocator put the models in every session
+   seen (headers and lists at 0x31.., 0x32.., 0x33..); the rest follows, so a scan that
+   finds the models early ends early and a wrong guess only costs the order.
 2. Every hit is tried as an inventory record (seed at +632: name at once) and as a slot
    record (seed at +248). The slot records and the item cards are allocated by the same
    system at the same time and lie in one heap block (adjacent in session 1, 9 KB apart in

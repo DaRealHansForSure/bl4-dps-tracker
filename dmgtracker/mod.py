@@ -1038,7 +1038,7 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         identity_state += f", last error: {identity_reader.last_error}"
     logging.info(f"{LOG_PREFIX} item identity: {identity_state}")
     if name_reader is not None:
-        names_state = f"{name_reader.known} known from the UI models, {name_reader.scans} scan(s)"
+        names_state = f"{name_reader.known} known from the UI models, {name_reader.scans} scan(s), last {format_number(name_reader.last_scan_s, 1)} s"
         if name_reader.discovering:
             names_state += ", scanning"
         if name_reader.last_error:

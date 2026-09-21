@@ -287,6 +287,14 @@ class ItemNameReaderTest(unittest.TestCase):
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.names_after_scan(SEEDS), {})
 
+    def test_the_scan_reads_the_default_band_first_and_the_last_find_after_that(self) -> None:
+        band_low, band_high = itemnames.DEFAULT_SCAN_BAND
+        regions = [(0x400000, 0x1000), (band_low + 0x1000, 0x1000), (band_high + 0x1000, 0x1000), (band_low - 0x800, 0x1000)]
+        harness = ReaderHarness(self.memory)
+        self.assertEqual(harness.reader._scan_order(regions), [(band_low + 0x1000, 0x1000), (band_low - 0x800, 0x1000), (0x400000, 0x1000), (band_high + 0x1000, 0x1000)])
+        harness.reader._scan_hint = 0x400000
+        self.assertEqual(harness.reader._scan_order(regions)[0], (0x400000, 0x1000))
+
     def test_seeds_of_the_wrong_length_are_ignored(self) -> None:
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.reader.names_for([b"short"]), {})
