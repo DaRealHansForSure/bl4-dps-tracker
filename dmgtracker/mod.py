@@ -22,7 +22,7 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
+from .attribution import GRENADE_LABEL, SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
 from .character import CharacterIdentity, read_identity
 from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
@@ -435,6 +435,8 @@ def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
         return
     gadgets = resolver.equipped_gadgets(pawn, identity_reader.item_id)
     _gadget_ids = {label: item_id for item_id, label in gadgets.items()}
+    if poller is not None and GRENADE_LABEL in _gadget_ids:
+        poller.set_grenade(_gadget_ids[GRENADE_LABEL])
     unnamed: dict[bytes, tuple[str, str]] = {}
     for item_id, label in gadgets.items():
         seed = seed_of(item_id)

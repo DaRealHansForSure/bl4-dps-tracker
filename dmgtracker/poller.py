@@ -151,6 +151,9 @@ class DamagePoller:
         self._explosions: deque[tuple[float, DamageSource]] = deque()
         self._pending: list[tuple[float, dict[str, Any]]] = []
         self._grenade_until = 0.0
+        # The grenade as a damage source: GRENADE_SOURCE until the equipped grenade's item
+        # id is known, then the same with that id, so its hits can be named.
+        self.grenade_source = GRENADE_SOURCE
         self._melee_until = 0.0
         self._skill_until = 0.0
         self._last_grenade_action = 0.0
@@ -179,7 +182,13 @@ class DamagePoller:
         self._last_grenade_action = now
 
     def note_grenade_exploded(self, now: float) -> None:
-        self.note_explosion(now, GRENADE_SOURCE)
+        self.note_explosion(now, self.grenade_source)
+
+    def set_grenade(self, item_id: str) -> None:
+        """The equipped grenade's item id: its hits carry it, so the dashboard can name
+        the grenade like a gun."""
+        if item_id != self.grenade_source.item_id:
+            self.grenade_source = DamageSource(GRENADE_SOURCE.kind, GRENADE_SOURCE.label, GRENADE_SOURCE.body, item_id)
 
     def note_melee_swing(self, now: float) -> None:
         self._melee_until = now + MELEE_WINDOW_S
@@ -392,7 +401,7 @@ class DamagePoller:
         if now < self._skill_until:
             return SKILL_SOURCE
         if now < self._grenade_until:
-            return GRENADE_SOURCE
+            return self.grenade_source
         return OTHER_SOURCE
 
     def _flagged_source(self, target_name: str, pawn: Any, now: float) -> DamageSource:
