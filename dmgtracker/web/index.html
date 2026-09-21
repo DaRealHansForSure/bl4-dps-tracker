@@ -81,7 +81,10 @@
   td.crit { color: var(--accent); }
   td.kill { color: var(--good); }
   .card.chart { display: flex; flex-direction: column; }
-  canvas { flex: 1; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
+  /* The canvas must not size its own box: its drawing buffer is set from its laid-out
+     size times the device pixel ratio, and a box that followed that buffer would grow on
+     every draw. A flex basis of zero with an explicit minimum keeps the box the card's. */
+  canvas { flex: 1 1 0; height: 0; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
   .muted { color: var(--muted); }
   .item-id { font-size: 0.85em; }
   .has-thumbnail { cursor: help; }
@@ -647,6 +650,10 @@
   }
 
   function drawChart() {
+    if (chart.offsetParent === null) {
+      // The Live tab is hidden: no box to draw into; the tab draws when it shows again.
+      return;
+    }
     const geometry = chartGeometry();
     const context = chart.getContext("2d");
     context.setTransform(geometry.ratio, 0, 0, geometry.ratio, 0, 0);
