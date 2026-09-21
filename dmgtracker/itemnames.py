@@ -12,15 +12,16 @@ weapons, one record per weapon slot in slot order (poc/probe_names25-30, 2026-09
 A record (BuildLayout.record_bytes long) holds, as FStrings, the slot type ("weapon"), the name
 (with a trailing space), the thumbnail path, the element, the damage text, the item serial
 ("@Ug...") and the rarity. The records array's header {data, num, max} lies in a 64-byte
-node of the UI model pool. The pool is found through two native pointers of the build
-(BuildLayout, keyed by the game's changelist): the game instance's UI pointer and, inside
-that, the UI model table; the records array is then found by content within that pool's
-memory region, so a shifted allocation still resolves, and a changed game build fails the
-validation instead of reading nonsense.
+node that the UI allocates from the same heap block, at the same time, as the small UI
+object the game instance points at (one native offset of the build, BuildLayout, keyed by
+the game's changelist): in two sessions the node was 2.3 KB and 5 KB from that object. The
+header is found by content in widening windows around it, so a shifted allocation still
+resolves, and a changed game build fails the validation instead of reading nonsense.
 
 Safety: every read goes through ReadProcessMemory, which fails on unmapped pages instead
-of faulting; nothing here calls into the game; the discovery scan is bounded; failures
-turn the feature off for a while and log once. No SDK imports: the addresses come from the
+of faulting; nothing here calls into the game; the discovery scan is bounded and runs on
+its own thread, so the game thread only ever reads a known array; failures turn the
+feature off for a while and log once. No SDK imports: the addresses come from the
 caller and the tests use fake memory.
 """
 
@@ -28,6 +29,8 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wintypes
+import threading
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -38,25 +41,26 @@ MAX_NAME_CHARS = 120
 MAX_FIELD_CHARS = 200
 POINTER_MIN = 0x10000
 POINTER_MAX = 0x7FFFFFFFFFFF
-# Half-widths of the windows around the model table, widened one after the other.
+# Half-widths of the windows around the anchor, widened one after the other; the chunks
+# are single pages so an unreadable one costs nothing.
 SCAN_WINDOWS_BYTES = (64 * 1024, 1024 * 1024, 8 * 1024 * 1024)
-SCAN_CHUNK_BYTES = 1024 * 1024
-MEM_COMMIT = 0x1000
+SCAN_CHUNK_BYTES = 4096
+# A scan that found nothing rests this long before the next one.
+DISCOVERY_RETRY_S = 15.0
 
+# (address, size) -> the readable bytes there: all, a shorter prefix, or None.
 MemoryReader = Callable[[int, int], "bytes | None"]
-RegionReader = Callable[[int], "tuple[int, int] | None"]
 
 
 @dataclass(frozen=True)
 class BuildLayout:
-    """The native offsets of one game build: the UI system pointer inside OakGameInstance,
-    the model table array inside that, and the item card record with its FString fields.
-    Found with poc/probe_names15, 25-30; keyed by the changelist of
-    KismetSystemLibrary.GetBuildVersion() ("Oak2-Win64-4845623-CL-4845623")."""
+    """The native offsets of one game build: the UI object pointer inside OakGameInstance
+    and the item card record with its FString fields. Found with poc/probe_names15,
+    25-32; keyed by the changelist of KismetSystemLibrary.GetBuildVersion()
+    ("Oak2-Win64-4845623-CL-4845623")."""
 
     changelist: str
     game_instance_ui_offset: int
-    ui_model_table_offset: int
     record_bytes: int
     slot_offset: int
     name_offset: int
@@ -67,7 +71,7 @@ class BuildLayout:
 
 
 KNOWN_LAYOUTS: dict[str, BuildLayout] = {
-    "4845623": BuildLayout("4845623", 704, 1176, 280, 8, 32, 136, 168, 224, 248),
+    "4845623": BuildLayout("4845623", 704, 280, 8, 32, 136, 168, 224, 248),
 }
 LATEST_LAYOUT = KNOWN_LAYOUTS["4845623"]
 CHANGELIST_MARKER = "-CL-"
@@ -109,7 +113,7 @@ class ItemCard:
 
 
 class _Kernel:
-    """The two Windows calls the reader needs, bound once."""
+    """ReadProcessMemory on the own process, bound once."""
 
     def __init__(self) -> None:
         self.kernel32 = ctypes.WinDLL("kernel32")
@@ -118,42 +122,19 @@ class _Kernel:
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)
         )
         self.kernel32.ReadProcessMemory.restype = wintypes.BOOL
-        self.kernel32.VirtualQuery.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t)
-        self.kernel32.VirtualQuery.restype = ctypes.c_size_t
         self.process = self.kernel32.GetCurrentProcess()
 
     def read(self, address: int, size: int) -> bytes | None:
-        """The bytes at address, or None when any of them is not readable."""
+        """The readable bytes at address: all of them, a shorter prefix when the range runs
+        into an unmapped page, None when not even the first byte is readable."""
         if address < POINTER_MIN or address > POINTER_MAX or size <= 0:
             return None
         buffer = ctypes.create_string_buffer(size)
         got = ctypes.c_size_t(0)
         ok = self.kernel32.ReadProcessMemory(self.process, ctypes.c_void_p(address), buffer, size, ctypes.byref(got))
-        if not ok or got.value != size:
+        if (not ok and got.value == 0) or got.value == 0:
             return None
-        return buffer.raw
-
-    def region(self, address: int) -> tuple[int, int] | None:
-        """(base, size) of the committed memory region holding address, or None."""
-        info = _MemoryBasicInformation()
-        if self.kernel32.VirtualQuery(ctypes.c_void_p(address), ctypes.byref(info), ctypes.sizeof(info)) == 0:
-            return None
-        if info.State != MEM_COMMIT:
-            return None
-        return (info.BaseAddress or 0, int(info.RegionSize))
-
-
-class _MemoryBasicInformation(ctypes.Structure):
-    _fields_ = [
-        ("BaseAddress", ctypes.c_void_p),
-        ("AllocationBase", ctypes.c_void_p),
-        ("AllocationProtect", wintypes.DWORD),
-        ("PartitionId", wintypes.WORD),
-        ("RegionSize", ctypes.c_size_t),
-        ("State", wintypes.DWORD),
-        ("Protect", wintypes.DWORD),
-        ("Type", wintypes.DWORD),
-    ]
+        return buffer.raw[:got.value]
 
 
 def _pointer_at(data: bytes, offset: int) -> int:
@@ -171,64 +152,87 @@ def _is_pointer(word: int) -> bool:
 class ItemCardReader:
     """Finds the equipped items' card records and reads them; remembers where they were."""
 
-    def __init__(
-        self,
-        layout: BuildLayout = LATEST_LAYOUT,
-        read_memory: MemoryReader | None = None,
-        region_of: RegionReader | None = None,
-    ) -> None:
-        kernel = _Kernel() if read_memory is None or region_of is None else None
+    def __init__(self, layout: BuildLayout = LATEST_LAYOUT, read_memory: MemoryReader | None = None) -> None:
         self.layout = layout
-        self._read = read_memory if read_memory is not None else kernel.read
-        self._region_of = region_of if region_of is not None else kernel.region
+        self._read = read_memory if read_memory is not None else _Kernel().read
         self._header: int | None = None
+        self._discovery: threading.Thread | None = None
+        self._next_discovery_at = 0.0
         self.last_error = ""
 
+    def _read_exact(self, address: int, size: int) -> bytes | None:
+        """The bytes at address, or None unless all of them are readable."""
+        data = self._read(address, size)
+        if data is None or len(data) < size:
+            return None
+        return data
+
     def cards(self, game_instance_address: int) -> list[ItemCard]:
-        """The item cards, in slot order; empty when they cannot be read right now."""
-        if self._header is not None:
-            cards = self._cards_at(self._header)
+        """The item cards, in slot order; empty while they cannot be read. Reading a known
+        array costs a few hundred bytes; finding it is a scan, so that runs on a thread of
+        its own and the cards arrive on a later call."""
+        header = self._header
+        if header is not None:
+            cards = self._cards_at(header)
             if cards:
                 return cards
             self._header = None
-        header = self._discover(game_instance_address)
-        if header is None:
-            return []
-        self._header = header
-        return self._cards_at(header)
+        self._start_discovery(game_instance_address)
+        return []
+
+    @property
+    def discovering(self) -> bool:
+        return self._discovery is not None and self._discovery.is_alive()
+
+    def _start_discovery(self, game_instance_address: int) -> None:
+        if self.discovering or time.monotonic() < self._next_discovery_at:
+            return
+        self._discovery = threading.Thread(
+            target=self._discover_in_background, args=(game_instance_address,), name="dmgtracker-item-cards", daemon=True
+        )
+        self._discovery.start()
+
+    def _discover_in_background(self, game_instance_address: int) -> None:
+        try:
+            header = self._discover(game_instance_address)
+        except Exception as ex:  # noqa: BLE001 - a scan that fails is a scan that found nothing
+            self.last_error = f"{type(ex).__name__}: {ex}"
+            header = None
+        if header is not None:
+            self._header = header
+        else:
+            self._next_discovery_at = time.monotonic() + DISCOVERY_RETRY_S
 
     # ------------------------------------------------------------------ discovery
 
     def _discover(self, game_instance_address: int) -> int | None:
-        """The address of the records array header, found by content in the UI model pool."""
-        pool = self._pool_address(game_instance_address)
-        if pool is None:
+        """The address of the records array header, found by content around the anchor."""
+        anchor = self._anchor(game_instance_address)
+        if anchor is None:
             return None
-        region = self._region_of(pool)
-        if region is None:
-            self.last_error = f"no memory region at {pool:#x}"
-            return None
-        region_base, region_size = region
-        region_end = region_base + region_size
-        # The node sits close to the model table in the same pool: widen the window step by
-        # step so the usual case costs a few thousand checks, the worst case stays bounded.
+        # The node lies within a few KB of the anchor, allocated by the same system at the
+        # same time (5 KB and 2.3 KB in two sessions): widen the window step by step, so the
+        # usual case costs a few thousand checks and the worst case stays bounded. Region
+        # boundaries do not matter: unreadable chunks are skipped.
         scanned: tuple[int, int] | None = None
         for window in SCAN_WINDOWS_BYTES:
-            start = max(region_base, pool - window)
-            end = min(region_end, pool + window)
+            start, end = max(POINTER_MIN, anchor - window), anchor + window
             header = self._scan(start, end, scanned)
             if header is not None:
                 return header
             scanned = (start, end)
-            if start == region_base and end == region_end:
-                break
-        self.last_error = f"no item card array near {pool:#x}"
+        self.last_error = f"no item card array within {SCAN_WINDOWS_BYTES[-1] // 1024} KB of {anchor:#x}"
         return None
 
     def _scan(self, start: int, end: int, skip: tuple[int, int] | None) -> int | None:
-        """The first header between start and end, skipping the part scanned before."""
-        for chunk_start in range(start, end, SCAN_CHUNK_BYTES):
-            chunk = self._read(chunk_start, min(SCAN_CHUNK_BYTES, end - chunk_start))
+        """The first header between start and end, skipping the part scanned before. The
+        chunks are whole pages: a read that starts on an unmapped page yields nothing, so a
+        page-aligned chunk is either read or skipped, never half lost."""
+        first_page = start - start % SCAN_CHUNK_BYTES
+        for chunk_start in range(first_page, end, SCAN_CHUNK_BYTES):
+            if skip is not None and skip[0] <= chunk_start and chunk_start + SCAN_CHUNK_BYTES <= skip[1]:
+                continue
+            chunk = self._read(chunk_start, SCAN_CHUNK_BYTES)
             if chunk is None:
                 continue
             for offset in range(0, len(chunk) - 15, 8):
@@ -239,17 +243,14 @@ class ItemCardReader:
                     return address
         return None
 
-    def _pool_address(self, game_instance_address: int) -> int | None:
-        """The UI model table: a 64-byte allocation in the pool the card records' node uses."""
-        ui = self._read(game_instance_address + self.layout.game_instance_ui_offset, 8)
+    def _anchor(self, game_instance_address: int) -> int | None:
+        """The UI object the game instance points at: a small allocation of the heap block
+        the card records' node lives in."""
+        ui = self._read_exact(game_instance_address + self.layout.game_instance_ui_offset, 8)
         if ui is None or not _is_pointer(_pointer_at(ui, 0)):
             self.last_error = "no UI pointer in the game instance"
             return None
-        table = self._read(_pointer_at(ui, 0) + self.layout.ui_model_table_offset, 8)
-        if table is None or not _is_pointer(_pointer_at(table, 0)):
-            self.last_error = "no model table in the UI object"
-            return None
-        return _pointer_at(table, 0)
+        return _pointer_at(ui, 0)
 
     def _header_looks_right(self, chunk: bytes, offset: int) -> bool:
         """A TArray header {data, num, max} whose first record is a weapon card."""
@@ -261,7 +262,7 @@ class ItemCardReader:
     # ------------------------------------------------------------------ records
 
     def _cards_at(self, header: int) -> list[ItemCard]:
-        raw = self._read(header, 16)
+        raw = self._read_exact(header, 16)
         if raw is None:
             return []
         data, num, capacity = _pointer_at(raw, 0), _int_at(raw, 8), _int_at(raw, 12)
@@ -277,7 +278,7 @@ class ItemCardReader:
 
     def _card_at(self, address: int) -> ItemCard | None:
         layout = self.layout
-        record = self._read(address, layout.record_bytes)
+        record = self._read_exact(address, layout.record_bytes)
         if record is None:
             return None
         slot_type = self._fstring(record, layout.slot_offset)
@@ -302,7 +303,7 @@ class ItemCardReader:
             return None
         if num == 1:
             return ""
-        raw = self._read(pointer, num * 2)
+        raw = self._read_exact(pointer, num * 2)
         if raw is None or raw[-2:] != b"\x00\x00":
             return None
         try:

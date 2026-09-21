@@ -96,8 +96,9 @@ DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
 DEFAULT_READOUT_WINDOW_MINUTES = 5.0
 READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
-# How long a failed item card read rests before the next try.
-ITEM_NAMES_RETRY_S = 30.0
+# How long the item cards may stay unreadable after the character loaded before one
+# warning is logged; the UI builds its models a moment after the character is in the world.
+ITEM_NAMES_GRACE_S = 120.0
 GAME_INSTANCE_CLASS = "OakGameInstance"
 BUILD_VERSION_LIBRARY = "KismetSystemLibrary"
 # A held-time sample longer than this means the game was paused or loading, not playing.
@@ -198,7 +199,7 @@ _last_held_sample = 0.0
 _transition_hidden = False
 _equipped_cache: list = []
 _game_instance_address = 0
-_item_names_retry_at = 0.0
+_item_names_unavailable_since = 0.0
 _item_names_reported = False
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
@@ -310,9 +311,9 @@ def _on_controller_changed(controller: UObject | None) -> None:
 def _prepare_item_names() -> None:
     """Pick the item card layout for this game build. An unknown build gets the latest
     layout and one warning; the content validation guards the read either way."""
-    global card_reader, _game_instance_address, _item_names_retry_at
+    global card_reader, _game_instance_address, _item_names_unavailable_since
     _game_instance_address = 0
-    _item_names_retry_at = 0.0
+    _item_names_unavailable_since = 0.0
     build = ""
     try:
         build = str(unrealsdk.find_class(BUILD_VERSION_LIBRARY).ClassDefaultObject.GetBuildVersion())
@@ -326,10 +327,10 @@ def _prepare_item_names() -> None:
 
 def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float) -> None:
     """Read the equipped weapons' item names from the game's item cards into the weapon
-    record. Runs until every equipped gun has a confirmed name; a failed read is quiet
-    apart from one warning and rests before the next try."""
-    global _game_instance_address, _item_names_retry_at, _item_names_reported
-    if card_reader is None or weapon_store is None or now < _item_names_retry_at:
+    record. Runs until every equipped gun has a confirmed name. While the cards cannot be
+    read the reader keeps looking on its own thread; one warning after the grace period."""
+    global _game_instance_address, _item_names_unavailable_since, _item_names_reported
+    if card_reader is None or weapon_store is None or not equipped:
         return
     item_ids = [weapon.item_id for weapon in equipped]
     if all(weapon_store.name_for(item_id) for item_id in item_ids) and name_matcher.confirmed(item_ids):
@@ -342,12 +343,15 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float)
         card_reader.last_error = f"{type(ex).__name__}: {ex}"
         cards = []
     if not cards:
-        _item_names_retry_at = now + ITEM_NAMES_RETRY_S
+        # The game instance is looked up again next time; it is the cheap part.
         _game_instance_address = 0
-        if not _item_names_reported:
+        if _item_names_unavailable_since == 0.0:
+            _item_names_unavailable_since = now
+        elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not card_reader.discovering:
             _item_names_reported = True
             logging.warning(f"{LOG_PREFIX} item names unavailable ({card_reader.last_error or 'no item cards'}); guns keep their type labels")
         return
+    _item_names_unavailable_since = 0.0
     names = name_matcher.match(item_ids, cards)
     for weapon in equipped:
         name = names.get(weapon.item_id)

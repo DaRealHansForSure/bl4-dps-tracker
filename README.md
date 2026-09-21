@@ -105,7 +105,7 @@ BL4 applies damage natively; no Unreal function fires per hit. The local player 
 
 ## Known limitations
 
-- Item names come from the game's item card model, found through two native pointers of the current game build and checked by content ([`docs/item-names.md`](docs/item-names.md)). After a game patch the mod may not find them; it then logs one line and the guns keep their manufacturer-and-type labels ("Jakobs Sniper", with the item id after it), which is also what a gun shows until its name was read.
+- Item names come from the game's item card model, found next to one native pointer of the current game build and checked by content ([`docs/item-names.md`](docs/item-names.md)). After a game patch the mod may not find them; it then logs one line and the guns keep their manufacturer-and-type labels ("Jakobs Sniper", with the item id after it), which is also what a gun shows until its name was read.
 - Damage that lands in the same frame as a knife swing during a running action skill cannot be told from the swing and counts as melee.
 - A very fast burst of more than six instances within one frame could overflow the game's ring; the log window reports such frames.
 - Untested in co-op.

@@ -15,12 +15,12 @@ from dmgtracker.itemnames import (
     layout_for_build,
 )
 
-# Fake addresses, all above the reader's lowest plausible pointer.
+# Fake addresses, all above the reader's lowest plausible pointer. The UI object the game
+# instance points at lies inside the pool block that holds the records array's node.
 GAME_INSTANCE = 0x100000
-UI_OBJECT = 0x200000
 POOL_BASE = 0x300000
 POOL_SIZE = 0x40000
-MODEL_TABLE = POOL_BASE + 0x1000
+UI_OBJECT = POOL_BASE + 0x1000
 RECORDS = 0x400000
 STRINGS = 0x500000
 
@@ -30,22 +30,17 @@ class FakeMemory:
 
     def __init__(self) -> None:
         self.blocks: dict[int, bytearray] = {}
-        self.regions: dict[int, tuple[int, int]] = {}
 
     def write(self, address: int, data: bytes) -> None:
         self.blocks[address] = bytearray(data)
 
     def read(self, address: int, size: int) -> bytes | None:
+        """Like ReadProcessMemory: the readable prefix, None when nothing is readable."""
         for start, block in self.blocks.items():
-            if start <= address and address + size <= start + len(block):
+            if start <= address < start + len(block):
                 return bytes(block[address - start:address - start + size])
         return None
 
-    def region_of(self, address: int) -> tuple[int, int] | None:
-        for base, size in self.regions.values():
-            if base <= address < base + size:
-                return (base, size)
-        return None
 
 
 class StringHeap:
@@ -80,16 +75,14 @@ def make_record(heap: StringHeap, layout: BuildLayout, slot_type: str, name: str
     return bytes(record)
 
 
-def build_memory(records: list[bytes], layout: BuildLayout = LATEST_LAYOUT, header_at: int = POOL_BASE + 0x1240) -> FakeMemory:
-    """Game instance -> UI object -> model table in a pool region; the records array's
-    header sits somewhere in that region."""
+def build_memory(records: list[bytes], layout: BuildLayout = LATEST_LAYOUT, header_at: int = POOL_BASE + 0x240) -> FakeMemory:
+    """Game instance -> UI object inside a pool block; the records array's header sits
+    somewhere in that block, before or after the UI object."""
     memory = FakeMemory()
     memory.write(GAME_INSTANCE + layout.game_instance_ui_offset, struct.pack("<Q", UI_OBJECT))
-    memory.write(UI_OBJECT + layout.ui_model_table_offset, struct.pack("<Q", MODEL_TABLE))
     pool = bytearray(POOL_SIZE)
     pool[header_at - POOL_BASE:header_at - POOL_BASE + 16] = struct.pack("<QII", RECORDS, len(records), len(records))
     memory.write(POOL_BASE, bytes(pool))
-    memory.regions["pool"] = (POOL_BASE, POOL_SIZE)
     memory.write(RECORDS, b"".join(records))
     return memory
 
@@ -100,7 +93,15 @@ class ItemCardReaderTest(unittest.TestCase):
         self.heap = StringHeap(self.memory, STRINGS)
 
     def reader(self, memory: FakeMemory) -> ItemCardReader:
-        return ItemCardReader(LATEST_LAYOUT, memory.read, memory.region_of)
+        return ItemCardReader(LATEST_LAYOUT, memory.read)
+
+    @staticmethod
+    def cards_after_discovery(reader: ItemCardReader) -> list[ItemCard]:
+        """cards() starts the scan on a thread and answers empty; wait for it, then read."""
+        first = reader.cards(GAME_INSTANCE)
+        if reader._discovery is not None:
+            reader._discovery.join(5.0)
+        return first or reader.cards(GAME_INSTANCE)
 
     def test_reads_the_cards_in_slot_order(self) -> None:
         records = [
@@ -109,7 +110,7 @@ class ItemCardReaderTest(unittest.TestCase):
         ]
         memory = build_memory(records)
         memory.blocks.update(self.memory.blocks)
-        cards = self.reader(memory).cards(GAME_INSTANCE)
+        cards = self.cards_after_discovery(self.reader(memory))
         self.assertEqual(
             cards,
             [
@@ -123,26 +124,28 @@ class ItemCardReaderTest(unittest.TestCase):
         memory = build_memory(records)
         memory.blocks.update(self.memory.blocks)
         reader = self.reader(memory)
-        self.assertEqual([card.name for card in reader.cards(GAME_INSTANCE)], ["Lionized Parasite"])
+        self.assertEqual([card.name for card in self.cards_after_discovery(reader)], ["Lionized Parasite"])
         first_header = reader._header
         # The UI rebuilds its model: the old header is gone, a new one sits elsewhere.
         pool = memory.blocks[POOL_BASE]
         pool[first_header - POOL_BASE:first_header - POOL_BASE + 16] = bytes(16)
-        pool[0x800:0x810] = struct.pack("<QII", RECORDS, 1, 1)
-        self.assertEqual([card.name for card in reader.cards(GAME_INSTANCE)], ["Lionized Parasite"])
-        self.assertEqual(reader._header, POOL_BASE + 0x800)
+        pool[0x3800:0x3810] = struct.pack("<QII", RECORDS, 1, 1)
+        reader._next_discovery_at = 0.0
+        self.assertEqual([card.name for card in self.cards_after_discovery(reader)], ["Lionized Parasite"])
+        self.assertEqual(reader._header, POOL_BASE + 0x3800, "found in the widened window, past the UI object")
 
     def test_a_record_without_a_serial_is_not_a_card(self) -> None:
         records = [make_record(self.heap, LATEST_LAYOUT, "weapon", "Something", "not a serial", "epic")]
         memory = build_memory(records)
         memory.blocks.update(self.memory.blocks)
         reader = self.reader(memory)
-        self.assertEqual(reader.cards(GAME_INSTANCE), [])
+        self.assertEqual(self.cards_after_discovery(reader), [])
         self.assertIn("no item card array", reader.last_error)
+        self.assertGreater(reader._next_discovery_at, 0.0, "a failed scan rests before the next one")
 
     def test_a_missing_ui_pointer_gives_no_cards_and_an_error(self) -> None:
         reader = self.reader(FakeMemory())
-        self.assertEqual(reader.cards(GAME_INSTANCE), [])
+        self.assertEqual(self.cards_after_discovery(reader), [])
         self.assertEqual(reader.last_error, "no UI pointer in the game instance")
 
     def test_unreadable_name_text_fails_the_card(self) -> None:
@@ -151,7 +154,7 @@ class ItemCardReaderTest(unittest.TestCase):
         record[LATEST_LAYOUT.name_offset:LATEST_LAYOUT.name_offset + 16] = struct.pack("<QII", 0x99999000, 6, 6)
         memory = build_memory([bytes(record)])
         memory.blocks.update(self.memory.blocks)
-        self.assertEqual(self.reader(memory).cards(GAME_INSTANCE), [])
+        self.assertEqual(self.cards_after_discovery(self.reader(memory)), [])
 
 
 class NameMatcherTest(unittest.TestCase):

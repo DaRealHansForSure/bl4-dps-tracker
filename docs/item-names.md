@@ -1,6 +1,6 @@
 # Item names: where they come from and where the mod reads them
 
-Research of 2026-09-21 (`poc/probe_names3.py` to `probe_names30.py`, run in the game with the
+Research of 2026-09-21 (`poc/probe_names3.py` to `probe_names32.py`, run in the game with the
 gun in hand). The rule for it: names must come from the running game, not from data
 files. Everything below was read from the live process.
 
@@ -60,14 +60,16 @@ slugs (`Jakobs-Shotgun`, `legendary`, `jakobs`, `weapon`, `shotgun`, `206.771`).
 
 The records array's header `{data, num, max}` sits in a 64-byte node of the UI model pool.
 Its owner could not be named (the pointers to it are the JS binding cache and a Nexus
-field-address map), but the pool is reachable: `OakGameInstance + 704` is the UI system
-object, `+1176` inside it is the UI model table, a 64-byte allocation in the same pool.
-`dmgtracker/itemnames.py` reads those two pointers, takes the memory region of the model
-table and scans it (64 KB, then 1 MB, then 8 MB around the table) for a header whose first
-record validates: slot type, a name, a serial starting with `@U`, a rarity. In the live
-test that took 0.9 ms; a cached header reads in 0.2 ms. The offsets are keyed by the game
-build (`KismetSystemLibrary.GetBuildVersion()`, `Oak2-Win64-4845623-CL-4845623`); an unknown
-build is tried with the latest layout, and the validation decides.
+field-address map; the fixed chain `+704 -> +1176 -> +1104` of the first session was heap
+adjacency and did not survive a restart), but the node is allocated from the same heap
+block, at the same time, as the small UI object `OakGameInstance + 704` points at (a
+`{ptr, 3, "IndicatorManager", ...}` entry): 2.3 KB away in one session, 5 KB in the next.
+`dmgtracker/itemnames.py` reads that one pointer and scans page-aligned windows around it
+(64 KB, then 1 MB, then 8 MB on each side) on a thread of its own for a header whose first
+record validates: slot type, a name, a serial starting with `@U`, a rarity. Live that took
+18 ms; a known header reads in 0.2 ms on the game thread. The offsets are keyed by the
+game build (`KismetSystemLibrary.GetBuildVersion()`, `Oak2-Win64-4845623-CL-4845623`); an
+unknown build is tried with the latest layout, and the validation decides.
 
 The records are paired with the equipped weapons by slot order; a pairing counts only when
 two consecutive reads (one second apart) agree, because the UI model lags an equipment
@@ -88,5 +90,6 @@ weapons' names means the mod never has to compose a name itself.
 - FName from a raw index: write the 8 bytes into the `Name` field of a scratch
   `InventoryPartCriterionData` and read it back (`probe_names13`).
 - Memory reads through `ReadProcessMemory` on the own process fail cleanly on unmapped
-  pages; full scans belong in a background thread (`probe_names21`, `25`), never on the
-  game thread (the 45 s scan of `probe_names10` froze the game).
+  pages; full scans belong in a background thread (`probe_names21`, `25`, `32`), never on
+  the game thread (the 45 s scan of `probe_names10` froze the game). A read that starts on
+  an unmapped page yields nothing at all, so scan in page-aligned chunks.
