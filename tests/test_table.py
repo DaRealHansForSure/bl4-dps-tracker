@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from dmgtracker.attribution import DamageSource
-from dmgtracker.stats import EncounterTracker, RollingStats, source_key
+from dmgtracker.stats import DamageRate, EncounterTracker, RollingStats, fight_rate, source_key
 from dmgtracker.table import (
     MAX_ROWS,
     PeakDps,
@@ -82,6 +82,30 @@ class BuildRowsTests(unittest.TestCase):
         window.prune(120.0)
         rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277")
         self.assertEqual(rows[2].cells[2], "61'728", "ten more seconds of fighting without a hit halve the rate")
+
+    def test_the_dps_column_rates_the_open_fight(self) -> None:
+        skill = DamageSource("skill", "Skill", "", "")
+        events = [hit(100.0, 30_000.0, skill), hit(101.0, 6_000.0, SNIPER), hit(102.0, 4_000.0, skill)]
+        window = window_with(*events, now=103.0)
+        tracker = EncounterTracker(gap_s=15.0)
+        for event in events:
+            tracker.add(event)
+        # Three seconds into the fight: every source over the fight's seconds so far, and
+        # the window totals untouched.
+        rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277", fight=fight_rate(tracker.current, 103.0))
+        self.assertEqual(rows[2].cells, ("Jakobs Sniper", "6'000", "2'000", "15.0"))
+        self.assertEqual(rows[5].cells, ("Skill", "34'000", "11'333", "85.0"))
+        self.assertEqual(rows[10].cells, ("Last 5 min", "40'000", "13'333", "100.0"))
+        # Ten seconds later without a hit the fight is still open and its rate has sunk.
+        window.prune(113.0)
+        rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277", fight=fight_rate(tracker.current, 113.0))
+        self.assertEqual(rows[10].cells[1:3], ("40'000", "3'077"))
+        # The fight closes after the gap: the DPS column reads zero, the totals stay.
+        tracker.close_if_idle(120.0)
+        rows = build_rows(window, WINDOW_MINUTES, EQUIPPED, "277", fight=fight_rate(tracker.current, 120.0))
+        self.assertEqual(rows[10].cells[1:3], ("40'000", "0"))
+        self.assertEqual(rows[5].cells[2], "0")
+        self.assertEqual(fight_rate(None, 1.0), DamageRate(0.0, 0.0))
 
     def test_non_weapon_rows_keep_their_places_and_sum_their_kind(self) -> None:
         shotgun = DamageSource("weapon", "Torgue Shotgun", "Body_TOR_SG", "278")

@@ -30,11 +30,12 @@ from .formatting import format_number
 from .itemidentity import ItemIdentityReader, seed_of, short_item_id
 from .itemnames import ItemNameReader, layout_for_build
 from .itemnamestore import ITEM_NAMES_FILE, ItemNameStore
+from .thumbnails import THUMBNAILS_DIR_NAME, convert_exr_to_png, thumbnail_path
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
 from .report import format_report, gap_for, read_session
-from .stats import EncounterTracker, RollingStats, kind_damage, source_key
+from .stats import DamageRate, EncounterTracker, RollingStats, fight_rate, source_key
 from .table import PeakDps, build_rows
 from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
 
@@ -103,6 +104,13 @@ ITEM_NAMES_GRACE_S = 120.0
 # Item names are read only once the player has been in play this long: the UI builds its
 # models a moment after the world is up, and a scan during a load finds nothing.
 ITEM_NAMES_SETTLE_S = 3.0
+# Thumbnails: the card's texture is exported with the engine's own function, which flushes
+# the renderer (10 ms), so that happens only while a menu with the cursor is open, one
+# picture per refresh; the EXR it writes is turned into a PNG on the writer thread.
+RENDER_TARGET_PREFIX = "TextureRenderTarget2D'"
+RENDER_TARGET_CLASS = "TextureRenderTarget2D"
+RENDERING_LIBRARY = "KismetRenderingLibrary"
+THUMBNAIL_ERRORS_TO_LOG = 3
 BUILD_VERSION_LIBRARY = "KismetSystemLibrary"
 # A held-time sample longer than this means the game was paused or loading, not playing.
 MAX_HELD_SAMPLE_S = 1.0
@@ -183,6 +191,13 @@ identity_reader = ItemIdentityReader()
 resolver = WeaponResolver(identity_reader.item_id)
 name_reader: ItemNameReader | None = None
 name_store: ItemNameStore | None = None
+_thumbnails_dir: Path | None = None
+# item id -> render target path of the guns whose picture is still to be exported, the
+# ids already tried this session, and the exported files waiting to become PNGs.
+_thumbnail_exports: dict[str, tuple[str, str]] = {}
+_thumbnails_tried: set[str] = set()
+_thumbnail_conversions: list[tuple[str, Path, Path]] = []
+_thumbnail_errors = 0
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -347,12 +362,13 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     # equipped gun's seed (None where a gun only has the fallback id), named or not.
     slot_seeds = [seed_of(weapon.item_id) for weapon in equipped]
     unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and not name_store.name_for(weapon.item_id)]
-    if not unnamed:
+    unpictured = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _thumbnail_wanted(weapon.item_id)]
+    if not unnamed and not unpictured:
         _item_names_unavailable_since = 0.0
         return
     if not _item_names_asked:
         _item_names_asked = True
-        logging.info(f"{LOG_PREFIX} item names: in play, asking for {len(unnamed)} gun(s) without a name")
+        logging.info(f"{LOG_PREFIX} item names: in play, asking for {len(unnamed)} gun(s) without a name, {len(unpictured)} without a picture")
     try:
         names = name_reader.names_for(slot_seeds)
     except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
@@ -362,6 +378,10 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
         name = names.get(seed_of(weapon.item_id) or b"")
         if name and name_store.set_name(weapon.item_id, name, weapon.label, wall_now):
             _say(f"{weapon.label} {short_item_id(weapon.item_id)} is {name}")
+    for weapon in unpictured:
+        _note_thumbnail(weapon, names)
+    if not unnamed:
+        return
     if names:
         _item_names_unavailable_since = 0.0
     elif _item_names_unavailable_since == 0.0:
@@ -369,6 +389,67 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not name_reader.discovering:
         _item_names_reported = True
         logging.warning(f"{LOG_PREFIX} item names unavailable ({name_reader.last_error or 'no UI model found'}); guns keep their type labels")
+
+
+def _thumbnail_wanted(item_id: str) -> bool:
+    """A gun whose picture is neither on disk nor tried this session."""
+    if _thumbnails_dir is None or item_id in _thumbnails_tried or item_id in _thumbnail_exports:
+        return False
+    return not thumbnail_path(_thumbnails_dir, item_id).exists()
+
+
+def _note_thumbnail(weapon: DamageSource, names: dict[bytes, str]) -> None:
+    """Queue the export of a gun's picture once the reader knows its card: a render
+    target now, or never in this session (a type icon has no picture to export)."""
+    seed = seed_of(weapon.item_id)
+    if seed is None or seed not in names or name_reader is None:
+        return
+    texture = name_reader.thumbnail_for(seed)
+    if not texture.startswith(RENDER_TARGET_PREFIX):
+        _thumbnails_tried.add(weapon.item_id)
+        return
+    _thumbnail_exports[weapon.item_id] = (texture[len(RENDER_TARGET_PREFIX):].rstrip("'"), weapon.label)
+
+
+def _export_thumbnail_if_in_menu(controller: UObject) -> None:
+    """One export per refresh while a menu with the cursor is open: the engine's export
+    flushes the renderer, which must never cost a frame of play."""
+    global _thumbnail_errors
+    if not _thumbnail_exports or _thumbnails_dir is None or not controller.bShowMouseCursor:
+        return
+    item_id, (path, label) = next(iter(_thumbnail_exports.items()))
+    del _thumbnail_exports[item_id]
+    _thumbnails_tried.add(item_id)
+    png = thumbnail_path(_thumbnails_dir, item_id)
+    exr = png.with_suffix(".exr")
+    try:
+        target = unrealsdk.find_object(RENDER_TARGET_CLASS, path)
+        library = unrealsdk.find_class(RENDERING_LIBRARY).ClassDefaultObject
+        _thumbnails_dir.mkdir(parents=True, exist_ok=True)
+        library.ExportRenderTarget(controller, target, str(_thumbnails_dir), exr.name)
+    except Exception as ex:  # noqa: BLE001 - a picture is a nicety, the game is not
+        _thumbnail_errors += 1
+        if _thumbnail_errors <= THUMBNAIL_ERRORS_TO_LOG:
+            logging.warning(f"{LOG_PREFIX} thumbnail of {label} not exported: {type(ex).__name__}: {ex}")
+        return
+    _thumbnail_conversions.append((label, exr, png))
+
+
+def _convert_thumbnails() -> None:
+    """On the writer thread: the exported EXR files become PNGs, one per tick."""
+    global _thumbnail_errors
+    if not _thumbnail_conversions:
+        return
+    label, exr, png = _thumbnail_conversions.pop(0)
+    try:
+        convert_exr_to_png(exr, png)
+        exr.unlink(missing_ok=True)
+    except Exception as ex:  # noqa: BLE001
+        _thumbnail_errors += 1
+        if _thumbnail_errors <= THUMBNAIL_ERRORS_TO_LOG:
+            logging.warning(f"{LOG_PREFIX} thumbnail of {label} not converted: {type(ex).__name__}: {ex}")
+        return
+    _say(f"thumbnail of {label} saved as {png.name}")
 
 
 def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
@@ -506,11 +587,15 @@ def _refresh_readout() -> None:
             if equipped is not None:
                 _learn_item_names(equipped, wall_now, now, in_play)
                 _equipped_cache = _with_item_names(equipped) if readout_item_names.value else equipped
+        _export_thumbnail_if_in_menu(controller)
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
         _sample_held_time(held)
         rolling.prune(_play_clock)
-        _record_peaks(wall_now)
+        # The DPS column rates the open fight: its damage so far over its seconds so far,
+        # per source. Between fights it reads zero; the totals keep the window's damage.
+        fight = fight_rate(tracker.current, wall_now)
+        _record_peaks(wall_now, fight)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best = _peak_dps() if readout_show_best_column.value else None
         rows = build_rows(
@@ -523,6 +608,7 @@ def _refresh_readout() -> None:
             _hidden_row_kinds(),
             bool(readout_show_crit_and_kills.value),
             bool(readout_show_share_column.value),
+            fight,
         )
         _latest_rows = rows
         readout.render(rows, now)
@@ -567,19 +653,18 @@ def _hidden_row_kinds() -> frozenset[str]:
         return frozenset()
 
 
-def _record_peaks(now: float) -> None:
-    """Offer every table row's current DPS (damage over the window's fighting time) to the
-    lifetime record as a peak."""
-    if weapon_store is None:
+def _record_peaks(now: float, fight: DamageRate) -> None:
+    """Offer every table row's current DPS (the open fight's rate, what the DPS column
+    shows) to the lifetime record as a peak; a fight counts once it is long enough."""
+    if weapon_store is None or fight.seconds <= 0:
         return
-    window_seconds = rolling.duration()
-    for totals in rolling.by_source.values():
-        if totals.kind != "weapon" or totals.item_id == "":
+    for key in fight.by_source:
+        kind, label, item_id = key
+        if kind != "weapon" or item_id == "":
             continue
-        weapon_store.note_peak(totals.item_id, totals.label, "", totals.damage / window_seconds, window_seconds, now)
+        weapon_store.note_peak(item_id, label, "", fight.rate(key), fight.seconds, now)
     for kind in PEAK_SOURCE_KINDS:
-        damage = kind_damage(rolling.by_source, kind)
-        weapon_store.note_source_peak(kind, damage / window_seconds, window_seconds, now)
+        weapon_store.note_source_peak(kind, fight.kind_rate(kind), fight.seconds, now)
 
 
 def _advance_play_clock(now: float, in_play: bool) -> None:
@@ -833,7 +918,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store, character
+    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
@@ -845,6 +930,10 @@ def on_enable() -> None:
     character = None
     weapon_store = None
     name_store = _load_name_store(_log_dir().parent / ITEM_NAMES_FILE)
+    _thumbnails_dir = _log_dir().parent / THUMBNAILS_DIR_NAME
+    _thumbnail_exports.clear()
+    _thumbnails_tried.clear()
+    _thumbnail_conversions.clear()
     _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
@@ -890,6 +979,7 @@ def _dashboard_sources() -> DashboardSources:
         window_minutes=lambda: float(readout_window_minutes.value),
         encounter_gap_s=lambda: float(encounter_gap_s.value),
         item_names=lambda: {} if name_store is None else name_store.names(),
+        thumbnails_dir=_log_dir().parent / THUMBNAILS_DIR_NAME,
     )
 
 
@@ -930,6 +1020,7 @@ def _save_stores_if_due() -> None:
     for store in (weapon_store, name_store):
         if store is not None:
             store.save_if_due(now)
+    _convert_thumbnails()
 
 
 def _load_name_store(path: Path) -> ItemNameStore:
@@ -1057,6 +1148,9 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
     if name_store is not None:
         logging.info(f"{LOG_PREFIX} item name table: {name_store.path} ({name_store.count} names)")
+    if _thumbnails_dir is not None:
+        pictures = len(list(_thumbnails_dir.glob("*.png"))) if _thumbnails_dir.exists() else 0
+        logging.info(f"{LOG_PREFIX} thumbnails: {_thumbnails_dir} ({pictures} pictures, {len(_thumbnail_exports)} waiting for a menu, {_thumbnail_errors} errors)")
     identity_state = f"{identity_reader.fallbacks} fallback(s) to the instance id"
     if identity_reader.last_error:
         identity_state += f", last error: {identity_reader.last_error}"

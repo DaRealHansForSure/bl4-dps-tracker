@@ -76,6 +76,8 @@ class DashboardTests(unittest.TestCase):
             session_path=lambda: self.session,
             window_minutes=lambda: 5.0,
             encounter_gap_s=lambda: 15.0,
+            item_names=lambda: {"seed277": "Hunted Kettled Rangefinder"},
+            thumbnails_dir=self.log_dir / "thumbnails",
         )
         self.dashboard = Dashboard(0, sources, self.messages.append, host="127.0.0.1")
         self.assertTrue(self.dashboard.start(), self.dashboard.start_error)
@@ -114,6 +116,21 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual((status, len(encounters["encounters"])), (200, 1))
         status, session_weapons = fetch_json(self.url + "api/session-weapons")
         self.assertEqual((status, len(session_weapons["weapons"])), (200, 2))
+
+    def test_thumbnails_are_served_by_item_id_only(self) -> None:
+        folder = self.log_dir / "thumbnails"
+        folder.mkdir()
+        item_id = "ddbe5d456a2ec99a4c917f15"
+        (folder / f"{item_id}.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        (folder / "notes.png").write_bytes(b"secret")
+        status, headers, body = fetch(self.url + f"thumbnails/{item_id}.png")
+        self.assertEqual((status, headers["Content-Type"], body[:4]), (200, "image/png", b"\x89PNG"))
+        self.assertIn("max-age", headers["Cache-Control"])
+        self.assertEqual(fetch(self.url + "thumbnails/notes.png")[0], 404, "only item ids reach the disk")
+        self.assertEqual(fetch(self.url + "thumbnails/..%2Fweapons.json")[0], 404)
+        self.assertEqual(fetch(self.url + "thumbnails/0123456789abcdef01234567.png")[0], 404, "no picture yet")
+        status, payload = fetch_json(self.url + "api/weapons?by=damage")
+        self.assertEqual(payload["weapons"][0]["name"], "Hunted Kettled Rangefinder", "the weapons list carries the table's names")
 
     def test_unknown_paths_and_sessions(self) -> None:
         status, _headers, _body = fetch(self.url + "nothing/here")

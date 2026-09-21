@@ -38,7 +38,7 @@ Two rates come from that:
 - **DPS** = total / duration: the honest number for the whole fight, including reloads, walking and waiting.
 - **Active DPS** = total / active seconds: the rate while you were actually landing hits.
 
-The table's DPS column is a third thing: each row's damage over the rolling window's length; it belongs to the window, not to encounters, see below.
+The table's DPS column is the open fight's rate at this moment: each row's damage in the fight over the seconds since the fight's first hit (idle moments inside the fight included), zero between fights. The report's encounter DPS above is the same fight seen afterwards, first hit to last hit.
 
 ## Where fights show up
 

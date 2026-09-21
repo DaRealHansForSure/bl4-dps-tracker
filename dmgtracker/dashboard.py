@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import socket
 import threading
 import time
@@ -66,6 +67,10 @@ WS_PATH = "/ws"
 PROBE_ADDRESS = ("192.0.2.1", 9)
 PAGE_PACKAGE = "dmgtracker.web"
 PAGE_FILE = "index.html"
+THUMBNAILS_PATH = "/thumbnails/"
+THUMBNAIL_NAME = re.compile(r"[0-9a-f]{24}\.png")
+# A gun's picture never changes once written; a page may keep it for a day.
+THUMBNAIL_CACHE_CONTROL = "max-age=86400"
 # Longest wait of the broadcaster and of a connection handler before they look at the stop flag.
 WAKE_INTERVAL_S = 1.0
 RECV_TIMEOUT_S = 1.0
@@ -107,6 +112,8 @@ class DashboardSources:
     encounter_gap_s: Callable[[], float]
     # item id -> item name, for the weapon lists (the live table gets them with its rows).
     item_names: Callable[[], dict[str, str]] = lambda: {}
+    # The folder of the gun pictures (<item id>.png), served under /thumbnails/.
+    thumbnails_dir: Path | None = None
 
 
 class Dashboard:
@@ -435,7 +442,19 @@ class Dashboard:
             return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session, self.sources.item_names())})
         if path == "/api/encounters":
             return _json_response(encounters_payload(session, self.sources.encounter_gap_s()))
+        if path.startswith(THUMBNAILS_PATH):
+            return self._thumbnail(path[len(THUMBNAILS_PATH):])
         return _text_response(HTTPStatus.NOT_FOUND, "not found")
+
+    def _thumbnail(self, name: str) -> Response:
+        """A gun's picture by file name; only names of the form <item id>.png reach the disk."""
+        folder = self.sources.thumbnails_dir
+        if folder is None or not THUMBNAIL_NAME.fullmatch(name):
+            return _text_response(HTTPStatus.NOT_FOUND, "not found")
+        path = folder / name
+        if not path.is_file():
+            return _text_response(HTTPStatus.NOT_FOUND, "no picture yet")
+        return _response(HTTPStatus.OK, "image/png", path.read_bytes(), cache_control=THUMBNAIL_CACHE_CONTROL)
 
     def _status(self) -> Message:
         store = self.sources.weapon_store()
@@ -498,11 +517,12 @@ def _instant_for(instant: dict[str, dict[str, float]], hit_key: str) -> dict[str
 
 
 def _window_sample(rows: list[TableRow], now: float, instant: dict[str, dict[str, float]], slot_item_ids: list[str]) -> Message | None:
-    """A chart sample: the window row's DPS and damage, the DPS of the last seconds ("now",
-    one value per chart window), and both for every source row. The weapon slots (the rows
-    right after the header, in slot order) carry their slot number, so the page gives each
-    slot a fixed colour whatever gun is in it; the other sources are keyed by their label.
-    A gun swapped into a slot starts a new line. None without a window row."""
+    """A chart sample: the window row's DPS cell (the fight's rate) and damage, the DPS of
+    the last seconds ("now", one value per chart window), and both for every source row.
+    The weapon slots (the rows right after the header, in slot order) carry their slot
+    number, so the page gives each slot a fixed colour whatever gun is in it; the other
+    sources are keyed by their label. A gun swapped into a slot starts a new line. None
+    without a window row."""
     window_row = None
     sources: list[Message] = []
     for position, row in enumerate(rows):
@@ -546,11 +566,11 @@ def _page_bytes() -> bytes:
     return resources.files(PAGE_PACKAGE).joinpath(PAGE_FILE).read_bytes()
 
 
-def _response(status: HTTPStatus, content_type: str, body: bytes) -> Response:
+def _response(status: HTTPStatus, content_type: str, body: bytes, cache_control: str = "no-store") -> Response:
     headers = Headers([
         ("Content-Type", content_type),
         ("Content-Length", str(len(body))),
-        ("Cache-Control", "no-store"),
+        ("Cache-Control", cache_control),
         ("Connection", "close"),
     ])
     return Response(status.value, status.phrase, headers, body)

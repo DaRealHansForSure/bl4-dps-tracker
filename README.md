@@ -19,12 +19,12 @@ Other                    7'703         77
 Last 5 min           3'219'066     32'190
 ```
 
-- Every number covers the **last 5 minutes**, by the clock on the wall: fighting or not, in a menu or not, so a source that stops dealing damage is out of the numbers five minutes after its last hit (the table is hidden in menus, but its window keeps moving).
-- Every row's **DPS is its damage over the window** (300 s once the window is full, the time since the first hit before that), so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
+- `Total` covers the **last 5 minutes**, by the clock on the wall: fighting or not, in a menu or not, so a source that stops dealing damage is out of the totals five minutes after its last hit (the table is hidden in menus, but its window keeps moving).
+- `DPS` is the **open fight's rate**: a row's damage in the current fight over the seconds since the fight's first hit, idle moments inside the fight included, so a burst reads as a burst (30'000 in three seconds shows 10'000) and the number sinks while nothing lands. A fight ends 15 s after its last hit (`encounter_gap_s`); between fights the column reads 0. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
 - Guns carry their **item name** ("Maintained Screeching T.K's Wave"), read from the game's own item cards a few seconds after they are equipped and kept in one table for every character (`item-names.json`). The in-game table keeps the short manufacturer-and-type label for width (`readout_item_names` switches it to the item name); the dashboard shows the item name with the item id, and `dmgweapons` and the reports use it too.
-- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s. It only rises; `dmgreset --weapons` clears it.
+- `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the fight is at least 10 s old. It only rises; `dmgreset --weapons` clears it. Values recorded by versions before 1.3 were five-minute averages and will be overtaken.
 - A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
 - Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
 - The table hides in menus, in vehicles and during tunnel transitions. Vehicle damage is not tracked. Healing is never counted.
@@ -46,7 +46,7 @@ Open the console with F6 (in the world, not in the main menu):
 
 While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
 
-- **Live**: the same table as in the game (guns by item name, with their id), pushed over a WebSocket whenever it changes; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the five-minute average dashed, a tooltip for any moment; and the latest hits as they land.
+- **Live**: the same table as in the game (guns by item name, with their id), pushed over a WebSocket whenever it changes; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the fight's DPS dashed, a tooltip for any moment; and the latest hits as they land.
 - **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
 - **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
 - **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.

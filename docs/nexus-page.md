@@ -45,6 +45,7 @@ Four menu entries (logging on/off, table on/off, open log folder, web dashboard 
 
 ## Changelog
 
+1.3.0: the DPS column is the open fight's rate (a burst reads as a burst, zero between fights) and Best DPS the best fight; item names are found from the first second in the world and kept in one table for every character; the dashboard shows the gun's picture when the pointer rests on its name (exported while a game menu is open, so play never stutters); the chart's dashed line is the fight's DPS and its tooltip is never cut off; the table's totals run on wall time.
 1.2.0: item names of the equipped guns, read from the game's item cards, on the dashboard, in the weapon records and reports (the in-game table keeps the short labels; `readout_item_names` switches it); the dashboard shows the item id next to each gun; `dmgreset --names` forgets the stored names.
 1.1.0: web dashboard at http://127.0.0.1:8765/ (live table over WebSocket, hits with search, weapon Top 10, encounters; also reachable from other devices on the network); Best DPS for Skill and Grenade; weapon records follow the gun across restarts and character switches (records from 1.0.0 are set aside); Melee row hidden by default; table at the left screen border.
 1.0.0: first release.

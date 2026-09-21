@@ -84,6 +84,19 @@
   canvas { flex: 1; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
   .muted { color: var(--muted); }
   .item-id { font-size: 0.85em; }
+  .has-thumbnail { cursor: help; }
+  /* The gun's picture, shown next to the pointer while it rests on a weapon name. */
+  #thumbnail { position: fixed; display: none; width: 320px; height: 160px; padding: 8px; box-sizing: content-box;
+    background: rgba(12, 14, 18, 0.94); border: 1px solid var(--border, #3a3f47); border-radius: 8px;
+    pointer-events: none; z-index: 20; object-fit: contain; }
+  #thumbnail.visible { display: block; }
+  /* The chart's tooltip lives on the body, so the panel's edge cannot cut it off. */
+  #chart-tooltip { position: fixed; display: none; padding: 6px 8px; font-size: 12px; line-height: 16px;
+    background: rgba(20, 22, 26, 0.95); border: 1px solid #2f343d; border-radius: 6px; color: #e8e8e8;
+    pointer-events: none; z-index: 30; white-space: nowrap; }
+  #chart-tooltip.visible { display: block; }
+  #chart-tooltip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 4px; margin-right: 6px; vertical-align: 0; }
+  #chart-tooltip .footer { color: #9aa3ad; }
   .rank { color: var(--muted); }
   .top { font-size: 16px; }
   .top td:first-child { font-weight: 600; }
@@ -105,6 +118,8 @@
 </style>
 </head>
 <body>
+<img id="thumbnail" alt="">
+<div id="chart-tooltip"></div>
 <header>
   <h1>BL4 Damage Tracker</h1>
   <nav>
@@ -123,7 +138,7 @@
         <table id="live-table"><tbody></tbody></table>
       </div>
       <div class="card chart">
-        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the <span id="chart-window"></span> min window</span></h2>
+        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the fight's DPS so far</span></h2>
         <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
@@ -358,8 +373,6 @@
       character = data.character;
       rememberNames(data.slots, data.names);
       document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of play";
-      windowMinutes = data.window_minutes || 5;
-      document.getElementById("chart-window").textContent = formatNumber(windowMinutes, 0);
       setChartWindows(data.chart_windows || [10], data.chart_seconds || 10);
       setStatus(true, "live, " + characterText());
       renderLive(data.rows);
@@ -407,8 +420,71 @@
       id.className = "muted item-id";
       id.textContent = " " + shortId(itemId);
       td.appendChild(id);
+      showThumbnailOnHover(td, itemId);
     }
     return td;
+  }
+
+  // The gun's picture (exported by the mod as /thumbnails/<item id>.png) follows the
+  // pointer while it rests on a weapon name; a gun without a picture yet shows nothing.
+  const thumbnail = document.getElementById("thumbnail");
+  const THUMBNAIL_OFFSET = 18;
+  let thumbnailItemId = "";
+
+  function showThumbnailOnHover(element, itemId) {
+    element.classList.add("has-thumbnail");
+    element.addEventListener("mouseenter", function (event) {
+      thumbnailItemId = itemId;
+      thumbnail.classList.remove("visible");
+      thumbnail.src = "/thumbnails/" + itemId + ".png";
+      placeThumbnail(event);
+    });
+    element.addEventListener("mousemove", placeThumbnail);
+    element.addEventListener("mouseleave", hideThumbnail);
+  }
+
+  thumbnail.addEventListener("load", function () {
+    if (thumbnailItemId) {
+      thumbnail.classList.add("visible");
+    }
+  });
+  thumbnail.addEventListener("error", function () {
+    // No picture on disk yet: say so instead of showing nothing. The placeholder is an
+    // inline SVG, so it cannot fail to load itself.
+    if (thumbnailItemId && thumbnail.src.indexOf("data:") !== 0) {
+      thumbnail.src = placeholderThumbnail(thumbnailItemId);
+    } else {
+      hideThumbnail();
+    }
+  });
+
+  function placeholderThumbnail(itemId) {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160">' +
+      '<rect width="320" height="160" rx="6" fill="#14171c"/>' +
+      '<text x="160" y="74" text-anchor="middle" fill="#8a929c" font-family="Segoe UI, Arial, sans-serif" font-size="16">Thumbnail not found</text>' +
+      '<text x="160" y="98" text-anchor="middle" fill="#5c636b" font-family="Segoe UI, Arial, sans-serif" font-size="12">' + shortId(itemId) + ' - exported while a game menu is open</text>' +
+      '</svg>';
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  }
+
+  function placeThumbnail(event) {
+    const width = thumbnail.offsetWidth || 336;
+    const height = thumbnail.offsetHeight || 176;
+    let x = event.clientX + THUMBNAIL_OFFSET;
+    let y = event.clientY + THUMBNAIL_OFFSET;
+    if (x + width > window.innerWidth) {
+      x = event.clientX - width - THUMBNAIL_OFFSET;
+    }
+    if (y + height > window.innerHeight) {
+      y = event.clientY - height - THUMBNAIL_OFFSET;
+    }
+    thumbnail.style.left = Math.max(0, x) + "px";
+    thumbnail.style.top = Math.max(0, y) + "px";
+  }
+
+  function hideThumbnail() {
+    thumbnailItemId = "";
+    thumbnail.classList.remove("visible");
   }
 
   function renderLive(rows) {
@@ -445,7 +521,6 @@
   // under the yellow total line, and the table's window average as a dashed line for
   // reference. A tooltip lists them for the hovered sample.
   let chartSeconds = 30;
-  let windowMinutes = 5;
   const AVERAGE_COLOR = "#9aa3ad";
   const chartSecondsSelect = document.getElementById("chart-seconds");
 
@@ -663,7 +738,7 @@
 
   function drawLegend(context, geometry, series) {
     // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
-    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: formatNumber(windowMinutes, 0) + " min", color: AVERAGE_COLOR }].concat(
+    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: "Fight", color: AVERAGE_COLOR }].concat(
       series.map(function (line) { return { label: seriesLabel(line), color: line.color }; })
     );
     context.font = "11px sans-serif";
@@ -777,52 +852,60 @@
       context.arc(x, sampleY(geometry, entry.at, max), 4, 0, Math.PI * 2);
       context.fill();
     });
-    const header = formatTime(sample.t);
-    const footer = formatNumber(sample.total, 0) + " damage in the window";
-    context.font = "12px sans-serif";
-    let textWidth = Math.max(context.measureText(header).width, context.measureText(footer).width);
-    const minutes = formatNumber(windowMinutes, 0);
     function entryText(entry) {
-      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (" + minutes + " min: " + formatNumber(entry.average, 0) + ")";
+      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (fight: " + formatNumber(entry.average, 0) + ")";
     }
-    entries.forEach(function (entry) {
-      textWidth = Math.max(textWidth, 14 + context.measureText(entryText(entry)).width);
+    showChartTooltip(formatTime(sample.t), entries.map(function (entry) { return { color: entry.color, text: entryText(entry) }; }),
+      formatNumber(sample.total, 0) + " damage in the window");
+  }
+
+  const chartTooltip = document.getElementById("chart-tooltip");
+  const TOOLTIP_OFFSET = 14;
+  let pointer = { x: 0, y: 0 };
+
+  function showChartTooltip(header, lines, footer) {
+    chartTooltip.textContent = "";
+    const title = document.createElement("div");
+    title.textContent = header;
+    chartTooltip.appendChild(title);
+    lines.forEach(function (line) {
+      const div = document.createElement("div");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = line.color;
+      div.appendChild(dot);
+      div.appendChild(document.createTextNode(line.text));
+      chartTooltip.appendChild(div);
     });
-    const lineHeight = 16;
-    const boxWidth = textWidth + 16;
-    const boxHeight = (entries.length + 2) * lineHeight + 10;
-    let boxX = x + 12;
-    if (boxX + boxWidth > geometry.right) {
-      boxX = x - 12 - boxWidth;
+    const foot = document.createElement("div");
+    foot.className = "footer";
+    foot.textContent = footer;
+    chartTooltip.appendChild(foot);
+    chartTooltip.classList.add("visible");
+    placeChartTooltip();
+  }
+
+  function placeChartTooltip() {
+    const width = chartTooltip.offsetWidth;
+    const height = chartTooltip.offsetHeight;
+    let x = pointer.x + TOOLTIP_OFFSET;
+    let y = pointer.y + TOOLTIP_OFFSET;
+    if (x + width > window.innerWidth) {
+      x = pointer.x - width - TOOLTIP_OFFSET;
     }
-    let boxY = geometry.top + 4;
-    if (boxY + boxHeight > geometry.bottom) {
-      boxY = Math.max(0, geometry.bottom - boxHeight);
+    if (y + height > window.innerHeight) {
+      y = pointer.y - height - TOOLTIP_OFFSET;
     }
-    context.fillStyle = "rgba(20, 22, 26, 0.95)";
-    context.strokeStyle = "#2f343d";
-    context.beginPath();
-    context.rect(boxX, boxY, boxWidth, boxHeight);
-    context.fill();
-    context.stroke();
-    context.textAlign = "left";
-    context.textBaseline = "top";
-    context.fillStyle = "#e8e8e8";
-    context.fillText(header, boxX + 8, boxY + 5);
-    entries.forEach(function (entry, row) {
-      const y = boxY + 5 + (row + 1) * lineHeight;
-      context.fillStyle = entry.color;
-      context.beginPath();
-      context.arc(boxX + 12, y + 7, 4, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#e8e8e8";
-      context.fillText(entryText(entry), boxX + 22, y);
-    });
-    context.fillStyle = "#9aa3ad";
-    context.fillText(footer, boxX + 8, boxY + 5 + (entries.length + 1) * lineHeight);
+    chartTooltip.style.left = Math.max(0, x) + "px";
+    chartTooltip.style.top = Math.max(0, y) + "px";
+  }
+
+  function hideChartTooltip() {
+    chartTooltip.classList.remove("visible");
   }
 
   chart.addEventListener("pointermove", function (event) {
+    pointer = { x: event.clientX, y: event.clientY };
     if (samples.length < 2) {
       return;
     }
@@ -835,6 +918,7 @@
   });
   chart.addEventListener("pointerleave", function () {
     hoverIndex = -1;
+    hideChartTooltip();
     drawChart();
   });
   window.addEventListener("resize", drawChart);
@@ -844,7 +928,11 @@
     if (withCharacter) {
       cells.push(cell(event.character || ""));
     }
-    cells.push(cell(sourceLabel(event)));
+    const source = cell(sourceLabel(event));
+    if (event.wid) {
+      showThumbnailOnHover(source, event.wid);
+    }
+    cells.push(source);
     cells.push(cell(formatNumber(event.dmg, 1)));
     cells.push(cell(event.kind || ""));
     cells.push(cell(event.crit ? "crit" : "", event.crit ? "crit" : ""));
@@ -965,6 +1053,9 @@
       label.className = "muted";
       label.textContent = w.label;
       td.appendChild(label);
+    }
+    if (w.item_id) {
+      showThumbnailOnHover(td, w.item_id);
     }
     return td;
   }

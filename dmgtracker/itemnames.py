@@ -55,6 +55,7 @@ MAX_CARD_RECORDS = 8
 MAX_LIST_RECORDS = 400
 MAX_NAME_CHARS = 120
 MAX_SLUG_CHARS = 40
+MAX_PATH_CHARS = 200
 POINTER_MIN = 0x10000
 POINTER_MAX = 0x7FFFFFFFFFFF
 RECORD_ALIGNMENT = 8
@@ -96,6 +97,7 @@ class CardRecordLayout:
     record_bytes: int
     slot_offset: int
     name_offset: int
+    thumbnail_offset: int
     element_offset: int
     damage_offset: int
     serial_offset: int
@@ -131,6 +133,7 @@ class ListRecordLayout:
     name_offset: int
     rarity_offset: int
     element_offset: int
+    thumbnail_offset: int
     serial_offset: int
     seed_offset: int
 
@@ -149,9 +152,9 @@ class BuildLayout:
 KNOWN_LAYOUTS: dict[str, BuildLayout] = {
     "4845623": BuildLayout(
         "4845623",
-        CardRecordLayout(280, 8, 32, 136, 168, 224, 248),
+        CardRecordLayout(280, 8, 32, 56, 136, 168, 224, 248),
         CardsNodeLayout(b"\x01\x00\x00\x00\x01\x00\x00\x00", 32, bytes(8) + b"\xff" * 8, 4),
-        ListRecordLayout(1072, 0, 24, 80, 184, 296, 392, 632),
+        ListRecordLayout(1072, 0, 24, 80, 184, 296, 368, 392, 632),
     ),
 }
 LATEST_LAYOUT = KNOWN_LAYOUTS["4845623"]
@@ -179,7 +182,10 @@ def build_changelist(build_version: str) -> str:
 
 @dataclass(frozen=True)
 class ItemCard:
-    """One item as the inventory UI describes it."""
+    """One item as the inventory UI describes it. The thumbnail is the export text of the
+    texture the card shows: a render target the game drew the gun into
+    (`TextureRenderTarget2D'/Engine/Transient...:OakInventoryThumbnail_...'`) or a static
+    type icon (`Texture2D'/Game/uiresources/...'`)."""
 
     slot_type: str
     name: str
@@ -187,6 +193,7 @@ class ItemCard:
     damage_text: str
     serial: str
     rarity: str
+    thumbnail: str = ""
 
     @property
     def is_weapon(self) -> bool:
@@ -320,6 +327,7 @@ class ItemNameReader:
         self._log = log if log is not None else (lambda message: None)
         self._lock = threading.Lock()
         self._names: dict[bytes, str] = {}
+        self._thumbnails: dict[bytes, str] = {}
         self._last_pairs: dict[bytes, str] = {}
         self._cards_header: int | None = None
         self._list_address: int | None = None
@@ -350,10 +358,15 @@ class ItemNameReader:
             self._start_scan(unknown[0], list(slot_seeds))
         return {seed: self._names[seed] for seed in wanted if seed in self._names}
 
+    def thumbnail_for(self, seed: bytes) -> str:
+        """The thumbnail texture of a gun whose name is known, '' when none was read."""
+        return self._thumbnails.get(seed, "")
+
     def forget(self) -> None:
         """Drop every name and every remembered address; the next read starts over."""
         with self._lock:
             self._names = {}
+            self._thumbnails = {}
             self._last_pairs = {}
             self._cards_header = None
             self._list_address = None
@@ -397,11 +410,14 @@ class ItemNameReader:
         if node is None:
             return False
         data, count = node
-        pairs = self._pair(slot_seeds, self._cards_at(data, count))
+        cards = self._cards_at(data, count)
+        pairs = self._pair(slot_seeds, cards)
+        thumbnails = self._pair_thumbnails(slot_seeds, cards)
         with self._lock:
             for seed, name in pairs.items():
                 if self._last_pairs.get(seed) == name:
                     self._names[seed] = name
+                    self._thumbnails[seed] = thumbnails.get(seed, "")
             self._last_pairs = pairs
         return True
 
@@ -414,6 +430,7 @@ class ItemNameReader:
         with self._lock:
             for seed, card in entries.items():
                 self._names[seed] = card.name
+                self._thumbnails[seed] = card.thumbnail
         return True
 
     def _pair(self, slot_seeds: list[bytes | None], cards: list[ItemCard | None]) -> dict[bytes, str]:
@@ -430,6 +447,13 @@ class ItemNameReader:
             if seed is not None:
                 pairs[seed] = card.name
         return pairs
+
+    def _pair_thumbnails(self, slot_seeds: list[bytes | None], cards: list[ItemCard | None]) -> dict[bytes, str]:
+        """The thumbnail of the card in each slot, by the same pairing as the names."""
+        present = [card for card in cards if card is not None]
+        if len(present) != len(slot_seeds):
+            return {}
+        return {seed: card.thumbnail for seed, card in zip(slot_seeds, present) if seed is not None}
 
     # ------------------------------------------------------------------ scan thread
 
@@ -600,7 +624,8 @@ class ItemNameReader:
             return None
         element = self._fstring(record, layout.element_offset) or ""
         damage_text = self._fstring(record, layout.damage_offset) or ""
-        return ItemCard(slot_type, name.strip(), element, damage_text, serial, rarity)
+        thumbnail = self._fstring(record, layout.thumbnail_offset, MAX_PATH_CHARS) or ""
+        return ItemCard(slot_type, name.strip(), element, damage_text, serial, rarity, thumbnail)
 
     def _list_record_at(self, address: int) -> tuple[bytes, ItemCard] | None:
         layout = self.layout.inventory
@@ -617,7 +642,8 @@ class ItemNameReader:
         if not serial.startswith(SERIAL_PREFIX) or len(name) > MAX_NAME_CHARS:
             return None
         element = self._fstring(record, layout.element_offset) or ""
-        return seed, ItemCard(slot_type, name.strip(), element, "", serial, rarity)
+        thumbnail = self._fstring(record, layout.thumbnail_offset, MAX_PATH_CHARS) or ""
+        return seed, ItemCard(slot_type, name.strip(), element, "", serial, rarity, thumbnail)
 
     def _read_exact(self, address: int, size: int) -> bytes | None:
         """The bytes at address, or None unless all of them are readable."""
@@ -626,13 +652,13 @@ class ItemNameReader:
             return None
         return data
 
-    def _fstring(self, record: bytes, offset: int) -> str | None:
+    def _fstring(self, record: bytes, offset: int, max_chars: int = MAX_NAME_CHARS) -> str | None:
         """The text of the FString {data, num, max} at offset; '' for an empty one, None
         when the header is not an FString or the text is not readable."""
         pointer, num, capacity = _pointer_at(record, offset), _int_at(record, offset + 8), _int_at(record, offset + 12)
         if num == 0 and capacity >= 0:
             return ""
-        if not _is_pointer(pointer) or num < 1 or num > MAX_NAME_CHARS + 1 or capacity < num:
+        if not _is_pointer(pointer) or num < 1 or num > max_chars + 1 or capacity < num:
             return None
         if num == 1:
             return ""

@@ -73,6 +73,37 @@ def target_family(target_name: str) -> str:
 
 
 @dataclass
+class DamageRate:
+    """Damage over a span of seconds, per source key and in total: what a DPS column
+    divides. An empty span rates everything at zero."""
+
+    seconds: float
+    total: float
+    by_source: dict[SourceKey, float] = field(default_factory=dict)
+
+    def rate(self, key: SourceKey | None = None) -> float:
+        """Damage per second of one source (None: of everything)."""
+        damage = self.total if key is None else self.by_source.get(key, 0.0)
+        return damage / self.seconds if self.seconds > 0 else 0.0
+
+    def kind_rate(self, kind: str) -> float:
+        """Damage per second of every source of a kind together (melee from several
+        labels, say)."""
+        damage = sum(amount for key, amount in self.by_source.items() if key[0] == kind)
+        return damage / self.seconds if self.seconds > 0 else 0.0
+
+
+def fight_rate(fight: Encounter | None, now: float) -> DamageRate:
+    """The rate of the open fight so far: its damage over the seconds since its first hit,
+    idle moments inside the fight included, so it is the fight's honest DPS at this moment
+    and sinks while nothing lands. No open fight rates everything at zero."""
+    if fight is None:
+        return DamageRate(0.0, 0.0)
+    seconds = max(now - fight.started, MIN_DURATION_S)
+    return DamageRate(seconds, fight.total, {key: totals.damage for key, totals in fight.by_source.items()})
+
+
+@dataclass
 class SourceTotals:
     """Damage dealt by one source (a weapon instance, or the 'other' bucket) in an encounter."""
 
@@ -333,6 +364,7 @@ class RollingStats:
             return self.window_s
         since_first_hit = self._now - self._first_hit
         return max(min(self.window_s, since_first_hit), MIN_DURATION_S)
+
 
     def dps(self) -> float:
         return self.total / self.duration()
