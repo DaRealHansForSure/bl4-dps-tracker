@@ -376,7 +376,7 @@
     "Encounter": "The current fight: its damage and its damage over its duration.",
     "Time": "The clock time of the hit.",
     "Character": "The character that dealt the hit.",
-    "Source": "What dealt the hit: W a weapon (by its item name), G the grenade (by its name), or Skill, Melee, Other.",
+    "Source": "What dealt the hit: a weapon (by its item name, marked W), the grenade (by its name, marked G), or Skill, Melee, Other.",
     "Damage": "The damage of the hit as the game counted it (on the weapons tab: the gun's lifetime damage).",
     "Kind": "Direct: a hit; DoT: a tick of a status effect (burning, corrosion, ...).",
     "Crit": "A critical hit.",
@@ -641,7 +641,7 @@
     return span;
   }
 
-  // W or G before a named source: what kind of source dealt the hit.
+  // W or G after a named source: what kind of source dealt the hit.
   const KIND_LETTERS = { weapon: "W", skill: "S", grenade: "G", melee: "M", other: "O" };
 
   function kindBadge(kind) {
@@ -1289,12 +1289,12 @@
       cells.push(cell(event.character || ""));
     }
     const source = cell("");
-    if (event.src === "weapon" || event.src === "grenade") {
-      // Named sources get their kind in front; Skill, Melee and Other say it themselves.
-      source.appendChild(kindBadge(event.src));
-      source.appendChild(document.createTextNode(" "));
-    }
     source.appendChild(nameSpan(sourceLabel(event), event.wid));
+    if (event.src === "weapon" || event.src === "grenade") {
+      // Named sources get their kind after the name; Skill, Melee and Other say it themselves.
+      source.appendChild(document.createTextNode(" "));
+      source.appendChild(kindBadge(event.src));
+    }
     if (event.wid) {
       showItemCardOnHover(source, event.wid);
     }
