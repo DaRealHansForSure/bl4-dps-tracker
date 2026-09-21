@@ -10,6 +10,7 @@ from dmgtracker.itemidentity import (
     IDENTITY_SEED_OFFSET,
     ItemIdentityReader,
     instance_item_id,
+    seed_of,
     short_item_id,
 )
 
@@ -121,6 +122,12 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(short_item_id("instance:280"), "#280")
         self.assertEqual(short_item_id("277"), "#277")
         self.assertEqual(short_item_id("97777d4239ef3f571e0637cf"), "97777d")
+
+    def test_seed_of(self) -> None:
+        self.assertEqual(seed_of("97777d4239ef3f571e0637cf"), bytes.fromhex("97777d4239ef3f571e0637cf"))
+        self.assertIsNone(seed_of("instance:280"))
+        self.assertIsNone(seed_of("277"))
+        self.assertIsNone(seed_of("zz777d4239ef3f571e0637cf"))
 
 
 if __name__ == "__main__":

@@ -50,6 +50,16 @@ def short_item_id(item_id: str) -> str:
     return item_id[:SHORT_ID_CHARS]
 
 
+def seed_of(item_id: str) -> bytes | None:
+    """The seed bytes behind an item id; None for the instance-id fallback and old ids."""
+    if item_id.startswith(INSTANCE_PREFIX) or len(item_id) != 2 * IDENTITY_SEED_BYTES:
+        return None
+    try:
+        return bytes.fromhex(item_id)
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class IdentityLayout:
     """Where the identity struct sits inside a weapon object, from the reflected offsets."""

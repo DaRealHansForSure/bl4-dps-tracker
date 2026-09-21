@@ -33,6 +33,7 @@ if __package__ in (None, ""):
 
 from dmgtracker.formatting import format_duration, format_number, format_share  # noqa: E402
 from dmgtracker.itemidentity import short_item_id  # noqa: E402
+from dmgtracker.itemnamestore import ITEM_NAMES_FILE, read_item_names  # noqa: E402
 from dmgtracker.stats import ENCOUNTER_GAP_S, Encounter, EncounterTracker, target_family  # noqa: E402
 from dmgtracker.weaponstats import WeaponRecord  # noqa: E402
 
@@ -183,10 +184,11 @@ def format_report(
     gap_s: float,
     last_seconds: float | None = None,
     top_encounters: int | None = DEFAULT_TOP_ENCOUNTERS,
+    names: dict[str, str] | None = None,
 ) -> list[str]:
     """The whole report as text lines. `top_encounters` limits the fights printed per
     character to the largest N (None prints every one); the session summary always covers
-    all of them."""
+    all of them. `names` (item id -> item name) labels the guns whose name is known."""
     lines: list[str] = []
     events = session.all_events()
     started = session.meta.get("started")
@@ -200,7 +202,7 @@ def format_report(
         lines.append("")
         lines.append(section.title())
         lines.extend(_format_encounters(section.events, gap_s, top_encounters))
-        lines.extend(_format_weapons(section.events, section.held))
+        lines.extend(_format_weapons(section.events, section.held, names or {}))
     if last_seconds:
         total, per_second = last_seconds_average(events, last_seconds)
         lines.append("")
@@ -243,7 +245,7 @@ def _format_encounters(events: list[dict[str, Any]], gap_s: float, top: int | No
     return lines
 
 
-def _format_weapons(events: list[dict[str, Any]], held: list[dict[str, Any]]) -> list[str]:
+def _format_weapons(events: list[dict[str, Any]], held: list[dict[str, Any]], names: dict[str, str]) -> list[str]:
     weapons = weapon_records_for(events, held)
     if not weapons:
         return []
@@ -255,7 +257,7 @@ def _format_weapons(events: list[dict[str, Any]], held: list[dict[str, Any]]) ->
     for weapon in weapons:
         record = weapon.record
         lines.append(
-            f"    {record.label[:22] + ' ' + short_item_id(record.item_id):30} {format_number(record.damage):>12} "
+            f"    {record.display_label(names.get(record.item_id, ''))[:22] + ' ' + short_item_id(record.item_id):30} {format_number(record.damage):>12} "
             f"{format_number(record.dps_in_hand()):>11} {record.hits:>6} {format_number(record.average_hit()):>9} "
             f"{record.crit_share():>7} {record.kills:>6} {format_share(weapon.status_damage, record.damage):>9}"
         )
@@ -294,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no session file found (looked in {args.log_dir})")
         return 1
     session = read_session(path)
-    for line in format_report(session, gap_for(session, args.gap), args.last, None if args.all else args.top):
+    names = read_item_names(Path(args.log_dir).parent / ITEM_NAMES_FILE)
+    for line in format_report(session, gap_for(session, args.gap), args.last, None if args.all else args.top, names):
         print(line)
     return 0
 

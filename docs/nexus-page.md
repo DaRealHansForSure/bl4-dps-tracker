@@ -17,9 +17,9 @@ The point of it: compare a gun you just found against the ones you carry. A weap
 - bullet impacts, elemental damage, splash, explosive rounds (matched to the gun that fired them, even after a swap), sticky detonations, status ticks (credited to the gun that applied them)
 - action skills, grenades, melee, each on its own row
 - kills and crits
+- the item names of your guns ("Maintained Screeching T.K's Wave"), read from the game's own item cards; the in-game table keeps the short manufacturer-and-type label for width, the dashboard and the records use the item name
 
 **What it does not do**
-- show item names: weapons are labelled by manufacturer and type ("Jakobs Sniper #277"); the game does not expose item names to mods at runtime
 - track vehicle damage or healing
 - work in co-op: untested, single player only
 
@@ -45,5 +45,6 @@ Four menu entries (logging on/off, table on/off, open log folder, web dashboard 
 
 ## Changelog
 
+1.2.0: item names of the equipped guns, read from the game's item cards, on the dashboard, in the weapon records and reports (the in-game table keeps the short labels; `readout_item_names` switches it); the dashboard shows the item id next to each gun; `dmgreset --names` forgets the stored names.
 1.1.0: web dashboard at http://127.0.0.1:8765/ (live table over WebSocket, hits with search, weapon Top 10, encounters; also reachable from other devices on the network); Best DPS for Skill and Grenade; weapon records follow the gun across restarts and character switches (records from 1.0.0 are set aside); Melee row hidden by default; table at the left screen border.
 1.0.0: first release.

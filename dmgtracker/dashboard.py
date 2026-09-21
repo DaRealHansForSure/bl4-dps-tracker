@@ -74,8 +74,10 @@ THREAD_JOIN_TIMEOUT_S = 3.0
 MAX_PENDING_HITS = 5000
 # The newest hits of the session sent to a client on connect, so the feed is not empty after a reload.
 RECENT_HITS = 50
-# Window samples (time, DPS, damage) kept for the chart, one per table change, sent on connect.
+# Chart samples (time, DPS, damage, the "now" values), one per second while a table exists,
+# kept for a client that connects later: five minutes.
 CHART_HISTORY = 300
+SAMPLE_INTERVAL_S = 1.0
 # The chart's "now": damage per second over the last so many seconds, one value per window
 # in every sample; `chart_seconds` (a setting) is the window the page starts with.
 CHART_WINDOWS_S = (10.0, 30.0, 60.0, 120.0)
@@ -103,6 +105,8 @@ class DashboardSources:
     session_path: Callable[[], Path | None]
     window_minutes: Callable[[], float]
     encounter_gap_s: Callable[[], float]
+    # item id -> item name, for the weapon lists (the live table gets them with its rows).
+    item_names: Callable[[], dict[str, str]] = lambda: {}
 
 
 class Dashboard:
@@ -129,9 +133,11 @@ class Dashboard:
         self._state_lock = threading.Lock()
         self._wake = threading.Condition(self._state_lock)
         self._rows_json: list[Message] = []
-        self._rows_sample: Message | None = None
+        self._last_sample_time = 0.0
         self._rows_dirty = False
         self._last_rows: list[TableRow] = []
+        self._slot_item_ids: list[str] = []
+        self._item_names: dict[str, str] = {}
         self._pending_hits: list[Message] = []
         self._pending_character: dict[str, str] | None = None
         self._history: deque[Message] = deque(maxlen=CHART_HISTORY)
@@ -213,23 +219,24 @@ class Dashboard:
 
     # ------------------------------------------------------------------ publishing (other threads)
 
-    def publish_rows(self, rows: list[TableRow], slot_item_ids: list[str] | None = None) -> None:
+    def publish_rows(
+        self, rows: list[TableRow], slot_item_ids: list[str] | None = None, item_names: dict[str, str] | None = None
+    ) -> None:
         """The table as the game shows it; only a change wakes the broadcaster.
         `slot_item_ids` names the gun in each weapon slot, so the chart's "now" can be
-        matched to the slot rows by item."""
-        if rows == self._last_rows:
+        matched to the slot rows by item, and `item_names` gives the page the item names
+        of those guns (the table itself carries the short type labels)."""
+        slot_item_ids = list(slot_item_ids or [])
+        item_names = dict(item_names or {})
+        if rows == self._last_rows and slot_item_ids == self._slot_item_ids and item_names == self._item_names:
             return
-        self._last_rows = rows
         rows_json = [{"cells": list(row.cells), "style": row.style} for row in rows]
-        now = time.time()
         with self._wake:
-            instant = self._instant_dps(now)
-            sample = _window_sample(rows, now, instant, slot_item_ids or [])
+            self._last_rows = rows
             self._rows_json = rows_json
-            self._rows_sample = sample
+            self._slot_item_ids = slot_item_ids
+            self._item_names = item_names
             self._rows_dirty = True
-            if sample is not None:
-                self._history.append(sample)
             self._wake.notify()
 
     def publish_hits(self, events: list[Message]) -> None:
@@ -263,11 +270,13 @@ class Dashboard:
         return by_window
 
     def publish_character(self, identity: dict[str, str]) -> None:
-        """A character switch starts the live numbers from zero; the chart follows."""
+        """A character switch starts the live numbers from zero; the chart follows, and the
+        previous character's table is not sampled any more."""
         with self._wake:
             self._pending_character = dict(identity)
             self._history.clear()
             self._recent_hits.clear()
+            self._last_rows = []
             self._wake.notify()
 
     # ------------------------------------------------------------------ server threads
@@ -308,8 +317,23 @@ class Dashboard:
             with self._wake:
                 self._wake.wait(WAKE_INTERVAL_S)
                 messages = self._take_pending_messages()
+                sample = self._sample_if_due(time.time())
+            if sample is not None:
+                messages.append({"type": "sample", "sample": sample})
             for message in messages:
                 self._broadcast(json.dumps(message))
+
+    def _sample_if_due(self, now: float) -> Message | None:
+        """One chart sample per second while there is a table: the table's window values and
+        the "now" DPS of the last seconds, which keeps falling after the last hit whether or
+        not the table changes. Called with the state lock held."""
+        if not self._last_rows or now - self._last_sample_time < SAMPLE_INTERVAL_S:
+            return None
+        self._last_sample_time = now
+        sample = _window_sample(self._last_rows, now, self._instant_dps(now), self._slot_item_ids)
+        if sample is not None:
+            self._history.append(sample)
+        return sample
 
     def _take_pending_messages(self) -> list[Message]:
         """Called with the state lock held: everything published since the last round."""
@@ -318,7 +342,13 @@ class Dashboard:
             messages.append({"type": "character", "character": self._pending_character})
             self._pending_character = None
         if self._rows_dirty:
-            messages.append({"type": "table", "rows": self._rows_json, "t": time.time(), "sample": self._rows_sample})
+            messages.append({
+                "type": "table",
+                "rows": self._rows_json,
+                "t": time.time(),
+                "slots": self._slot_item_ids,
+                "names": self._item_names,
+            })
             self._rows_dirty = False
         if self._pending_hits:
             messages.append({"type": "hits", "events": self._pending_hits})
@@ -340,6 +370,8 @@ class Dashboard:
         with self._state_lock:
             rows = self._rows_json
             history = list(self._history)
+            slots = list(self._slot_item_ids)
+            names = dict(self._item_names)
         return {
             "type": "hello",
             "version": self.sources.version,
@@ -348,6 +380,8 @@ class Dashboard:
             "chart_seconds": self.chart_seconds,
             "chart_windows": list(CHART_WINDOWS_S),
             "rows": rows,
+            "slots": slots,
+            "names": names,
             "recent": self._recent_hits_from_file(),
             "history": history,
         }
@@ -389,7 +423,7 @@ class Dashboard:
             return _json_response({"sessions": list_sessions(self.sources.log_dir), "current": self._current_session_name()})
         if path == "/api/weapons":
             by = _first(query, "by", "dps")
-            return _json_response(weapons_payload(self.sources.weapon_store(), self.sources.character(), by))
+            return _json_response(weapons_payload(self.sources.weapon_store(), self.sources.character(), by, self.sources.item_names()))
         session = self._session_for(query)
         if session is None:
             return _json_response({"error": "no such session"}, HTTPStatus.NOT_FOUND)
@@ -398,7 +432,7 @@ class Dashboard:
             size = _int(query, "size", DEFAULT_PAGE_SIZE)
             return _json_response(hits_page(session, page, size, _first(query, "q", "")))
         if path == "/api/session-weapons":
-            return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session)})
+            return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session, self.sources.item_names())})
         if path == "/api/encounters":
             return _json_response(encounters_payload(session, self.sources.encounter_gap_s()))
         return _text_response(HTTPStatus.NOT_FOUND, "not found")
@@ -489,6 +523,9 @@ def _window_sample(rows: list[TableRow], now: float, instant: dict[str, dict[str
                 "key": key,
                 "label": label,
                 "slot": slot,
+                # The gun's item id for the slot rows, so the page can name the line after
+                # the item once the name is known.
+                "item": hit_key if slot >= 0 else "",
                 "dps": parse_number(row.cells[DPS_CELL]),
                 "now": _instant_for(instant, hit_key) if hit_key else {name: 0.0 for name in instant},
             })

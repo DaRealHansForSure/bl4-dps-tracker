@@ -1,6 +1,6 @@
 # Item names: where they come from and where the mod reads them
 
-Research of 2026-09-21 (`poc/probe_names3.py` to `probe_names30.py`, run in the game with the
+Research of 2026-09-21 (`poc/probe_names3.py` to `probe_names32.py`, run in the game with the
 gun in hand). The rule for it: names must come from the running game, not from data
 files. Everything below was read from the live process.
 
@@ -47,35 +47,87 @@ compose names. It reads the finished string instead.
 
 ## Where the finished name lives
 
-The UI is Coherent (HTML/JS). The six copies of the finished name a full memory scan found
-were all UI-side (render commands with transform matrices, DOM objects, a text-shaping
-record), and the UI Blueprints hold no text. The one place that ties the name to an item
-is the UI's **item card model of the equipped weapons**: one 280-byte record per weapon
-slot, in slot order, each holding as FStrings the slot type (`weapon`), the name (with a
-trailing space), the thumbnail path, the element icon and element, the damage text
-(`1.612 x 10`), the item serial (`@Ugd_t@Fme!Kx...`) and the rarity (`legendary`). A second
-block right before it holds one 288-byte record per slot with a copy of the identity
-(seed bytes included), and a third one (low heap, 0x1415...) lists every equipped item with
-slugs (`Jakobs-Shotgun`, `legendary`, `jakobs`, `weapon`, `shotgun`, `206.771`).
+The UI is Coherent (HTML/JS) and keeps C++ data models for its pages. The name of an
+equipped gun is in two of them the mod reads (`poc/probe_run49_around.py` to
+`probe_run57_slots_and_headers.py` and runner runs 62-77, sessions 3 to 6):
 
-The records array's header `{data, num, max}` sits in a 64-byte node of the UI model pool.
-Its owner could not be named (the pointers to it are the JS binding cache and a Nexus
-field-address map), but the pool is reachable: `OakGameInstance + 704` is the UI system
-object, `+1176` inside it is the UI model table, a 64-byte allocation in the same pool.
-`dmgtracker/itemnames.py` reads those two pointers, takes the memory region of the model
-table and scans it (64 KB, then 1 MB, then 8 MB around the table) for a header whose first
-record validates: slot type, a name, a serial starting with `@U`, a rarity. In the live
-test that took 0.9 ms; a cached header reads in 0.2 ms. The offsets are keyed by the game
-build (`KismetSystemLibrary.GetBuildVersion()`, `Oak2-Win64-4845623-CL-4845623`); an unknown
-build is tried with the latest layout, and the validation decides.
+- **Item cards**, one per equipped weapon in slot order, 280 bytes: the slot type (`weapon`),
+  the name (with a trailing space), the thumbnail path
+  (`TextureRenderTarget2D'/Engine/Transient.SceneCaptureComponent2D_...:OakInventoryThumbnail_...'`),
+  the element, the damage text (`1.612 x 10`), the item serial (`@Ugd_t@Fme!K...`) and the
+  rarity. No seed. They exist from the first second in the world.
+- **Inventory list**, one per item the inventory screen last showed (22-25 records, backpack
+  and equipped, 1072 bytes): the seed (+632) with the name (+80), the serial (+392), the
+  slugs and the localised texts. A snapshot: it appears once the inventory screen was
+  opened and misses a gun equipped from the ground since.
 
-The records are paired with the equipped weapons by slot order; a pairing counts only when
-two consecutive reads (one second apart) agree, because the UI model lags an equipment
-change by a moment. Names are stored in the weapon record (`weapons.json`, field `name`), so
-a gun keeps its name across sessions even before the UI model is up.
+A third model, the slot records (288 bytes: type slug, rarity slug, a copy of the identity
+with the seed at +248, slot order), exists too but leads nowhere: the cards were 9 KB from
+it in one session and hundreds of MB away in the next.
 
-Backpack items are not covered (no actor, not needed for damage). Reading the equipped
-weapons' names means the mod never has to compose a name itself.
+Nothing the SDK can name points at these arrays. A walk of 58k pointers from the UI
+objects found none (`probe 50`), the `OakGameInstance+704` anchor of the first two sessions
+(header node 2.3 KB and 5 KB away) was heap adjacency (104 MB away in session 3), and the
+UE reflection globals (`GObjects`, `GNames`, `GWorld`, from the forum or Dumper-7) reach
+UObjects only, which these structs are not. One lesson from runs 57-68: a pointer scan run
+from Python finds its own needles too. The "binding caches" and "field-address maps" the
+earlier notes described were `bytes` objects and other Python values of the probes (their
+type pointers resolve into `python314.dll`); the only real holder of the cards' data
+pointer is the array header itself.
+
+So `dmgtracker/itemnames.py` finds both models by content, in one pass on a thread of its
+own:
+
+1. The seed of an equipped gun is known from its actor. Every committed private
+   read-write region (7.3 GB, 52k regions) is read a megabyte at a time (8 s for all of it
+   once the read buffer is copied by its read length, `ctypes.string_at(buffer, got)`;
+   copying an 8 MB `buffer.raw` for each of 45k tiny regions is what made earlier scans
+   take minutes). The regions within 512 MB of the last model found come first, or,
+   knowing none, the band 0x300000000-0x380000000 where the UI's allocator put the models
+   in every session seen (cards' node at 0x31ab9e8d0 and 0x31f312510, lists at 0x31..,
+   0x33..); the rest follows, so a wrong guess only costs the order.
+2. A hit of the seed is tried as an inventory record (seed at +632): the whole list's names
+   are taken, no confirmation needed. That covers every gun the inventory screen showed.
+3. The cards are found through the node that holds their array header, which had the same
+   shape in every session: a one-element array header `{ptr, 1, 1}` right before
+   `{data, num, max}`, two ints, an 8-byte zero and an 8-byte minus one after it. The
+   search needle is the `{1, 1}` without its trailing zeros (`bytes.find` degenerates on a
+   needle ending in a byte as common as zero: a pointer scan for `0x329d84d8` took 27 s,
+   for the same value without the zeros 10 s), the rest of the shape is checked on the
+   chunk bytes without a read, and only then are the records behind the pointer read and
+   validated (slot type, name, serial `@U...`, rarity). Live: 1.6 s to the node, in the
+   band. Searching `{ptr, N, N}` headers instead cost 264 s (512k matches, 334k reads).
+4. Card i pairs with the gun in slot i, the order of the game's own `EquippedInventorySlots`
+   that the caller passes as seeds; empty slots are absent on both sides. A pairing is
+   stored only when two reads a second apart agree, because the model lags an equipment
+   change by a moment. The addresses are remembered; a new gun is read from them without a
+   scan, and a scan that found nothing rests 15 s, then twice as long each time (ten
+   minutes at most): the first scan of a session, seconds after the character loaded,
+   usually runs before the UI has built its models.
+
+The mod asks the reader only while the player has been in play for three seconds (a pawn,
+no menu, controls not taken by a tunnel or cutscene, `mod.py` `_in_play`): a scan during a
+load finds nothing, because the UI builds its models a moment after the world is up.
+
+The record layouts and the node shape are keyed by the game build
+(`KismetSystemLibrary.GetBuildVersion()`, `Oak2-Win64-4845623-CL-4845623`); an unknown
+build is tried with the latest layout, and the validation decides. Names are stored in one
+table for every character, `BL4DamageTracker\item-names.json` (`dmgtracker/itemnamestore.py`,
+item id -> name): a gun's name depends on the gun alone, so a name read once serves every
+character, survives the record resets, and is written on the log writer's 30 s interval
+whether or not a hit was dealt. The per-character `weapons.json` holds numbers only; the
+dashboard, `dmgweapons` and the report look the names up by item id.
+
+Every read goes through `ReadProcessMemory` after `VirtualQuery` confirmed the pages are
+committed and not guard pages: a read that touches a guard page disarms it, and the thread
+whose stack it guarded crashes later. The scan pauses every 8 MB; the game thread only ever
+reads remembered addresses.
+
+Not covered: backpack items (no actor, not needed for damage) and the thumbnails. The
+card's render target could be exported with `KismetRenderingLibrary.ExportRenderTarget`
+(the `OakThumbnailManager` keeps them in `RenderedThumbnails`, a map pyunrealsdk cannot
+read but whose raw elements are `{key 8 bytes, UTextureRenderTarget2D*, hash links}`, key
+not yet understood); that is a feature for later.
 
 ## Tools
 
@@ -88,5 +140,8 @@ weapons' names means the mod never has to compose a name itself.
 - FName from a raw index: write the 8 bytes into the `Name` field of a scratch
   `InventoryPartCriterionData` and read it back (`probe_names13`).
 - Memory reads through `ReadProcessMemory` on the own process fail cleanly on unmapped
-  pages; full scans belong in a background thread (`probe_names21`, `25`), never on the
-  game thread (the 45 s scan of `probe_names10` froze the game).
+  pages; full scans belong in a background thread (`probe_names21`, `25`, `32`), never on
+  the game thread (the 45 s scan of `probe_names10` froze the game). A read that starts on
+  an unmapped page yields nothing at all, so scan in page-aligned chunks. Never read a
+  guard page (`VirtualQuery` first). Dumper-7 must not be injected while playing: its
+  dumper thread asserts the engine (`UObjectBase.cpp:153`, crash of 2026-09-21 22:23).

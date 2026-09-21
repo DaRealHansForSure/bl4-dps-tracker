@@ -100,6 +100,11 @@ class WeaponRecord:
     def crit_share(self) -> str:
         return format_share(self.crits, self.direct_hits)
 
+    def display_label(self, name: str = "") -> str:
+        """The item name when one is known (itemnamestore.py, keyed by the item id), the
+        manufacturer-and-type label otherwise."""
+        return name or self.label
+
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WeaponRecord:
         return cls(
@@ -331,8 +336,10 @@ class WeaponStore:
             return sorted(records, key=lambda record: (record.damage, record.dps_in_hand()), reverse=True)
         return sorted(records, key=lambda record: (record.dps_in_hand(), record.damage), reverse=True)
 
-    def format_ranking(self, limit: int = 15, by: str = "dps") -> list[str]:
-        """Text lines for the console: one header, one line per weapon."""
+    def format_ranking(self, limit: int = 15, by: str = "dps", names: dict[str, str] | None = None) -> list[str]:
+        """Text lines for the console: one header, one line per weapon, named by item where
+        `names` (item id -> item name) knows the gun."""
+        names = names or {}
         lines = [
             f"{'#':>2}  {'Weapon':30} {'DPS in hand':>12} {'Peak DPS':>10} {'Damage':>14} {'Hits':>6} "
             f"{'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'In hand':>9}"
@@ -340,7 +347,7 @@ class WeaponStore:
         for position, record in enumerate(self.ranking(by)[:limit], start=1):
             minutes = record.held_seconds / 60.0
             lines.append(
-                f"{position:>2}  {record.label[:22] + ' ' + short_item_id(record.item_id):30} "
+                f"{position:>2}  {record.display_label(names.get(record.item_id, ''))[:22] + ' ' + short_item_id(record.item_id):30} "
                 f"{format_number(record.dps_in_hand()):>12} {format_number(record.peak_dps):>10} "
                 f"{format_number(record.damage):>14} {record.hits:>6} {format_number(record.average_hit()):>9} "
                 f"{record.crit_share():>7} {record.kills:>6} {format_number(minutes, decimals=1) + ' min':>9}"
