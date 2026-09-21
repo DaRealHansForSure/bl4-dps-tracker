@@ -575,18 +575,25 @@
   // figure, the item code, whether a picture exists), by item id, from /api/items. Loaded
   // once and again whenever the table brings a name the page has not seen.
   const itemInfos = {};
-  let itemsLoading = false;
-  loadItems();
+  let itemsLoading = null;
+  const itemsReady = loadItems();
 
+  // Every entry of the table names its item for every list on the page, not only the
+  // guns of the character playing now: a session's hits may be another character's.
   function loadItems() {
     if (itemsLoading) {
-      return;
+      return itemsLoading;
     }
-    itemsLoading = true;
-    fetch("/api/items").then(function (r) { return r.json(); }).then(function (data) {
-      Object.keys(data.items || {}).forEach(function (itemId) { itemInfos[itemId] = data.items[itemId]; });
-      itemsLoading = false;
-    }).catch(function () { itemsLoading = false; });
+    itemsLoading = fetch("/api/items").then(function (r) { return r.json(); }).then(function (data) {
+      Object.keys(data.items || {}).forEach(function (itemId) {
+        itemInfos[itemId] = data.items[itemId];
+        if (!itemNames[itemId] && data.items[itemId].name) {
+          itemNames[itemId] = data.items[itemId].name;
+        }
+      });
+      itemsLoading = null;
+    }).catch(function () { itemsLoading = null; });
+    return itemsLoading;
   }
 
   function rarityClass(itemId) {
@@ -1241,24 +1248,26 @@
   let queryTimer = null;
 
   function loadHits() {
-    withSessions(function () {
-      const params = new URLSearchParams({
-        session: hitsSession.value,
-        page: String(hitsPage),
-        size: hitsSize.value,
-        q: hitsQuery.value
-      });
-      fetch("/api/hits?" + params.toString()).then(function (r) { return r.json(); }).then(function (data) {
-        if (data.error) {
-          document.getElementById("hits-count").textContent = data.error;
-          return;
-        }
-        hitsPage = data.page;
-        hitsPages = data.pages;
-        document.getElementById("hits-page").textContent = "page " + data.page + " / " + data.pages;
-        document.getElementById("hits-count").textContent = formatNumber(data.total, 0) + " hits";
-        fill(hitsBody, data.events.map(function (event) { return hitRow(event, true); }));
-      });
+    itemsReady.then(function () { withSessions(loadHitsPage); });
+  }
+
+  function loadHitsPage() {
+    const params = new URLSearchParams({
+      session: hitsSession.value,
+      page: String(hitsPage),
+      size: hitsSize.value,
+      q: hitsQuery.value
+    });
+    fetch("/api/hits?" + params.toString()).then(function (r) { return r.json(); }).then(function (data) {
+      if (data.error) {
+        document.getElementById("hits-count").textContent = data.error;
+        return;
+      }
+      hitsPage = data.page;
+      hitsPages = data.pages;
+      document.getElementById("hits-page").textContent = "page " + data.page + " / " + data.pages;
+      document.getElementById("hits-count").textContent = formatNumber(data.total, 0) + " hits";
+      fill(hitsBody, data.events.map(function (event) { return hitRow(event, true); }));
     });
   }
 
@@ -1377,10 +1386,7 @@
   }
 
   function loadWeapons() {
-    const items = fetch("/api/items").then(function (r) { return r.json(); }).then(function (data) {
-      Object.keys(data.items || {}).forEach(function (itemId) { itemInfos[itemId] = data.items[itemId]; });
-    }).catch(function () {});
-    items.then(function () { return fetch("/api/weapons?by=" + encodeURIComponent(weaponsBy.value)); }).then(function (r) { return r.json(); }).then(function (data) {
+    loadItems().then(function () { return fetch("/api/weapons?by=" + encodeURIComponent(weaponsBy.value)); }).then(function (r) { return r.json(); }).then(function (data) {
       const who = data.character ? data.character.name + " (" + data.character.class + ")" : "no character loaded";
       document.getElementById("weapons-character").textContent = who;
       data.weapons.forEach(function (w) { if (w.name) { itemNames[w.item_id] = w.name; } });

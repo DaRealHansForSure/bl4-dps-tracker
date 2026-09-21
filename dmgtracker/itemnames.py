@@ -379,14 +379,21 @@ class ItemNameReader:
 
     def names_of_items(self, seeds: list[bytes]) -> dict[bytes, str]:
         """seed -> name for items that are not weapons (the grenade, say), which only the
-        inventory list names: no scan is started for them, they come along with the list."""
+        inventory list names. A missing one makes the remembered list be read again or,
+        without a list, starts a scan for the list alone (the cards do not name gadgets)."""
         found = {seed: self._names[seed] for seed in seeds if seed in self._names}
         missing = [seed for seed in seeds if seed not in found]
+        if not missing:
+            return found
         list_address = self._list_address
-        if missing and list_address is not None and self._clock() - self._last_list_read >= LIST_REREAD_INTERVAL_S:
+        if list_address is not None and self._clock() - self._last_list_read >= LIST_REREAD_INTERVAL_S:
             self._last_list_read = self._clock()
             if self._learn_from_list(list_address):
                 found.update({seed: self._names[seed] for seed in missing if seed in self._names})
+            else:
+                self._list_address = None
+        if self._list_address is None:
+            self._start_scan(missing[0], [], want_cards=False)
         return found
 
     def forget(self) -> None:
@@ -420,11 +427,11 @@ class ItemNameReader:
             if not self._learn_from_list(list_address):
                 self._list_address = None
 
-    def _start_scan(self, seed: bytes, slot_seeds: list[bytes | None]) -> None:
+    def _start_scan(self, seed: bytes, slot_seeds: list[bytes | None], want_cards: bool = True) -> None:
         if self.discovering or self._clock() < self._next_scan_at:
             return
         self._scan = threading.Thread(
-            target=self._scan_in_background, args=(seed, slot_seeds), name="dmgtracker-item-names", daemon=True
+            target=self._scan_in_background, args=(seed, slot_seeds, want_cards), name="dmgtracker-item-names", daemon=True
         )
         self._scan.start()
 
@@ -486,12 +493,13 @@ class ItemNameReader:
 
     # ------------------------------------------------------------------ scan thread
 
-    def _scan_in_background(self, seed: bytes, slot_seeds: list[bytes | None]) -> None:
+    def _scan_in_background(self, seed: bytes, slot_seeds: list[bytes | None], want_cards: bool = True) -> None:
         self.scans += 1
         started = time.perf_counter()
-        self._log(f"scan {self.scans} for the seed {seed.hex()[:6]} started, {self._scan_order_text()} first")
+        what = "" if want_cards else " (the inventory list only)"
+        self._log(f"scan {self.scans} for the seed {seed.hex()[:6]}{what} started, {self._scan_order_text()} first")
         try:
-            found = self._scan_for(seed, slot_seeds)
+            found = self._scan_for(seed, slot_seeds, want_cards)
         except Exception as ex:  # noqa: BLE001 - a scan that fails is a scan that found nothing
             self.last_error = f"{type(ex).__name__}: {ex}"
             found = False
@@ -518,10 +526,10 @@ class ItemNameReader:
         parts.append(f"{len(self._names)} name(s) known")
         return ", ".join(parts)
 
-    def _scan_for(self, seed: bytes, slot_seeds: list[bytes | None]) -> bool:
+    def _scan_for(self, seed: bytes, slot_seeds: list[bytes | None], want_cards: bool = True) -> bool:
         """One pass over the heaps for the seed (an inventory record gives the name at
-        once) and for the cards' node (its cards pair with the slots, the confirming read
-        follows). True once the seed has a name or the cards were found."""
+        once) and, when wanted, for the cards' node (its cards pair with the slots, the
+        confirming read follows). True once the seed has a name or the cards were found."""
         node_needle = _search_needle(self.layout.cards_node.before)
         since_rest = 0
         for base, size in self._scan_order(list(self._regions())):
@@ -534,7 +542,7 @@ class ItemNameReader:
                     if self._learn_list_around(chunk_start + position) and seed in self._names:
                         return True
                     position = chunk.find(seed, position + 1)
-                position = chunk.find(node_needle)
+                position = chunk.find(node_needle) if want_cards else -1
                 while 0 <= position < SCAN_CHUNK_BYTES:
                     if position % RECORD_ALIGNMENT == 0 and self._learn_cards_around(chunk, chunk_start, position, slot_seeds):
                         return True

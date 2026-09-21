@@ -431,7 +431,7 @@ def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
     unnamed: dict[bytes, tuple[str, str]] = {}
     for item_id, label in gadgets.items():
         seed = seed_of(item_id)
-        if seed is not None and not name_store.name_for(item_id):
+        if seed is not None and (not name_store.name_for(item_id) or _thumbnail_wanted(item_id)):
             unnamed[seed] = (item_id, label)
     if not unnamed:
         return
@@ -439,6 +439,8 @@ def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
         item_id, label = unnamed[seed]
         if name_store.set_info(item_id, _item_info(name, label, name_reader.card_for(seed), wall_now)):
             _say(f"{label} {short_item_id(item_id)} is {name}")
+        if _thumbnail_wanted(item_id):
+            _queue_thumbnail(item_id, label, name_reader.card_for(seed))
 
 
 def _element_names() -> dict[int, str]:
@@ -463,17 +465,21 @@ def _thumbnail_wanted(item_id: str) -> bool:
 
 
 def _note_thumbnail(weapon: DamageSource, names: dict[bytes, str]) -> None:
-    """Queue the export of a gun's picture once the reader knows its card: a render
-    target now, or never in this session (a type icon has no picture to export)."""
+    """Queue the export of a gun's picture once the reader knows its card."""
     seed = seed_of(weapon.item_id)
     if seed is None or seed not in names or name_reader is None:
         return
-    card = name_reader.card_for(seed)
+    _queue_thumbnail(weapon.item_id, weapon.label, name_reader.card_for(seed))
+
+
+def _queue_thumbnail(item_id: str, label: str, card: ItemCard | None) -> None:
+    """An item's picture is exported when its card names a render target; a type icon
+    has no picture to export, so the item is not asked again this session."""
     texture = card.thumbnail if card is not None else ""
     if not texture.startswith(RENDER_TARGET_PREFIX):
-        _thumbnails_tried.add(weapon.item_id)
+        _thumbnails_tried.add(item_id)
         return
-    _thumbnail_exports[weapon.item_id] = (texture[len(RENDER_TARGET_PREFIX):].rstrip("'"), weapon.label)
+    _thumbnail_exports[item_id] = (texture[len(RENDER_TARGET_PREFIX):].rstrip("'"), label)
 
 
 def _export_thumbnail_if_in_menu(controller: UObject) -> None:

@@ -227,6 +227,20 @@ class ItemNameReaderTest(unittest.TestCase):
         harness.wait_for_scan()
         self.assertEqual(harness.reader.names_for(SEEDS), NAMES_BY_SEED)
 
+    def test_items_that_are_not_weapons_get_a_scan_for_the_list_alone(self) -> None:
+        # The cards are there (found first by a weapon scan), the grenade is only in the list.
+        write_cards(self.memory, self.heap)
+        grenade_seed = bytes([7] * 12)
+        write_list(self.memory, self.heap, LIST_BLOCK, [("gadget", "epic", "Fully Loaded Mad Hatter Satchel Charge", "@Ugr%DXm/*B2", "corrosive", "")], [grenade_seed])
+        harness = ReaderHarness(self.memory)
+        self.assertEqual(harness.names_after_scan(SEEDS), NAMES_BY_SEED)
+        self.assertEqual(harness.reader.names_of_items([grenade_seed]), {})
+        harness.wait_for_scan()
+        self.assertEqual(harness.reader.scans, 2)
+        self.assertIn("the inventory list only", harness.log[-2])
+        self.assertEqual(harness.reader.names_of_items([grenade_seed]), {grenade_seed: "Fully Loaded Mad Hatter Satchel Charge"})
+        self.assertEqual(harness.reader.card_for(grenade_seed).rarity, "epic")
+
     def test_a_gun_missing_from_a_stale_list_is_looked_for_again_later(self) -> None:
         write_list(self.memory, self.heap, LIST_BLOCK, GUNS[:3], SEEDS[:3])
         harness = ReaderHarness(self.memory)
