@@ -16,10 +16,10 @@ Skill                2'034'870     20'349     24'118
 Grenade                120'322      1'204      3'350
 Other                    7'703         77
 
-Last 5 min           3'219'066     32'190
+Last 60 min          3'219'066     32'190
 ```
 
-- `Total` covers the **last 5 minutes**, by the clock on the wall: fighting or not, in a menu or not, so a source that stops dealing damage is out of the totals five minutes after its last hit (the table is hidden in menus, but its window keeps moving).
+- `Total` covers the **last 60 minutes** (`readout_window_minutes`), by the clock on the wall: fighting or not, in a menu or not, so a source that stops dealing damage is out of the totals an hour after its last hit (the table is hidden in menus, but its window keeps moving).
 - `DPS` is **damage per second right now**: a row's hits of the last 10 s (`readout_dps_seconds`) over the seconds in which it landed one. A gun that did 40'000 in one second reads 40'000, sustained fire reads its sustained rate, and ten seconds after a row's last hit it reads 0. No averages over fights or windows. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
@@ -69,7 +69,7 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | Setting | Default | Meaning |
 |---|---|---|
 | `log_dir` | `%LOCALAPPDATA%\BL4DamageTracker\logs` | where sessions are written; environment variables allowed |
-| `readout_window_minutes` | `5.0` | the table's window for the totals, in minutes |
+| `readout_window_minutes` | `60.0` | the table's window for the totals, in minutes |
 | `readout_dps_seconds` | `10.0` | how many last seconds the DPS column looks at |
 | `readout_show_encounter_row` | `false` | add an `Encounter` row (the current fight, for bosses) |
 | `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |

@@ -339,13 +339,13 @@
   // comes from the mod with its rows, the others are in the markup.
   const HEADER_HELP = {
     "Weapon": "The gun in each of the four weapon slots (its item name once read, the short id after it), then the other sources of damage.",
-    "Total": "Damage dealt in the last 5 minutes, by the clock on the wall.",
+    "Total": "Damage dealt in the table's window (the last 60 minutes unless set otherwise), by the clock on the wall.",
     "DPS": "Damage per second right now: the row's hits of the last 10 seconds over the seconds in which it landed one. 40'000 in one second reads 40'000; ten seconds after the row's last hit it reads 0.",
-    "Share [%]": "The row's share of the damage of the last 5 minutes.",
+    "Share [%]": "The row's share of the window's damage.",
     "Crit [%]": "Share of the row's direct hits that were critical hits (status ticks cannot crit).",
     "Kills": "Kills credited to the row.",
     "Best DPS": "The highest value the DPS column ever reached for this row, over every session of the character. It only rises.",
-    "Last 5 min": "Everything together, over the last 5 minutes.",
+    "Last": "Everything together, over the table's window.",
     "Encounter": "The current fight: its damage and its damage over its duration.",
     "Time": "The clock time of the hit.",
     "Character": "The character that dealt the hit.",
@@ -649,7 +649,7 @@
       const cells = r.cells.map(function (text, column) {
         const td = column === 0 && itemId ? weaponCell(text, itemId) : cell(text);
         if (r.style === "header" || r.style === "total") {
-          const help = HEADER_HELP[text.replace(/^Last .*$/, "Last 5 min")] || HEADER_HELP[text.replace(/ \d+s$/, "")];
+          const help = HEADER_HELP[text.replace(/^Last .*$/, "Last")] || HEADER_HELP[text];
           if (help) {
             td.title = help;
           }

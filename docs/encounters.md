@@ -51,9 +51,9 @@ The mod keeps the last 1000 closed fights of a session in memory for the in-game
 
 ## The window's clock, which is related but not the same
 
-The table's other rows ("last 5 minutes") do not use encounters. They use the clock on the
+The table's other rows ("last 60 min") do not use encounters. They use the clock on the
 wall: it runs whether you are fighting or not, in a menu or not, paused or not (a user
-rule: the last five minutes are the last five minutes). On that clock the rolling window
+rule: the last hour is the last hour). On that clock the rolling window
 covers the last `readout_window_minutes`, so a source that stops dealing damage is out of
 the numbers that many minutes after its last hit, on schedule, and its DPS sinks on the way
 there as its hits leave the window one by one. Until the window is full, the DPS divides by

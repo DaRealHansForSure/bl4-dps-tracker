@@ -95,7 +95,7 @@ DEFAULT_BEST_COLUMN_WIDTH = 170.0
 FIXED_COLUMN_COUNT = 3
 SHARE_COLUMN_INDEX = 3
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
-DEFAULT_READOUT_WINDOW_MINUTES = 5.0
+DEFAULT_READOUT_WINDOW_MINUTES = 60.0
 # The DPS column is damage per second right now: a row's hits of the last so many seconds
 # over the seconds in which it landed one. Totals stay over the window.
 DEFAULT_READOUT_DPS_SECONDS = 10.0
@@ -735,7 +735,7 @@ def _record_peaks(now: float, now_rate: DamageRate) -> None:
 
 def _advance_play_clock(now: float, in_play: bool) -> None:
     """Run the window's clock on wall time: fighting or not, in a menu or not, the last
-    five minutes are the last five minutes (a user rule), so a source that stops dealing
+    hour is the last hour (a user rule), so a source that stops dealing
     damage comes down on schedule and a pause does not hold the numbers still. The step
     doubles as the time-in-hand sample, but only in play, while a fight is open and between
     samples close together (a long gap is a pause or a loading screen): the lifetime
