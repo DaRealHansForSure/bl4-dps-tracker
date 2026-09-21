@@ -28,8 +28,8 @@ from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
 from .formatting import format_number
 from .itemidentity import ItemIdentityReader, seed_of, short_item_id
-from .itemnames import ItemNameReader, layout_for_build
-from .itemnamestore import ITEM_NAMES_FILE, ItemNameStore
+from .itemnames import ItemCard, ItemNameReader, layout_for_build
+from .itemnamestore import ITEM_NAMES_FILE, ItemInfo, ItemNameStore
 from .thumbnails import THUMBNAILS_DIR_NAME, convert_exr_to_png, thumbnail_path
 from .logwriter import SessionLog
 from .poller import DamagePoller
@@ -220,6 +220,9 @@ _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
 _transition_hidden = False
 _equipped_cache: list = []
+# Row label -> item id of the equipped gadgets ("Grenade" -> the grenade's id), so the
+# dashboard can name those rows too.
+_gadget_ids: dict[str, str] = {}
 _item_names_unavailable_since = 0.0
 _item_names_reported = False
 _item_names_asked = False
@@ -365,7 +368,8 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     # The reader pairs the UI's item cards with the guns by slot order, so it gets every
     # equipped gun's seed (None where a gun only has the fallback id), named or not.
     slot_seeds = [seed_of(weapon.item_id) for weapon in equipped]
-    unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and not name_store.name_for(weapon.item_id)]
+    # A gun without a name, or one named before the table kept the card's details.
+    unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _needs_item_info(weapon.item_id)]
     unpictured = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _thumbnail_wanted(weapon.item_id)]
     if not unnamed and not unpictured:
         _item_names_unavailable_since = 0.0
@@ -379,9 +383,11 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
         name_reader.last_error = f"{type(ex).__name__}: {ex}"
         names = {}
     for weapon in unnamed:
-        name = names.get(seed_of(weapon.item_id) or b"")
-        if name and name_store.set_name(weapon.item_id, name, weapon.label, wall_now):
+        seed = seed_of(weapon.item_id) or b""
+        name = names.get(seed)
+        if name and name_store.set_info(weapon.item_id, _item_info(name, weapon.label, name_reader.card_for(seed), wall_now)):
             _say(f"{weapon.label} {short_item_id(weapon.item_id)} is {name}")
+    unnamed = [weapon for weapon in unnamed if not name_store.name_for(weapon.item_id)]
     for weapon in unpictured:
         _note_thumbnail(weapon, names)
     if not unnamed:
@@ -393,6 +399,42 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not name_reader.discovering:
         _item_names_reported = True
         logging.warning(f"{LOG_PREFIX} item names unavailable ({name_reader.last_error or 'no UI model found'}); guns keep their type labels")
+
+
+def _needs_item_info(item_id: str) -> bool:
+    """No entry yet, or one from a version that stored the name alone (no item code)."""
+    if name_store is None:
+        return False
+    info = name_store.info_for(item_id)
+    return info is None or not info.serial
+
+
+def _item_info(name: str, label: str, card: ItemCard | None, now: float) -> ItemInfo:
+    """A table entry from a name and, when the reader has it, the item's card."""
+    if card is None:
+        return ItemInfo(name, label, seen=now)
+    return ItemInfo(name, label, card.rarity, card.element, card.damage_text, card.serial, now)
+
+
+def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
+    """The equipped gadgets (the grenade, say) have item ids like the guns and the
+    inventory list names them; no scan is started for them, they come along with it."""
+    global _gadget_ids
+    if name_reader is None or name_store is None:
+        return
+    gadgets = resolver.equipped_gadgets(pawn, identity_reader.item_id)
+    _gadget_ids = {label: item_id for item_id, label in gadgets.items()}
+    unnamed: dict[bytes, tuple[str, str]] = {}
+    for item_id, label in gadgets.items():
+        seed = seed_of(item_id)
+        if seed is not None and not name_store.name_for(item_id):
+            unnamed[seed] = (item_id, label)
+    if not unnamed:
+        return
+    for seed, name in name_reader.names_of_items(list(unnamed)).items():
+        item_id, label = unnamed[seed]
+        if name_store.set_info(item_id, _item_info(name, label, name_reader.card_for(seed), wall_now)):
+            _say(f"{label} {short_item_id(item_id)} is {name}")
 
 
 def _thumbnail_wanted(item_id: str) -> bool:
@@ -408,7 +450,8 @@ def _note_thumbnail(weapon: DamageSource, names: dict[bytes, str]) -> None:
     seed = seed_of(weapon.item_id)
     if seed is None or seed not in names or name_reader is None:
         return
-    texture = name_reader.thumbnail_for(seed)
+    card = name_reader.card_for(seed)
+    texture = card.thumbnail if card is not None else ""
     if not texture.startswith(RENDER_TARGET_PREFIX):
         _thumbnails_tried.add(weapon.item_id)
         return
@@ -461,10 +504,10 @@ def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
     if name_store is None:
         return {}
     names: dict[str, str] = {}
-    for weapon in equipped:
-        name = name_store.name_for(weapon.item_id)
+    for item_id in [weapon.item_id for weapon in equipped] + list(_gadget_ids.values()):
+        name = name_store.name_for(item_id)
         if name:
-            names[weapon.item_id] = name
+            names[item_id] = name
     return names
 
 
@@ -590,6 +633,7 @@ def _refresh_readout() -> None:
             equipped = resolver.equipped_weapons(pawn)
             if equipped is not None:
                 _learn_item_names(equipped, wall_now, now, in_play)
+                _learn_gadget_names(pawn, wall_now)
                 _equipped_cache = _with_item_names(equipped) if readout_item_names.value else equipped
         _export_thumbnail_if_in_menu(controller)
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
@@ -617,7 +661,7 @@ def _refresh_readout() -> None:
         _latest_rows = rows
         readout.render(rows, now)
         if dashboard is not None:
-            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache], _item_names_for(_equipped_cache))
+            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache], _item_names_for(_equipped_cache), _gadget_ids)
         _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -983,6 +1027,7 @@ def _dashboard_sources() -> DashboardSources:
         window_minutes=lambda: float(readout_window_minutes.value),
         encounter_gap_s=lambda: float(encounter_gap_s.value),
         item_names=lambda: {} if name_store is None else name_store.names(),
+        item_infos=lambda: {} if name_store is None else name_store.infos(),
         thumbnails_dir=_log_dir().parent / THUMBNAILS_DIR_NAME,
     )
 

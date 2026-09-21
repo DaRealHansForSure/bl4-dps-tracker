@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dmgtracker.itemnamestore import ItemNameStore, read_item_names
+from dmgtracker.itemnamestore import ItemInfo, ItemNameStore, read_item_names
 
 
 class ItemNameStoreTests(unittest.TestCase):
@@ -36,6 +36,18 @@ class ItemNameStoreTests(unittest.TestCase):
         self.assertEqual(reloaded.name_for("ddbe5d"), "Maintained Screeching T.K's Wave")
         self.assertEqual(reloaded.count, 3)
         self.assertEqual(read_item_names(self.path), reloaded.names())
+
+    def test_infos_merge_what_the_cards_and_the_list_know(self) -> None:
+        store = ItemNameStore(self.path)
+        self.assertTrue(store.set_info("ddbe5d", ItemInfo("Maintained Screeching T.K's Wave", "Jakobs Shotgun", "legendary", "noelement", "1.612 x 10", "", 100.0)))
+        self.assertFalse(store.set_info("ddbe5d", ItemInfo("Maintained Screeching T.K's Wave", "", "", "", "", "@Ugd_t", 101.0)), "the same name with a field filled in is no new name")
+        info = store.info_for("ddbe5d")
+        self.assertEqual((info.rarity, info.damage, info.serial, info.seen), ("legendary", "1.612 x 10", "@Ugd_t", 101.0))
+        self.assertEqual(store.infos()["ddbe5d"]["label"], "Jakobs Shotgun")
+        self.assertTrue(store.save_if_due(now=200.0, force=True))
+        reloaded = ItemNameStore(self.path)
+        reloaded.load()
+        self.assertEqual(reloaded.info_for("ddbe5d").serial, "@Ugd_t")
 
     def test_clear_forgets_everything_and_is_worth_a_save(self) -> None:
         store = ItemNameStore(self.path)

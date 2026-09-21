@@ -77,6 +77,7 @@ class DashboardTests(unittest.TestCase):
             window_minutes=lambda: 5.0,
             encounter_gap_s=lambda: 15.0,
             item_names=lambda: {"seed277": "Hunted Kettled Rangefinder"},
+            item_infos=lambda: {"seed277": {"name": "Hunted Kettled Rangefinder", "label": "Jakobs Sniper", "rarity": "legendary", "element": "", "damage": "911", "serial": "@Ug1", "seen": 1.0}},
             thumbnails_dir=self.log_dir / "thumbnails",
         )
         self.dashboard = Dashboard(0, sources, self.messages.append, host="127.0.0.1")
@@ -131,6 +132,10 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(fetch(self.url + "thumbnails/0123456789abcdef01234567.png")[0], 404, "no picture yet")
         status, payload = fetch_json(self.url + "api/weapons?by=damage")
         self.assertEqual(payload["weapons"][0]["name"], "Hunted Kettled Rangefinder", "the weapons list carries the table's names")
+        status, payload = fetch_json(self.url + "api/items")
+        self.assertEqual((payload["items"]["seed277"]["rarity"], payload["items"]["seed277"]["thumbnail"]), ("legendary", False))
+        (folder / "seed277.png").write_bytes(b"x")
+        self.assertTrue(fetch_json(self.url + "api/items")[1]["items"]["seed277"]["thumbnail"], "the flag follows the file")
 
     def test_unknown_paths_and_sessions(self) -> None:
         status, _headers, _body = fetch(self.url + "nothing/here")
@@ -149,15 +154,17 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual([event["dmg"] for event in hello["recent"]], [50.0, 100.0], "the session's newest hits, newest first")
             self.assertEqual(hello["history"], [])
             rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "1'000", "250", "100.0"), "active"), TableRow(("Last 5 min", "1'000", "12'345.6", "100.0"), "total")]
-            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"})
-            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"})
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"}, {"Grenade": "seed300"})
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"}, {"Grenade": "seed300"})
             table = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(table["type"], "table")
+            self.assertEqual(table["gadgets"], {"Grenade": "seed300"})
             self.assertEqual(table["rows"][:2], [{"cells": ["Weapon", "Total"], "style": "header"}, {"cells": ["Jakobs Sniper", "1'000", "250", "100.0"], "style": "active"}])
             self.assertEqual((table["slots"], table["names"]), (["seed277"], {"seed277": "Hunted Kettled Rangefinder"}))
             sample = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(sample["type"], "sample", "the first chart sample follows the first table at once")
             self.assertEqual((sample["sample"]["dps"], sample["sample"]["total"]), (12345.6, 1000.0))
+            self.assertFalse(sample["sample"]["fight"], "no hit within the encounter gap")
             self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder", "other": "Lionized Parasite"})
             self.assertEqual(recv_typed(client, "table")["names"]["other"], "Lionized Parasite", "a new name alone is a change")
             self.dashboard.publish_hits([hit(6.0, 42.0)])
@@ -212,6 +219,7 @@ class DashboardTests(unittest.TestCase):
         with connect(self.url.replace("http://", "ws://") + "ws") as client:
             hello = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(hello["chart_seconds"], 30.0)
+            self.assertTrue(hello["history"][-1]["fight"], "a hit a second ago: the fight is on")
             self.assertEqual(hello["chart_windows"], [10.0, 30.0, 60.0, 120.0])
             sample = hello["history"][-1]
             self.assertEqual(sample["now"]["10"], 125.0, "1'250 damage in the last 10 s; the hit from 30 s ago is out")

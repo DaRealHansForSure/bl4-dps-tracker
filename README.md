@@ -46,9 +46,9 @@ Open the console with F6 (in the world, not in the main menu):
 
 While the game runs, the mod serves a page at `http://127.0.0.1:8765/` (and at your machine's network address, so a phone or a second screen on the same network can show it; `dmgweb` prints both). Four tabs:
 
-- **Live**: the same table as in the game (guns by item name, with their id), pushed over a WebSocket whenever it changes; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the table's DPS dashed, a tooltip for any moment; and the latest hits as they land.
+- **Live**: the same table as in the game (guns by item name in their rarity colour, with their id; the grenade by its name too), pushed over a WebSocket whenever it changes; rest the pointer on a name for the item card: the gun's picture as the inventory renders it, rarity, element, the card's damage figure and the item code; a chart of the DPS of the last 10 to 120 s (your choice), the weapons and sources stacked under the total, the table's DPS dashed, the fights shaded, a tooltip for any moment; and the latest hits as they land.
 - **Hits**: every hit of a session with search (weapon, target, source, element, character) and pagination; pick any of the kept sessions.
-- **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10, the full list, and the best DPS of Skill, Grenade and Melee.
+- **Weapons**: the character's lifetime ranking (by DPS in hand, Best DPS or damage) with a Top 10 (pictures included), the guns of one manufacturer and type compared with each other, the full list, and the best DPS of Skill, Grenade and Melee.
 - **Encounters**: the fights of a session with duration, total, DPS, crit share, kills, the per-source split and the targets.
 
 The live tab updates itself; the other tabs read the files when you open them or press Reload. "Web dashboard" in the mod menu turns the server on and off; `web_port` and `web_host` in the settings file change the address (`127.0.0.1` keeps it on this machine). Windows may ask once whether the game may accept network connections; that prompt is for the dashboard, and the answer only matters for other devices. The server is read-only and runs on its own threads, never on the game's.

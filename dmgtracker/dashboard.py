@@ -112,6 +112,9 @@ class DashboardSources:
     encounter_gap_s: Callable[[], float]
     # item id -> item name, for the weapon lists (the live table gets them with its rows).
     item_names: Callable[[], dict[str, str]] = lambda: {}
+    # item id -> everything the inventory said about the item (name, label, rarity,
+    # element, the card's damage figure, the item code), for the page's hover card.
+    item_infos: Callable[[], dict[str, dict[str, Any]]] = lambda: {}
     # The folder of the gun pictures (<item id>.png), served under /thumbnails/.
     thumbnails_dir: Path | None = None
 
@@ -145,6 +148,7 @@ class Dashboard:
         self._last_rows: list[TableRow] = []
         self._slot_item_ids: list[str] = []
         self._item_names: dict[str, str] = {}
+        self._gadget_ids: dict[str, str] = {}
         self._pending_hits: list[Message] = []
         self._pending_character: dict[str, str] | None = None
         self._history: deque[Message] = deque(maxlen=CHART_HISTORY)
@@ -227,15 +231,22 @@ class Dashboard:
     # ------------------------------------------------------------------ publishing (other threads)
 
     def publish_rows(
-        self, rows: list[TableRow], slot_item_ids: list[str] | None = None, item_names: dict[str, str] | None = None
+        self,
+        rows: list[TableRow],
+        slot_item_ids: list[str] | None = None,
+        item_names: dict[str, str] | None = None,
+        gadget_ids: dict[str, str] | None = None,
     ) -> None:
         """The table as the game shows it; only a change wakes the broadcaster.
         `slot_item_ids` names the gun in each weapon slot, so the chart's "now" can be
-        matched to the slot rows by item, and `item_names` gives the page the item names
-        of those guns (the table itself carries the short type labels)."""
+        matched to the slot rows by item, `item_names` gives the page the item names of
+        every named item (the table itself carries the short type labels), and
+        `gadget_ids` the item id of the equipped grenade and the like by row label."""
         slot_item_ids = list(slot_item_ids or [])
         item_names = dict(item_names or {})
-        if rows == self._last_rows and slot_item_ids == self._slot_item_ids and item_names == self._item_names:
+        gadget_ids = dict(gadget_ids or {})
+        unchanged = rows == self._last_rows and slot_item_ids == self._slot_item_ids and item_names == self._item_names and gadget_ids == self._gadget_ids
+        if unchanged:
             return
         rows_json = [{"cells": list(row.cells), "style": row.style} for row in rows]
         with self._wake:
@@ -243,6 +254,7 @@ class Dashboard:
             self._rows_json = rows_json
             self._slot_item_ids = slot_item_ids
             self._item_names = item_names
+            self._gadget_ids = gadget_ids
             self._rows_dirty = True
             self._wake.notify()
 
@@ -339,6 +351,9 @@ class Dashboard:
         self._last_sample_time = now
         sample = _window_sample(self._last_rows, now, self._instant_dps(now), self._slot_item_ids)
         if sample is not None:
+            # A fight is on while the last hit is younger than the encounter gap: the page
+            # shades those stretches of the chart.
+            sample["fight"] = bool(self._recent_hits) and now - self._recent_hits[-1][0] <= self.sources.encounter_gap_s()
             self._history.append(sample)
         return sample
 
@@ -355,6 +370,7 @@ class Dashboard:
                 "t": time.time(),
                 "slots": self._slot_item_ids,
                 "names": self._item_names,
+                "gadgets": self._gadget_ids,
             })
             self._rows_dirty = False
         if self._pending_hits:
@@ -379,6 +395,7 @@ class Dashboard:
             history = list(self._history)
             slots = list(self._slot_item_ids)
             names = dict(self._item_names)
+            gadgets = dict(self._gadget_ids)
         return {
             "type": "hello",
             "version": self.sources.version,
@@ -389,6 +406,7 @@ class Dashboard:
             "rows": rows,
             "slots": slots,
             "names": names,
+            "gadgets": gadgets,
             "recent": self._recent_hits_from_file(),
             "history": history,
         }
@@ -442,9 +460,20 @@ class Dashboard:
             return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session, self.sources.item_names())})
         if path == "/api/encounters":
             return _json_response(encounters_payload(session, self.sources.encounter_gap_s()))
+        if path == "/api/items":
+            return _json_response({"items": self._items()})
         if path.startswith(THUMBNAILS_PATH):
             return self._thumbnail(path[len(THUMBNAILS_PATH):])
         return _text_response(HTTPStatus.NOT_FOUND, "not found")
+
+    def _items(self) -> dict[str, dict[str, Any]]:
+        """Every named item with what the inventory said about it and whether its picture
+        is on disk."""
+        folder = self.sources.thumbnails_dir
+        items = self.sources.item_infos()
+        for item_id, info in items.items():
+            info["thumbnail"] = folder is not None and (folder / f"{item_id}.png").is_file()
+        return items
 
     def _thumbnail(self, name: str) -> Response:
         """A gun's picture by file name; only names of the form <item id>.png reach the disk."""

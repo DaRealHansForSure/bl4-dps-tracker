@@ -73,6 +73,12 @@ class DamageSource:
 
 UNKNOWN_SOURCE = DamageSource(SOURCE_UNKNOWN, UNKNOWN_LABEL, "", "")
 GRENADE_SOURCE = DamageSource(SOURCE_GRENADE, GRENADE_LABEL, "", "")
+# The gadget classes of the slot array and how their rows are labelled.
+GADGET_LABELS = {"GrenadeGadget": GRENADE_LABEL, "Shield": "Shield", "ClassMod": "Class Mod", "RepairKit": "Repair Kit", "Enhancement": "Enhancement"}
+
+
+def _gadget_label(class_name: str) -> str:
+    return GADGET_LABELS.get(class_name, class_name)
 MELEE_SOURCE = DamageSource(SOURCE_MELEE, MELEE_LABEL, "", "")
 SKILL_SOURCE = DamageSource(SOURCE_SKILL, SKILL_LABEL, "", "")
 # Status ticks whose target is already gone, and healing: nothing to credit them to.
@@ -155,6 +161,24 @@ class WeaponResolver:
         if weapon is None:
             return UNKNOWN_SOURCE
         return self.resolve_weapon(weapon)
+
+    def equipped_gadgets(self, pawn: Any, item_id_of: Callable[[Any], str]) -> dict[str, str]:
+        """item id -> label of the equipped items that are not weapons (the grenade and
+        the rest of the slot array), for naming them; empty when there are no slots."""
+        try:
+            slots = pawn.EquippedInventorySlots.items
+        except AttributeError:
+            return {}
+        gadgets: dict[str, str] = {}
+        for slot in slots:
+            item = slot.InstancedInventory
+            if item is None or str(item.Class.Name) == WEAPON_CLASS_NAME:
+                continue
+            try:
+                gadgets[item_id_of(item)] = _gadget_label(str(item.Class.Name))
+            except Exception:  # noqa: BLE001 - an item without an identity is not named
+                continue
+        return gadgets
 
     def equipped_weapons(self, pawn: Any) -> list[DamageSource] | None:
         """The weapons in the equipment slots, in slot order. Shield, grenade and repair kit

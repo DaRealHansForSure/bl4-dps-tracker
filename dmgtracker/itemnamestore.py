@@ -1,12 +1,14 @@
 """
-The item names by item id, one table for every character.
+The item names and what the inventory says about each item, by item id, one table for
+every character.
 
 A gun's name depends on the gun alone (its seed), not on who carries it, so the names live
 in one file next to the character folders, `item-names.json`, and not in the per-character
 weapon records: a name read once serves every character, survives the record resets of
 `dmgreset --weapons` and `--all`, and is written without a single hit having been dealt.
-The file is written on an interval (the log writer's tick, off the game thread), never per
-change; `dmgreset --names` empties it.
+Each entry also keeps what the item card said (rarity, element, the card's damage figure,
+the item code) for the dashboard. The file is written on an interval (the log writer's
+tick, off the game thread), never per change; `dmgreset --names` empties it.
 """
 
 from __future__ import annotations
@@ -19,30 +21,48 @@ from pathlib import Path
 from typing import Any
 
 ITEM_NAMES_FILE = "item-names.json"
-STORE_SCHEMA = 1
+STORE_SCHEMA = 2
 DEFAULT_SAVE_INTERVAL_S = 30.0
 
 
 @dataclass
-class ItemName:
-    """A name as read from the game, with the short label of the gun it belongs to and
-    when it was read (wall clock seconds)."""
+class ItemInfo:
+    """An item as the inventory describes it: the name, the short label of the mod
+    ("Jakobs Shotgun"), the rarity and element slugs, the damage figure of its card
+    ("1.612 x 10"), the item code ("@Ug...") and when it was read (wall clock seconds)."""
 
     name: str
-    label: str
-    seen: float
+    label: str = ""
+    rarity: str = ""
+    element: str = ""
+    damage: str = ""
+    serial: str = ""
+    seen: float = 0.0
+
+    def merged_with(self, other: ItemInfo) -> ItemInfo:
+        """This entry with every blank field filled from the other: the cards know the
+        damage figure, the inventory list the rest, and either may come first."""
+        return ItemInfo(
+            other.name or self.name,
+            other.label or self.label,
+            other.rarity or self.rarity,
+            other.element or self.element,
+            other.damage or self.damage,
+            other.serial or self.serial,
+            max(other.seen, self.seen),
+        )
 
 
 class ItemNameStore:
-    """The names by item id, loaded from and saved to one JSON file. Safe to use from the
-    game thread and the writer thread at once."""
+    """The entries by item id, loaded from and saved to one JSON file. Safe to use from
+    the game thread and the writer thread at once."""
 
     def __init__(self, path: Path, save_interval_s: float = DEFAULT_SAVE_INTERVAL_S) -> None:
         self.path = path
         self.save_interval_s = save_interval_s
         self.load_error = ""
         self.save_error = ""
-        self._items: dict[str, ItemName] = {}
+        self._items: dict[str, ItemInfo] = {}
         self._lock = threading.Lock()
         self._dirty = False
         self._last_save = 0.0
@@ -67,23 +87,37 @@ class ItemNameStore:
         item = self._items.get(item_id)
         return item.name if item is not None else ""
 
+    def info_for(self, item_id: str) -> ItemInfo | None:
+        return self._items.get(item_id)
+
     def names(self) -> dict[str, str]:
         """item id -> name, a snapshot for the dashboard and the reports."""
         with self._lock:
             return {item_id: item.name for item_id, item in self._items.items()}
 
+    def infos(self) -> dict[str, dict[str, Any]]:
+        """item id -> entry as plain data, a snapshot for the dashboard."""
+        with self._lock:
+            return {item_id: asdict(item) for item_id, item in self._items.items()}
+
     def set_name(self, item_id: str, name: str, label: str, now: float) -> bool:
         """Remember a name; True when it is new or changed."""
+        return self.set_info(item_id, ItemInfo(name, label, seen=now))
+
+    def set_info(self, item_id: str, info: ItemInfo) -> bool:
+        """Remember what the inventory says about an item, filling blanks of an entry
+        already there; True when the name is new or changed."""
         with self._lock:
-            item = self._items.get(item_id)
-            if item is not None and item.name == name:
+            current = self._items.get(item_id)
+            merged = info if current is None else current.merged_with(info)
+            if current is not None and asdict(current) == asdict(merged):
                 return False
-            self._items[item_id] = ItemName(name, label, now)
+            self._items[item_id] = merged
             self._dirty = True
-            return True
+            return current is None or current.name != merged.name
 
     def clear(self) -> int:
-        """Forget every name, so they are read from the game again; returns how many."""
+        """Forget every entry, so they are read from the game again; returns how many."""
         with self._lock:
             count = len(self._items)
             self._items = {}
@@ -134,9 +168,18 @@ def read_item_names(path: Path) -> dict[str, str]:
         return {}
 
 
-def _parse_items(path: Path) -> dict[str, ItemName]:
+def _parse_items(path: Path) -> dict[str, ItemInfo]:
+    """The entries of a schema 1 (name, label, seen) or schema 2 file."""
     data = json.loads(path.read_text(encoding="utf-8"))
-    return {
-        str(item_id): ItemName(str(entry["name"]), str(entry.get("label", "")), float(entry.get("seen", 0.0)))
-        for item_id, entry in dict(data["items"]).items()
-    }
+    items: dict[str, ItemInfo] = {}
+    for item_id, entry in dict(data["items"]).items():
+        items[str(item_id)] = ItemInfo(
+            str(entry["name"]),
+            str(entry.get("label", "")),
+            str(entry.get("rarity", "")),
+            str(entry.get("element", "")),
+            str(entry.get("damage", "")),
+            str(entry.get("serial", "")),
+            float(entry.get("seen", 0.0)),
+        )
+    return items

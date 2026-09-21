@@ -300,6 +300,21 @@ def _is_slug(text: str | None) -> bool:
     return all(char.isalnum() or char == "_" for char in text)
 
 
+def _merge_cards(known: ItemCard | None, fresh: ItemCard) -> ItemCard:
+    """The fresh card with its blank fields filled from the known one."""
+    if known is None:
+        return fresh
+    return ItemCard(
+        fresh.slot_type or known.slot_type,
+        fresh.name or known.name,
+        fresh.element or known.element,
+        fresh.damage_text or known.damage_text,
+        fresh.serial or known.serial,
+        fresh.rarity or known.rarity,
+        fresh.thumbnail or known.thumbnail,
+    )
+
+
 def _search_needle(pattern: bytes) -> bytes:
     """The pattern without its trailing zero bytes: bytes.find is slowest on a needle that
     ends in a byte as common as zero, so the zeros are checked after a match instead."""
@@ -327,7 +342,7 @@ class ItemNameReader:
         self._log = log if log is not None else (lambda message: None)
         self._lock = threading.Lock()
         self._names: dict[bytes, str] = {}
-        self._thumbnails: dict[bytes, str] = {}
+        self._cards: dict[bytes, ItemCard] = {}
         self._last_pairs: dict[bytes, str] = {}
         self._cards_header: int | None = None
         self._list_address: int | None = None
@@ -358,15 +373,27 @@ class ItemNameReader:
             self._start_scan(unknown[0], list(slot_seeds))
         return {seed: self._names[seed] for seed in wanted if seed in self._names}
 
-    def thumbnail_for(self, seed: bytes) -> str:
-        """The thumbnail texture of a gun whose name is known, '' when none was read."""
-        return self._thumbnails.get(seed, "")
+    def card_for(self, seed: bytes) -> ItemCard | None:
+        """The card of an item whose name is known: what the inventory says about it."""
+        return self._cards.get(seed)
+
+    def names_of_items(self, seeds: list[bytes]) -> dict[bytes, str]:
+        """seed -> name for items that are not weapons (the grenade, say), which only the
+        inventory list names: no scan is started for them, they come along with the list."""
+        found = {seed: self._names[seed] for seed in seeds if seed in self._names}
+        missing = [seed for seed in seeds if seed not in found]
+        list_address = self._list_address
+        if missing and list_address is not None and self._clock() - self._last_list_read >= LIST_REREAD_INTERVAL_S:
+            self._last_list_read = self._clock()
+            if self._learn_from_list(list_address):
+                found.update({seed: self._names[seed] for seed in missing if seed in self._names})
+        return found
 
     def forget(self) -> None:
         """Drop every name and every remembered address; the next read starts over."""
         with self._lock:
             self._names = {}
-            self._thumbnails = {}
+            self._cards = {}
             self._last_pairs = {}
             self._cards_header = None
             self._list_address = None
@@ -412,12 +439,12 @@ class ItemNameReader:
         data, count = node
         cards = self._cards_at(data, count)
         pairs = self._pair(slot_seeds, cards)
-        thumbnails = self._pair_thumbnails(slot_seeds, cards)
+        cards_by_seed = self._pair_cards(slot_seeds, cards)
         with self._lock:
             for seed, name in pairs.items():
                 if self._last_pairs.get(seed) == name:
                     self._names[seed] = name
-                    self._thumbnails[seed] = thumbnails.get(seed, "")
+                    self._cards[seed] = cards_by_seed[seed]
             self._last_pairs = pairs
         return True
 
@@ -430,7 +457,9 @@ class ItemNameReader:
         with self._lock:
             for seed, card in entries.items():
                 self._names[seed] = card.name
-                self._thumbnails[seed] = card.thumbnail
+                # A card of the equipped-weapon model knows the damage figure, the list
+                # record the slugs: keep whichever fields each one has.
+                self._cards[seed] = _merge_cards(self._cards.get(seed), card)
         return True
 
     def _pair(self, slot_seeds: list[bytes | None], cards: list[ItemCard | None]) -> dict[bytes, str]:
@@ -448,12 +477,12 @@ class ItemNameReader:
                 pairs[seed] = card.name
         return pairs
 
-    def _pair_thumbnails(self, slot_seeds: list[bytes | None], cards: list[ItemCard | None]) -> dict[bytes, str]:
-        """The thumbnail of the card in each slot, by the same pairing as the names."""
+    def _pair_cards(self, slot_seeds: list[bytes | None], cards: list[ItemCard | None]) -> dict[bytes, ItemCard]:
+        """The card in each slot, by the same pairing as the names."""
         present = [card for card in cards if card is not None]
         if len(present) != len(slot_seeds):
             return {}
-        return {seed: card.thumbnail for seed, card in zip(slot_seeds, present) if seed is not None}
+        return {seed: card for seed, card in zip(slot_seeds, present) if seed is not None}
 
     # ------------------------------------------------------------------ scan thread
 
