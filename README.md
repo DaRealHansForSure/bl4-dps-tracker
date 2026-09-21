@@ -19,8 +19,8 @@ Other                    7'703         77
 Last 5 min           3'219'066     32'190
 ```
 
-- Every number covers the **last 5 minutes of play**. The window's clock runs whether you are fighting or not, so a source that stops dealing damage comes down; it stops only in menus (the pause menu included), during loading screens and in tunnel transitions, where the numbers hold still.
-- Every row's **DPS is its damage over the window's fighting time**, so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
+- Every number covers the **last 5 minutes**, by the clock on the wall: fighting or not, in a menu or not, so a source that stops dealing damage is out of the numbers five minutes after its last hit (the table is hidden in menus, but its window keeps moving).
+- Every row's **DPS is its damage over the window** (300 s once the window is full, the time since the first hit before that), so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
 - Guns carry their **item name** ("Maintained Screeching T.K's Wave"), read from the game's own item cards a few seconds after they are equipped and kept in one table for every character (`item-names.json`). The in-game table keeps the short manufacturer-and-type label for width (`readout_item_names` switches it to the item name); the dashboard shows the item name with the item id, and `dmgweapons` and the reports use it too.
@@ -69,7 +69,7 @@ The mod menu (`mods` in the console) has three entries: `Logging enabled`, `Show
 | Setting | Default | Meaning |
 |---|---|---|
 | `log_dir` | `%LOCALAPPDATA%\BL4DamageTracker\logs` | where sessions are written; environment variables allowed |
-| `readout_window_minutes` | `5.0` | the table's window, in minutes of play |
+| `readout_window_minutes` | `5.0` | the table's window, in minutes |
 | `readout_show_encounter_row` | `false` | add an `Encounter` row (the current fight, for bosses) |
 | `readout_x`, `readout_y` | `32`, `320` | position of the table (top left corner, in pixels) |
 | `readout_show_best_column` | `true` | the `Best DPS` column |

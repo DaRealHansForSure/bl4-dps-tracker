@@ -205,8 +205,8 @@ _item_names_unavailable_since = 0.0
 _item_names_reported = False
 _item_names_asked = False
 _in_play_since = 0.0
-# Seconds of fighting so far: the window's clock. It only advances while an encounter is
-# open, so the table stands still in menus, vehicles and between fights.
+# The window's clock: wall time since the mod was enabled, counted while the table refresh
+# runs (with a controller in the world). It does not stop for menus, pauses or fights.
 # Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
 # timestamps and everything persisted use time.time(), which is comparable across sessions.
 _play_clock = 0.0
@@ -583,20 +583,20 @@ def _record_peaks(now: float) -> None:
 
 
 def _advance_play_clock(now: float, in_play: bool) -> None:
-    """Run the play clock while the player is in play: with a pawn, not in a menu (the pause
-    menu included), not in a transition. Fighting or not, the window's time passes, so a
-    source that stops dealing damage comes down (a user rule); menus, pauses and loading
-    screens (a long gap between samples) do not count. The step doubles as the time-in-hand
-    sample, but only while a fight is open: the lifetime record's DPS in hand stays about
-    fighting."""
+    """Run the window's clock on wall time: fighting or not, in a menu or not, the last
+    five minutes are the last five minutes (a user rule), so a source that stops dealing
+    damage comes down on schedule and a pause does not hold the numbers still. The step
+    doubles as the time-in-hand sample, but only in play, while a fight is open and between
+    samples close together (a long gap is a pause or a loading screen): the lifetime
+    record's DPS in hand stays about fighting."""
     global _last_held_sample, _play_clock, _last_fight_step
     elapsed = now - _last_held_sample
     _last_held_sample = now
     _last_fight_step = 0.0
-    if not in_play or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
+    if elapsed <= 0:
         return
     _play_clock += elapsed
-    if tracker.current is not None:
+    if in_play and elapsed <= MAX_HELD_SAMPLE_S and tracker.current is not None:
         _last_fight_step = elapsed
 
 
