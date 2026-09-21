@@ -117,6 +117,8 @@ class DashboardSources:
     item_infos: Callable[[], dict[str, dict[str, Any]]] = lambda: {}
     # The folder of the gun pictures (<item id>.png), served under /thumbnails/.
     thumbnails_dir: Path | None = None
+    # ElementalType value -> element name, from the game's enum, for the hit lists.
+    element_names: Callable[[], dict[int, str]] = lambda: {}
 
 
 class Dashboard:
@@ -403,6 +405,7 @@ class Dashboard:
             "window_minutes": self.sources.window_minutes(),
             "chart_seconds": self.chart_seconds,
             "chart_windows": list(CHART_WINDOWS_S),
+            "elements": {str(value): name for value, name in self.sources.element_names().items()},
             "rows": rows,
             "slots": slots,
             "names": names,

@@ -97,13 +97,16 @@
   #item-card img { display: block; width: 320px; height: 160px; object-fit: contain; }
   #item-card .name { font-weight: 600; font-size: 14px; margin-top: 6px; }
   #item-card .code { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 4px; }
-  /* Rarity colours, as the game shows them. */
-  .rarity-common { color: #d6d6d6; }
-  .rarity-uncommon { color: #5fcf65; }
-  .rarity-rare { color: #5b9bff; }
-  .rarity-epic { color: #c06bf0; }
-  .rarity-legendary { color: #ffa030; }
-  .rarity-pearl { color: #8be9e0; }
+  /* Rarity colours as the game shows them; legendary glows orange, pearlescent shimmers
+     cyan to violet like the pearl frame of the weapon wheel. */
+  .rarity-common { color: #d0d3d8; }
+  .rarity-uncommon { color: #4fd35a; }
+  .rarity-rare { color: #4a8fff; }
+  .rarity-epic { color: #b25cff; }
+  .rarity-legendary { color: #ff9a1f; text-shadow: 0 0 6px rgba(255, 154, 31, 0.35); }
+  .rarity-pearl { color: #9ff0ff; background: linear-gradient(90deg, #7fe9ff 0%, #d9fbff 35%, #b7a6ff 70%, #7fe9ff 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 8px rgba(127, 233, 255, 0.35); }
+  .rarity-pearl .muted, .rarity-pearl .item-id, .rarity-pearl .badge { -webkit-text-fill-color: currentcolor; text-shadow: none; }
   img.thumb { width: 64px; height: 32px; object-fit: contain; vertical-align: middle; display: block; }
   td.thumb-cell { width: 68px; padding-top: 2px; padding-bottom: 2px; }
   tr.group-header td { color: var(--muted); font-weight: 600; padding-top: 10px; }
@@ -412,6 +415,7 @@
     if (data.type === "hello") {
       character = data.character;
       rememberNames(data.slots, data.names, data.gadgets);
+      elementNames = data.elements || {};
       document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of play";
       setChartWindows(data.chart_windows || [10], data.chart_seconds || 10);
       setStatus(true, "live, " + characterText());
@@ -442,6 +446,17 @@
   const itemNames = {};
 
   let gadgetItemIds = {};
+
+  // ElementalType value -> element name, from the game's enum (the hello message);
+  // a value the enum does not name stays a number, none at all stays blank.
+  let elementNames = {};
+
+  function elementLabel(elem) {
+    if (!elem) {
+      return "";
+    }
+    return elementNames[String(elem)] || String(elem);
+  }
 
   function rememberNames(slots, names, gadgets) {
     if (Array.isArray(slots)) {
@@ -1079,7 +1094,7 @@
     cells.push(cell(event.crit ? "crit" : "", event.crit ? "crit" : ""));
     cells.push(cell(event.kill ? "kill" : "", event.kill ? "kill" : ""));
     cells.push(cell(targetLabel(event.target)));
-    cells.push(cell(event.elem || ""));
+    cells.push(cell(elementLabel(event.elem)));
     if (withCharacter) {
       cells.push(cell(event.dtype || ""));
     }

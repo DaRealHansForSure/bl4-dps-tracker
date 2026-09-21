@@ -111,6 +111,9 @@ ITEM_NAMES_SETTLE_S = 3.0
 # the renderer (10 ms), so that happens only while a menu with the cursor is open, one
 # picture per refresh; the EXR it writes is turned into a PNG on the writer thread.
 RENDER_TARGET_PREFIX = "TextureRenderTarget2D'"
+# The game's enum behind DamageType.ElementalType (0 none, 1 Corrosive, 2 Cryo, 3 Fire,
+# 4 Shock, 5 Radiation in build 4845623); the hit lists show the names.
+ELEMENT_ENUM = "EOakElementalType"
 RENDER_TARGET_CLASS = "TextureRenderTarget2D"
 RENDERING_LIBRARY = "KismetRenderingLibrary"
 THUMBNAIL_ERRORS_TO_LOG = 3
@@ -202,6 +205,7 @@ _thumbnail_exports: dict[str, tuple[str, str]] = {}
 _thumbnails_tried: set[str] = set()
 _thumbnail_conversions: list[tuple[str, Path, Path]] = []
 _thumbnail_errors = 0
+_element_names_cache: dict[int, str] | None = None
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -435,6 +439,20 @@ def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
         item_id, label = unnamed[seed]
         if name_store.set_info(item_id, _item_info(name, label, name_reader.card_for(seed), wall_now)):
             _say(f"{label} {short_item_id(item_id)} is {name}")
+
+
+def _element_names() -> dict[int, str]:
+    """ElementalType value -> element name from the game's enum, read once; empty (and
+    one log line) when the enum is not where this build expects it."""
+    global _element_names_cache
+    if _element_names_cache is None:
+        try:
+            enum = unrealsdk.find_enum(ELEMENT_ENUM)
+            _element_names_cache = {int(member): name for name, member in enum.__members__.items() if name != "MAX" and int(member) != 0}
+        except Exception as ex:  # noqa: BLE001 - the hit lists then show the numbers
+            logging.warning(f"{LOG_PREFIX} element names unavailable ({type(ex).__name__}: {ex})")
+            _element_names_cache = {}
+    return _element_names_cache
 
 
 def _thumbnail_wanted(item_id: str) -> bool:
@@ -1029,6 +1047,7 @@ def _dashboard_sources() -> DashboardSources:
         item_names=lambda: {} if name_store is None else name_store.names(),
         item_infos=lambda: {} if name_store is None else name_store.infos(),
         thumbnails_dir=_log_dir().parent / THUMBNAILS_DIR_NAME,
+        element_names=_element_names,
     )
 
 
