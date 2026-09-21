@@ -509,6 +509,9 @@ def _window_sample(rows: list[TableRow], now: float, instant: dict[str, dict[str
                 "key": key,
                 "label": label,
                 "slot": slot,
+                # The gun's item id for the slot rows, so the page can name the line after
+                # the item once the name is known.
+                "item": hit_key if slot >= 0 else "",
                 "dps": parse_number(row.cells[DPS_CELL]),
                 "now": _instant_for(instant, hit_key) if hit_key else {name: 0.0 for name in instant},
             })

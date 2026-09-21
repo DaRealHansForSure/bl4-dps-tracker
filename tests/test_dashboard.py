@@ -130,15 +130,18 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual((second_hello["slots"], second_hello["names"]["seed277"]), (["seed277"], "Hunted Kettled Rangefinder"))
                 self.assertEqual(second_hello["history"], [], "the character switch above emptied the chart history")
             empty_slots = [TableRow(("-", "0", "0", "0.0"), "row")] * 3
-            self.dashboard.publish_rows(rows[:2] + empty_slots + [TableRow(("Skill", "300", "40", "15.0"), "row"), TableRow(("Last 5 min", "2'000", "500", "100.0"), "total")])
+            self.dashboard.publish_rows(rows[:2] + empty_slots + [TableRow(("Skill", "300", "40", "15.0"), "row"), TableRow(("Last 5 min", "2'000", "500", "100.0"), "total")], ["seed277"])
             with connect(self.url.replace("http://", "ws://") + "ws") as third:
                 history = json.loads(third.recv(RECV_TIMEOUT_S))["history"]
                 self.assertEqual([(sample["dps"], sample["total"]) for sample in history], [(500.0, 2000.0)])
                 self.assertGreater(history[0]["t"], 0)
                 self.assertEqual(
                     history[0]["sources"],
-                    [{"key": "slot0:Jakobs Sniper", "label": "Jakobs Sniper", "slot": 0, "dps": 250.0, "now": ZERO_NOW}, {"key": "Skill", "label": "Skill", "slot": -1, "dps": 40.0, "now": ZERO_NOW}],
-                    "weapon slots carry their slot number, empty slots are left out, other sources go by label",
+                    [
+                        {"key": "slot0:Jakobs Sniper", "label": "Jakobs Sniper", "slot": 0, "item": "seed277", "dps": 250.0, "now": ZERO_NOW},
+                        {"key": "Skill", "label": "Skill", "slot": -1, "item": "", "dps": 40.0, "now": ZERO_NOW},
+                    ],
+                    "weapon slots carry their slot number and item id, empty slots are left out, other sources go by label",
                 )
 
     def test_samples_carry_the_dps_of_the_last_seconds(self) -> None:

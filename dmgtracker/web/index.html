@@ -577,9 +577,12 @@
       (sample.sources || []).forEach(function (source) {
         let series = byKey[source.key];
         if (!series) {
-          series = { key: source.key, label: source.label, color: colorFor(source), values: new Array(samples.length).fill(0), window: new Array(samples.length).fill(0), peak: 0 };
+          series = { key: source.key, label: source.label, itemId: "", color: colorFor(source), values: new Array(samples.length).fill(0), window: new Array(samples.length).fill(0), peak: 0 };
           byKey[source.key] = series;
           order.push(series);
+        }
+        if (source.item) {
+          series.itemId = source.item;
         }
         series.values[index] = sourceNowOf(source);
         series.window[index] = source.dps;
@@ -674,9 +677,16 @@
     context.stroke();
   }
 
+  // A line is named after the gun's item name once the mod has read it, the type label before.
+  function seriesLabel(series) {
+    return (series.itemId && itemNames[series.itemId]) || series.label;
+  }
+
   function drawLegend(context, geometry, series) {
     // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
-    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: formatNumber(windowMinutes, 0) + " min", color: AVERAGE_COLOR }].concat(series);
+    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: formatNumber(windowMinutes, 0) + " min", color: AVERAGE_COLOR }].concat(
+      series.map(function (line) { return { label: seriesLabel(line), color: line.color }; })
+    );
     context.font = "11px sans-serif";
     context.textAlign = "left";
     context.textBaseline = "middle";
@@ -779,7 +789,7 @@
     const entries = [{ label: "Now", color: TOTAL_COLOR, value: nowOf(sample), at: nowOf(sample), average: sample.dps }];
     series.forEach(function (line) {
       if (line.values[index] > 0 || line.window[index] > 0) {
-        entries.push({ label: line.label, color: line.color, value: line.values[index], at: line.top[index], average: line.window[index] });
+        entries.push({ label: seriesLabel(line), color: line.color, value: line.values[index], at: line.top[index], average: line.window[index] });
       }
     });
     entries.forEach(function (entry) {
