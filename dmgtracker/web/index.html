@@ -104,6 +104,7 @@
   #item-card .name { font-weight: 600; font-size: 14px; margin-top: 6px; }
   #item-card .code { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 4px; }
   #item-card .line { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  #item-card .id { font-size: 12px; margin-top: 4px; }
   /* A rarity as a badge keeps its colour as text on a tinted ground, not the gradient. */
   .badge.rarity-badge { background: rgba(255, 255, 255, 0.08); -webkit-background-clip: border-box; background-clip: border-box; -webkit-text-fill-color: currentcolor; text-shadow: none; }
   .badge.rarity-badge.rarity-pearl { color: #6fe8dc; background: rgba(111, 232, 220, 0.14); }
@@ -174,7 +175,7 @@
 </style>
 </head>
 <body>
-<div id="item-card"><img alt=""><div class="name"></div><div class="line muted"></div><div class="damage"></div><div class="code"></div></div>
+<div id="item-card"><img alt=""><div class="name"></div><div class="line muted"></div><div class="damage"></div><div class="id muted"></div><div class="code"></div></div>
 <div id="chart-tooltip"></div>
 <header>
   <h1>BL4 Damage Tracker</h1>
@@ -266,7 +267,7 @@
       <div class="card wide">
         <h2>All weapons of this character</h2>
         <table id="weapons-all" class="ranked">
-          <thead><tr><th>#</th><th></th><th>Weapon</th><th>Id</th><th>DPS in hand</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>In hand</th><th>First seen</th><th>Last seen</th></tr></thead>
+          <thead><tr><th>#</th><th></th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>In hand</th><th>First seen</th><th>Last seen</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -707,7 +708,8 @@
       line.appendChild(badge(none ? "Normal" : info.element, none ? "" : elementClass(info.element)));
     }
     itemCard.querySelector(".damage").textContent = info.damage ? "Card damage " + info.damage : "";
-    itemCard.querySelector(".code").textContent = info.serial ? info.serial : shortId(itemId);
+    itemCard.querySelector(".id").textContent = "Id " + shortId(itemId);
+    itemCard.querySelector(".code").textContent = info.serial || "";
   }
 
   itemCardImage.addEventListener("error", function () {
@@ -1482,7 +1484,6 @@
           cell(String(w.rank), "rank"),
           thumbnailCell(w),
           weaponNameCell(w),
-          cell(shortId(w.item_id), "muted"),
           cell(formatNumber(w.dps_in_hand, 0)),
           cell(formatNumber(w.peak_dps, 0)),
           cell(formatDateTime(w.peak_dps_at)),
