@@ -396,6 +396,12 @@ class ItemNameReader:
             self._start_scan(missing[0], [], want_cards=False)
         return found
 
+    def retry_now(self) -> None:
+        """Cut a failed scan's rest short: the UI changed (a menu opened or closed), so a
+        model that was not there may be there now."""
+        self._next_scan_at = 0.0
+        self._retry_s = SCAN_RETRY_FIRST_S
+
     def forget(self) -> None:
         """Drop every name and every remembered address; the next read starts over."""
         with self._lock:

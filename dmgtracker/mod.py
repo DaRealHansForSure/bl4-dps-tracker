@@ -209,6 +209,8 @@ _element_names_cache: dict[int, str] | None = None
 # Whether a menu with the cursor has been open this session: the inventory list, which
 # alone names the gadgets, exists only from the first inventory screen on.
 _menu_seen = False
+# Whether the cursor is shown right now, to notice a menu opening or closing.
+_cursor_shown = False
 # When the game stopped being in play (a menu, a loading screen, a tunnel), 0 in play:
 # nothing ticks meanwhile, and what was paused is moved past the pause on the way back.
 _paused_since = 0.0
@@ -491,13 +493,26 @@ def _queue_thumbnail(item_id: str, label: str, card: ItemCard | None) -> None:
     _thumbnail_exports[item_id] = (texture[len(RENDER_TARGET_PREFIX):].rstrip("'"), label)
 
 
+def _note_menu(controller: UObject) -> None:
+    """A menu with the cursor opening or closing is when the UI builds or rebuilds its
+    models: a scan that found nothing before may find them now, so its rest is cut short."""
+    global _menu_seen, _cursor_shown
+    shown = bool(controller.bShowMouseCursor)
+    if shown == _cursor_shown:
+        return
+    _cursor_shown = shown
+    if shown:
+        _menu_seen = True
+    if name_reader is not None:
+        name_reader.retry_now()
+
+
 def _export_thumbnail_if_in_menu(controller: UObject) -> None:
     """One export per refresh while a menu with the cursor is open: the engine's export
     flushes the renderer, which must never cost a frame of play."""
-    global _thumbnail_errors, _menu_seen
+    global _thumbnail_errors
     if not controller.bShowMouseCursor:
         return
-    _menu_seen = True
     if not _thumbnail_exports or _thumbnails_dir is None:
         return
     item_id, (path, label) = next(iter(_thumbnail_exports.items()))
@@ -673,6 +688,7 @@ def _refresh_readout() -> None:
                 _learn_item_names(equipped, wall_now, now, in_play)
                 _learn_gadget_names(pawn, wall_now)
                 _equipped_cache = _with_item_names(equipped) if readout_item_names.value else equipped
+        _note_menu(controller)
         _export_thumbnail_if_in_menu(controller)
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
@@ -1042,7 +1058,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen, _paused_since
+    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen, _cursor_shown, _paused_since
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
@@ -1059,6 +1075,7 @@ def on_enable() -> None:
     _thumbnails_tried.clear()
     _thumbnail_conversions.clear()
     _menu_seen = False
+    _cursor_shown = False
     _paused_since = 0.0
     _prepare_item_names()
     poller = DamagePoller(

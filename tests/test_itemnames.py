@@ -284,6 +284,12 @@ class ItemNameReaderTest(unittest.TestCase):
         harness.wait_for_scan()
         self.assertEqual(harness.reader.scans, 2)
         self.assertEqual(harness.reader._next_scan_at, harness.clock.now + 2 * SCAN_RETRY_FIRST_S)
+        # A menu opened or closed: the rest is over, and the next failure rests the short time again.
+        harness.reader.retry_now()
+        harness.reader.names_for(SEEDS[:1])
+        harness.wait_for_scan()
+        self.assertEqual(harness.reader.scans, 3)
+        self.assertEqual(harness.reader._next_scan_at, harness.clock.now + SCAN_RETRY_FIRST_S)
 
     def test_forget_drops_the_names_and_starts_over(self) -> None:
         write_cards(self.memory, self.heap)
