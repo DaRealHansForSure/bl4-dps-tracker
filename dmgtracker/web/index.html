@@ -372,7 +372,7 @@
     "Character": "The character that dealt the hit.",
     "Source": "The weapon by its item name, or Skill, Grenade, Melee or Other.",
     "Damage": "The damage of the hit as the game counted it (on the weapons tab: the gun's lifetime damage).",
-    "Kind": "direct: a hit; dot: a tick of a status effect (burning, corrosion, ...).",
+    "Kind": "Direct: a hit; DoT: a tick of a status effect (burning, corrosion, ...).",
     "Crit": "A critical hit.",
     "Kill": "The hit killed its target.",
     "Target": "The enemy's family, from its class name.",
@@ -523,10 +523,16 @@
     return elementNames[String(elem)] || String(elem);
   }
 
+  // Slugs from the inventory ("legendary", "radiation") read like the hit lists' names.
+  function capitalized(text) {
+    const value = String(text || "");
+    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+  }
+
   function badge(text, className) {
     const span = document.createElement("span");
     span.className = "badge " + (className || "");
-    span.textContent = text;
+    span.textContent = capitalized(text);
     return span;
   }
 
@@ -658,6 +664,11 @@
         }
       });
       itemsLoading = null;
+      // Details that arrived after the table was drawn (rarity colours, element badges)
+      // go onto the rows now, not with the next change of the numbers.
+      if (lastLiveRows) {
+        renderLive(lastLiveRows);
+      }
     }).catch(function () { itemsLoading = null; });
     return itemsLoading;
   }
@@ -749,7 +760,10 @@
     itemCard.classList.remove("visible");
   }
 
+  let lastLiveRows = null;
+
   function renderLive(rows) {
+    lastLiveRows = rows;
     // The first table after (re)connecting is a snapshot, not activity: no flash for it.
     const firstRender = liveTotals.length === 0;
     const totals = rows.map(function (r) { return parseSwiss(r.cells[1]); });
@@ -1256,9 +1270,9 @@
     }
     cells.push(source);
     cells.push(cell(formatNumber(event.dmg, 1)));
-    cells.push(cell(event.kind || ""));
-    cells.push(cell(event.crit ? "crit" : "", event.crit ? "crit" : ""));
-    cells.push(cell(event.kill ? "kill" : "", event.kill ? "kill" : ""));
+    cells.push(cell(event.kind === "dot" ? "DoT" : capitalized(event.kind)));
+    cells.push(cell(event.crit ? "Crit" : "", event.crit ? "crit" : ""));
+    cells.push(cell(event.kill ? "Kill" : "", event.kill ? "kill" : ""));
     cells.push(cell(targetLabel(event.target)));
     cells.push(hitElementCell(event));
     return row(cells);

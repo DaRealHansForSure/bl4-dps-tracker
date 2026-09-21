@@ -19,7 +19,7 @@ Other                    7'703         77
 Last 60 min          3'219'066     32'190
 ```
 
-- `Total` covers the **last 60 minutes** (`readout_window_minutes`), by the clock on the wall: fighting or not, in a menu or not, so a source that stops dealing damage is out of the totals an hour after its last hit (the table is hidden in menus, but its window keeps moving).
+- `Total` covers the **last 60 minutes of play** (`readout_window_minutes`): fighting or not, the clock runs, so a source that stops dealing damage is out of the totals an hour after its last hit; in a menu, a loading screen or a tunnel nothing ticks (the DPS column holds, the chart gets no samples, a fight's 15 s gap does not run), because a pause is a pause.
 - `DPS` is **damage per second right now**: a row's hits of the last 10 s (`readout_dps_seconds`) over the seconds in which it landed one. A gun that did 40'000 in one second reads 40'000, sustained fire reads its sustained rate, and ten seconds after a row's last hit it reads 0. No averages over fights or windows. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.

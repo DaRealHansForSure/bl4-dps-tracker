@@ -227,6 +227,25 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual([(source["label"], source["now"]["10"]) for source in sample["sources"]], [("Jakobs Sniper", 100.0), ("Skill", 25.0)])
             self.assertEqual(sample["sources"][0]["dps"], 20.0, "the window value stays alongside")
 
+    def test_a_pause_stops_the_samples_and_the_decay(self) -> None:
+        import time as clock
+
+        now = clock.time()
+        self.dashboard.publish_hits([hit(now - 2.0, 600.0)])
+        rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "600", "300", "100.0"), "active"), TableRow(("Last 5 min", "600", "300", "100.0"), "total")]
+        self.dashboard.publish_rows(rows, ["seed277"])
+        wait_for_sample(self.dashboard, 300.0)
+        before = self.dashboard._history[-1]["now"]["10"]
+        self.assertEqual(before, 60.0)
+        self.dashboard.set_paused(True)
+        count = len(self.dashboard._history)
+        time.sleep(1.3)
+        self.assertEqual(len(self.dashboard._history), count, "no samples while paused")
+        # Back after a 30 s pause: the hit is still two seconds old for the chart.
+        self.dashboard.set_paused(False, 30.0)
+        with self.dashboard._state_lock:
+            self.assertAlmostEqual(self.dashboard._instant_dps(clock.time() + 30.0)["10"][""], 60.0, delta=0.5)
+
     def test_foreign_origin_is_refused(self) -> None:
         with self.assertRaises(InvalidStatus) as refused:
             with connect(self.url.replace("http://", "ws://") + "ws", additional_headers={"Origin": "http://evil.example"}):

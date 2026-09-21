@@ -201,5 +201,18 @@ class RollingStatsTests(unittest.TestCase):
         self.assertAlmostEqual(self.window.source_dps(totals), 10.0)
 
 
+class PauseTests(unittest.TestCase):
+    def test_a_fight_survives_a_pause(self) -> None:
+        tracker = EncounterTracker(gap_s=15.0)
+        tracker.add({"t": 100.0, "dmg": 10.0, "src": "weapon", "weapon": "Gun", "wid": "1"})
+        tracker.add({"t": 104.0, "dmg": 10.0, "src": "weapon", "weapon": "Gun", "wid": "1"})
+        # A 60 s pause: the gap timer must not have run meanwhile, the duration stays 4 s.
+        tracker.skip_pause(60.0)
+        self.assertFalse(tracker.close_if_idle(170.0))
+        self.assertEqual(tracker.current.duration(), 4.0)
+        self.assertTrue(tracker.close_if_idle(180.0))
+        tracker.skip_pause(10.0)
+
+
 if __name__ == "__main__":
     unittest.main()

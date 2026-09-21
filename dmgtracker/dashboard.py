@@ -146,6 +146,7 @@ class Dashboard:
         self._wake = threading.Condition(self._state_lock)
         self._rows_json: list[Message] = []
         self._last_sample_time = 0.0
+        self._paused = False
         self._rows_dirty = False
         self._last_rows: list[TableRow] = []
         self._slot_item_ids: list[str] = []
@@ -260,6 +261,16 @@ class Dashboard:
             self._rows_dirty = True
             self._wake.notify()
 
+    def set_paused(self, paused: bool, pause_seconds: float = 0.0) -> None:
+        """The game is paused (a menu, a loading screen): the chart gets no samples and its
+        "now" lines do not decay. On the way back the recent hits move past the pause, so
+        the seconds they are rated over are seconds of play."""
+        with self._wake:
+            self._paused = paused
+            if not paused and pause_seconds > 0:
+                self._recent_hits = deque(((when + pause_seconds, damage, key) for when, damage, key in self._recent_hits), maxlen=MAX_RECENT_HITS)
+                self._last_sample_time += pause_seconds
+
     def publish_hits(self, events: list[Message]) -> None:
         """New hits from the poller: to the clients, and into the chart's "now"."""
         if not events:
@@ -348,7 +359,7 @@ class Dashboard:
         """One chart sample per second while there is a table: the table's window values and
         the "now" DPS of the last seconds, which keeps falling after the last hit whether or
         not the table changes. Called with the state lock held."""
-        if not self._last_rows or now - self._last_sample_time < SAMPLE_INTERVAL_S:
+        if self._paused or not self._last_rows or now - self._last_sample_time < SAMPLE_INTERVAL_S:
             return None
         self._last_sample_time = now
         sample = _window_sample(self._last_rows, now, self._instant_dps(now), self._slot_item_ids)

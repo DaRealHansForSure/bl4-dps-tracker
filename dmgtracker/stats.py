@@ -244,6 +244,13 @@ class EncounterTracker:
         self._close()
         return True
 
+    def skip_pause(self, seconds: float) -> None:
+        """The game was paused for so many seconds: move the open fight's clock past them,
+        so the gap that ends a fight counts play only and its duration stays the same."""
+        if self.current is not None and seconds > 0:
+            self.current.started += seconds
+            self.current.last_hit += seconds
+
     def finish(self) -> None:
         """Close whatever is open; used when a whole file has been replayed."""
         if self.current is not None:

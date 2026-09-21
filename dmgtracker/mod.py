@@ -209,6 +209,9 @@ _element_names_cache: dict[int, str] | None = None
 # Whether a menu with the cursor has been open this session: the inventory list, which
 # alone names the gadgets, exists only from the first inventory screen on.
 _menu_seen = False
+# When the game stopped being in play (a menu, a loading screen, a tunnel), 0 in play:
+# nothing ticks meanwhile, and what was paused is moved past the pause on the way back.
+_paused_since = 0.0
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -234,8 +237,8 @@ _item_names_unavailable_since = 0.0
 _item_names_reported = False
 _item_names_asked = False
 _in_play_since = 0.0
-# The window's clock: wall time since the mod was enabled, counted while the table refresh
-# runs (with a controller in the world). It does not stop for menus, pauses or fights.
+# The window's clock: the seconds the game was in play since the mod was enabled. It stops
+# in menus, pauses, loading screens and tunnels, never for a fight ending.
 # Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
 # timestamps and everything persisted use time.time(), which is comparable across sessions.
 _play_clock = 0.0
@@ -654,8 +657,10 @@ def _refresh_readout() -> None:
             # until they come back. Checked at refresh rate: a function call, not a field read.
             _transition_hidden = True
             readout.set_visible(False)
-        tracker.close_if_idle(wall_now)
         in_play = _in_play(controller, pawn)
+        _note_pause(now, in_play)
+        if in_play:
+            tracker.close_if_idle(wall_now)
         _advance_play_clock(now, in_play)
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
@@ -693,6 +698,8 @@ def _refresh_readout() -> None:
         readout.render(rows, now)
         if dashboard is not None:
             dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache], _item_names_for(_equipped_cache), _gadget_ids)
+            if not in_play:
+                dashboard.set_paused(True)
         _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -746,21 +753,38 @@ def _record_peaks(now: float, now_rate: DamageRate) -> None:
         weapon_store.note_source_peak(kind, now_rate.kind_rate(kind), now_rate.seconds, now)
 
 
+def _note_pause(now: float, in_play: bool) -> None:
+    """Remember when play stopped; when it resumes, the fight's gap timer and the chart's
+    recent hits are moved past the pause, so nothing ticked meanwhile."""
+    global _paused_since
+    if not in_play:
+        if _paused_since == 0.0:
+            _paused_since = now
+        return
+    if _paused_since == 0.0:
+        return
+    pause_seconds = now - _paused_since
+    _paused_since = 0.0
+    tracker.skip_pause(pause_seconds)
+    if dashboard is not None:
+        dashboard.set_paused(False, pause_seconds)
+
+
 def _advance_play_clock(now: float, in_play: bool) -> None:
-    """Run the window's clock on wall time: fighting or not, in a menu or not, the last
-    hour is the last hour (a user rule), so a source that stops dealing
-    damage comes down on schedule and a pause does not hold the numbers still. The step
-    doubles as the time-in-hand sample, but only in play, while a fight is open and between
-    samples close together (a long gap is a pause or a loading screen): the lifetime
-    record's DPS in hand stays about fighting."""
+    """Run the window's clock while the game is in play: fighting or not, the clock runs,
+    so a source that stops dealing damage comes down on schedule; in a menu, a loading
+    screen or a tunnel nothing ticks (a user rule: a pause is a pause). A step longer than
+    a second is a frozen game, not play. The step doubles as the time-in-hand sample,
+    but only while a fight is open: the lifetime record's DPS in hand stays about
+    fighting."""
     global _last_held_sample, _play_clock, _last_fight_step
     elapsed = now - _last_held_sample
     _last_held_sample = now
     _last_fight_step = 0.0
-    if elapsed <= 0:
+    if not in_play or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
         return
     _play_clock += elapsed
-    if in_play and elapsed <= MAX_HELD_SAMPLE_S and tracker.current is not None:
+    if tracker.current is not None:
         _last_fight_step = elapsed
 
 
@@ -997,7 +1021,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen
+    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen, _paused_since
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
@@ -1014,6 +1038,7 @@ def on_enable() -> None:
     _thumbnails_tried.clear()
     _thumbnail_conversions.clear()
     _menu_seen = False
+    _paused_since = 0.0
     _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
