@@ -70,7 +70,10 @@
   /* The picture and the name columns of the ranked lists read from the left. */
   .ranked th:nth-child(2), .ranked td:nth-child(2), .ranked th:nth-child(3), .ranked td:nth-child(3) { text-align: left; }
   tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.04); }
-  tr.active td { color: var(--accent); font-weight: 600; }
+  /* The gun in hand: a marker at the left and a bold row, so the name keeps its rarity
+     colour (yellow text read as "legendary"). */
+  tr.active td { font-weight: 600; background: rgba(245, 197, 66, 0.07); }
+  tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
   tr.spacer td { padding: 0; height: 8px; }
   tr.header td { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
@@ -353,7 +356,7 @@
   // What every column means, shown as the header's tooltip; the live table's header
   // comes from the mod with its rows, the others are in the markup.
   const HEADER_HELP = {
-    "Weapon": "The gun in each of the four weapon slots (its item name once read, the short id after it), then the other sources of damage.",
+    "Weapon": "The gun in each of the four weapon slots (its item name once read, the short id after it), then the other sources of damage. The marked row is the gun in hand.",
     "Total": "Damage dealt in the table's window (the last 60 minutes unless set otherwise), by the clock on the wall.",
     "DPS": "Damage per second right now: the row's hits of the last 10 seconds over the seconds in which it landed one. 40'000 in one second reads 40'000; ten seconds after the row's last hit it reads 0.",
     "Share [%]": "The row's share of the window's damage.",
