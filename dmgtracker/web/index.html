@@ -223,7 +223,7 @@
     </div>
     <div class="card">
       <table id="hits-table">
-        <thead><tr><th>Time</th><th>Character</th><th>Source</th><th>Damage</th><th>Kind</th><th>Crit</th><th>Kill</th><th>Target</th><th>Element</th><th>Type</th></tr></thead>
+        <thead><tr><th>Time</th><th>Character</th><th>Source</th><th>Damage</th><th>Kind</th><th>Crit</th><th>Kill</th><th>Target</th><th>Element</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -375,8 +375,7 @@
     "Crit": "A critical hit.",
     "Kill": "The hit killed its target.",
     "Target": "The enemy's family, from its class name.",
-    "Element": "The element of the damage type: Corrosive, Cryo, Fire, Shock or Radiation; blank for kinetic damage.",
-    "Type": "The game's own name of the damage type (a bullet type, a status effect tick, an explosion, ...).",
+    "Element": "The element of the hit's damage: Corrosive, Cryo, Fire, Shock or Radiation, Normal for kinetic damage; \"status\" marks a status effect tick. The game's own damage type name is the badge's tooltip.",
     "#": "Rank in the chosen order.",
     "DPS in hand": "Lifetime damage of the gun over the fighting time it was in hand: the fair comparison between guns, reloads and pauses included.",
     "In hand": "Fighting time with the gun in hand (a fight is open from a hit until 15 s after the last one).",
@@ -528,6 +527,37 @@
     span.className = "badge " + (className || "");
     span.textContent = text;
     return span;
+  }
+
+  // One element per hit: the element its damage type name carries ("Radiation",
+  // "Radiation_Status"), else the one the type's enum value names, else Normal for
+  // kinetic damage; the type's own name is the badge's tooltip. The two fields do not
+  // always agree (the value is 0 on some elemental hits), and the name is the one the
+  // game shows.
+  function hitElementCell(event) {
+    const typeName = event.dtype || "";
+    let element = elementFromName(typeName) || elementLabel(event.elem) || "";
+    if (!element || element === "Normal") {
+      element = "Normal";
+    }
+    const status = /status/i.test(typeName);
+    const td = badgeCell(status ? element + " status" : element, elementClass(element));
+    if (typeName) {
+      td.title = "damage type " + typeName;
+    }
+    return td;
+  }
+
+  function elementFromName(text) {
+    const lower = String(text || "").toLowerCase();
+    const names = { corrosive: "Corrosive", cryo: "Cryo", fire: "Fire", incendiary: "Fire", shock: "Shock", radiation: "Radiation" };
+    const keys = Object.keys(names);
+    for (let index = 0; index < keys.length; index++) {
+      if (lower.indexOf(keys[index]) >= 0) {
+        return names[keys[index]];
+      }
+    }
+    return "";
   }
 
   // A cell holding one badge (blank when there is nothing to say), tinted by a class.
@@ -1228,10 +1258,7 @@
     cells.push(cell(event.crit ? "crit" : "", event.crit ? "crit" : ""));
     cells.push(cell(event.kill ? "kill" : "", event.kill ? "kill" : ""));
     cells.push(cell(targetLabel(event.target)));
-    cells.push(badgeCell(elementLabel(event.elem), elementClass(elementLabel(event.elem))));
-    if (withCharacter) {
-      cells.push(badgeCell(event.dtype || "", elementClass(event.dtype || "")));
-    }
+    cells.push(hitElementCell(event));
     return row(cells);
   }
 
