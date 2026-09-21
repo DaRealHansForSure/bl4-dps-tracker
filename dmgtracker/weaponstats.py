@@ -225,6 +225,19 @@ class WeaponStore:
             return False
         return True
 
+    def clear_names(self) -> int:
+        """Forget every stored item name, so they are read from the game again; returns how
+        many there were. The records themselves stay."""
+        with self._lock:
+            cleared = 0
+            for record in self.records.values():
+                if record.name:
+                    record.name = ""
+                    cleared += 1
+            if cleared:
+                self._dirty = True
+        return cleared
+
     def reset(self) -> Path | None:
         """Start over: set the current file aside (never delete history) and empty the
         records. Returns where the old file went, or None if there was none."""

@@ -1050,10 +1050,13 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} dashboard: not running")
 
 
-@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's.")
+@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's; --names forgets the stored item names only.")
 def dmgreset_command(args: argparse.Namespace) -> None:
     if poller is None:
         logging.info(f"{LOG_PREFIX} the mod is not enabled")
+        return
+    if args.names:
+        _forget_item_names()
         return
     _reset_live_stats()
     logging.info(f"{LOG_PREFIX} damage table reset")
@@ -1065,6 +1068,22 @@ def dmgreset_command(args: argparse.Namespace) -> None:
 
 dmgreset_command.add_argument("--weapons", action="store_true", help="also start a fresh lifetime record for the current character")
 dmgreset_command.add_argument("--all", action="store_true", help="also start fresh lifetime records for every character")
+dmgreset_command.add_argument("--names", action="store_true", help="only forget this character's stored item names; they are read from the game again")
+
+
+def _forget_item_names() -> None:
+    """Drop the stored item names of the current character and read them afresh."""
+    global name_matcher, _item_names_unavailable_since, _item_names_reported
+    if weapon_store is None:
+        logging.info(f"{LOG_PREFIX} no character loaded, no names to forget")
+        return
+    cleared = weapon_store.clear_names()
+    name_matcher = NameMatcher()
+    _item_names_unavailable_since = 0.0
+    _item_names_reported = False
+    if card_reader is not None:
+        card_reader.forget()
+    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's item cards")
 
 
 def _reset_current_weapon_record() -> None:

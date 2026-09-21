@@ -122,6 +122,10 @@ class WeaponStoreTests(unittest.TestCase):
         reloaded.load()
         self.assertEqual(reloaded.name_for("ddbe5d"), "Maintained Screeching T.K's Wave")
         self.assertEqual(reloaded.name_for("missing"), "")
+        self.assertEqual(reloaded.clear_names(), 2)
+        self.assertEqual((reloaded.name_for("ddbe5d"), reloaded.records["ddbe5d"].label), ("", "Jakobs Shotgun"))
+        self.assertTrue(reloaded.save_if_due(now=300.0, force=True), "forgetting names is a change worth saving")
+        self.assertEqual(reloaded.clear_names(), 0)
 
     def test_peak_dps_needs_a_long_enough_window_and_only_rises(self) -> None:
         store = WeaponStore(self.path)

@@ -38,7 +38,7 @@ Open the console with F6 (in the world, not in the main menu):
 |---|---|
 | `dmgweapons` | Rank the current character's weapons over all sessions: DPS in hand, peak DPS, damage, hits, average hit, crit share, kills, minutes in hand. `-n 30` for a longer list. |
 | `dmgreport` | Report over the current session: each fight (total, duration, DPS, active DPS, targets, kills, crit share, per-source split), a session summary, a weapons table. `--last 300` adds the average over the final five minutes, `--gap 30` changes the fight boundary. |
-| `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. |
+| `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. `--names` only forgets the stored item names of the current character, which are then read from the game again. |
 | `dmgweb` | Print the dashboard address (`--open` opens it in the browser). |
 | `dmgstatus` | Counters, hooks, character, files, item identity, dashboard. |
 

@@ -130,7 +130,7 @@ class ItemCardReaderTest(unittest.TestCase):
         pool = memory.blocks[POOL_BASE]
         pool[first_header - POOL_BASE:first_header - POOL_BASE + 16] = bytes(16)
         pool[0x3800:0x3810] = struct.pack("<QII", RECORDS, 1, 1)
-        reader._next_discovery_at = 0.0
+        reader.forget()
         self.assertEqual([card.name for card in self.cards_after_discovery(reader)], ["Lionized Parasite"])
         self.assertEqual(reader._header, POOL_BASE + 0x3800, "found in the widened window, past the UI object")
 

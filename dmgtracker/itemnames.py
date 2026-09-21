@@ -41,10 +41,16 @@ MAX_NAME_CHARS = 120
 MAX_FIELD_CHARS = 200
 POINTER_MIN = 0x10000
 POINTER_MAX = 0x7FFFFFFFFFFF
-# Half-widths of the windows around the anchor, widened one after the other; the chunks
-# are single pages so an unreadable one costs nothing.
-SCAN_WINDOWS_BYTES = (64 * 1024, 1024 * 1024, 8 * 1024 * 1024)
-SCAN_CHUNK_BYTES = 4096
+# Half-widths of the windows around the anchor, widened one after the other.
+SCAN_WINDOWS_BYTES = (64 * 1024, 1024 * 1024, 4 * 1024 * 1024)
+PAGE_BYTES = 4096
+SCAN_CHUNK_BYTES = 256 * 1024
+# The {num, max} pairs of a TArray header holding 1..MAX_RECORDS records, as bytes.
+HEADER_COUNT_PATTERNS = tuple(
+    num.to_bytes(4, "little") + capacity.to_bytes(4, "little")
+    for num in range(1, MAX_RECORDS + 1)
+    for capacity in range(num, 2 * MAX_RECORDS + 1)
+)
 # A scan that found nothing rests this long before the next one.
 DISCOVERY_RETRY_S = 15.0
 
@@ -180,6 +186,11 @@ class ItemCardReader:
         self._start_discovery(game_instance_address)
         return []
 
+    def forget(self) -> None:
+        """Drop the remembered array and look for it again at the next read."""
+        self._header = None
+        self._next_discovery_at = 0.0
+
     @property
     def discovering(self) -> bool:
         return self._discovery is not None and self._discovery.is_alive()
@@ -211,9 +222,9 @@ class ItemCardReader:
         if anchor is None:
             return None
         # The node lies within a few KB of the anchor, allocated by the same system at the
-        # same time (5 KB and 2.3 KB in two sessions): widen the window step by step, so the
-        # usual case costs a few thousand checks and the worst case stays bounded. Region
-        # boundaries do not matter: unreadable chunks are skipped.
+        # same time (5 KB and 2.3 KB in two sessions, kept across character switches):
+        # widen the window step by step, so the usual case costs a few pages and the worst
+        # case stays bounded. Region boundaries do not matter: unreadable pages are skipped.
         scanned: tuple[int, int] | None = None
         for window in SCAN_WINDOWS_BYTES:
             start, end = max(POINTER_MIN, anchor - window), anchor + window
@@ -225,22 +236,45 @@ class ItemCardReader:
         return None
 
     def _scan(self, start: int, end: int, skip: tuple[int, int] | None) -> int | None:
-        """The first header between start and end, skipping the part scanned before. The
-        chunks are whole pages: a read that starts on an unmapped page yields nothing, so a
-        page-aligned chunk is either read or skipped, never half lost."""
-        first_page = start - start % SCAN_CHUNK_BYTES
+        """The first header between start and end, skipping the part scanned before.
+        Memory is read in page-aligned chunks (a read that starts on an unmapped page yields
+        nothing, so a chunk falls back to its single pages), and each chunk is searched with
+        bytes.find for the {num, max} pairs a header can have: the pointer before a match is
+        checked, and the record behind a plausible pointer is read. That keeps the Python
+        work per megabyte small; the thread yields between chunks."""
+        first_page = start - start % PAGE_BYTES
         for chunk_start in range(first_page, end, SCAN_CHUNK_BYTES):
-            if skip is not None and skip[0] <= chunk_start and chunk_start + SCAN_CHUNK_BYTES <= skip[1]:
+            chunk_end = min(chunk_start + SCAN_CHUNK_BYTES, end)
+            if skip is not None and skip[0] <= chunk_start and chunk_end <= skip[1]:
                 continue
-            chunk = self._read(chunk_start, SCAN_CHUNK_BYTES)
-            if chunk is None:
-                continue
-            for offset in range(0, len(chunk) - 15, 8):
-                address = chunk_start + offset
-                if skip is not None and skip[0] <= address < skip[1]:
-                    continue
-                if self._header_looks_right(chunk, offset):
-                    return address
+            for piece_start, piece in self._readable_pieces(chunk_start, chunk_end):
+                header = self._header_in(piece_start, piece, skip)
+                if header is not None:
+                    return header
+            time.sleep(0)
+        return None
+
+    def _readable_pieces(self, start: int, end: int) -> list[tuple[int, bytes]]:
+        """The chunk in one piece when it is readable as a whole, else its readable pages."""
+        whole = self._read(start, end - start)
+        if whole is not None and len(whole) == end - start:
+            return [(start, whole)]
+        pieces: list[tuple[int, bytes]] = []
+        for page_start in range(start, end, PAGE_BYTES):
+            page = self._read(page_start, min(PAGE_BYTES, end - page_start))
+            if page is not None:
+                pieces.append((page_start, page))
+        return pieces
+
+    def _header_in(self, base: int, data: bytes, skip: tuple[int, int] | None) -> int | None:
+        for pattern in HEADER_COUNT_PATTERNS:
+            position = data.find(pattern)
+            while position >= 0:
+                if position >= 8 and position % 8 == 0:
+                    address = base + position - 8
+                    if (skip is None or not skip[0] <= address < skip[1]) and self._header_looks_right(data, position - 8):
+                        return address
+                position = data.find(pattern, position + 8)
         return None
 
     def _anchor(self, game_instance_address: int) -> int | None:

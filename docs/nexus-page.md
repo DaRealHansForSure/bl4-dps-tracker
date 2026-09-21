@@ -45,6 +45,6 @@ Four menu entries (logging on/off, table on/off, open log folder, web dashboard 
 
 ## Changelog
 
-1.2.0: item names of the equipped guns, read from the game's item cards, on the dashboard, in the weapon records and reports (the in-game table keeps the short labels; `readout_item_names` switches it); the dashboard shows the item id next to each gun.
+1.2.0: item names of the equipped guns, read from the game's item cards, on the dashboard, in the weapon records and reports (the in-game table keeps the short labels; `readout_item_names` switches it); the dashboard shows the item id next to each gun; `dmgreset --names` forgets the stored names.
 1.1.0: web dashboard at http://127.0.0.1:8765/ (live table over WebSocket, hits with search, weapon Top 10, encounters; also reachable from other devices on the network); Best DPS for Skill and Grenade; weapon records follow the gun across restarts and character switches (records from 1.0.0 are set aside); Melee row hidden by default; table at the left screen border.
 1.0.0: first release.
