@@ -64,6 +64,7 @@
   .card h2 select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; font: inherit; padding: 1px 4px; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { padding: 4px 10px; text-align: right; white-space: nowrap; }
+  th[title], tr.header td[title] { cursor: help; }
   th:first-child, td:first-child { text-align: left; }
   th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
   /* The picture and the name columns of the ranked lists read from the left. */
@@ -334,6 +335,50 @@
     return td;
   }
 
+  // What every column means, shown as the header's tooltip; the live table's header
+  // comes from the mod with its rows, the others are in the markup.
+  const HEADER_HELP = {
+    "Weapon": "The gun in each of the four weapon slots (its item name once read, the short id after it), then the other sources of damage.",
+    "Total": "Damage dealt in the last 5 minutes, by the clock on the wall.",
+    "DPS": "Damage per second right now: the row's hits of the last 10 seconds over the seconds in which it landed one. 40'000 in one second reads 40'000; ten seconds after the row's last hit it reads 0.",
+    "Share [%]": "The row's share of the damage of the last 5 minutes.",
+    "Crit [%]": "Share of the row's direct hits that were critical hits (status ticks cannot crit).",
+    "Kills": "Kills credited to the row.",
+    "Best DPS": "The highest value the DPS column ever reached for this row, over every session of the character. It only rises.",
+    "Last 5 min": "Everything together, over the last 5 minutes.",
+    "Encounter": "The current fight: its damage and its damage over its duration.",
+    "Time": "The clock time of the hit.",
+    "Character": "The character that dealt the hit.",
+    "Source": "The weapon by its item name, or Skill, Grenade, Melee or Other.",
+    "Damage": "The damage of the hit as the game counted it (on the weapons tab: the gun's lifetime damage).",
+    "Kind": "direct: a hit; dot: a tick of a status effect (burning, corrosion, ...).",
+    "Crit": "A critical hit.",
+    "Kill": "The hit killed its target.",
+    "Target": "The enemy's family, from its class name.",
+    "Element": "The element of the damage type: Corrosive, Cryo, Fire, Shock or Radiation; blank for kinetic damage.",
+    "Type": "The game's own name of the damage type (a bullet type, a status effect tick, an explosion, ...).",
+    "#": "Rank in the chosen order.",
+    "DPS in hand": "Lifetime damage of the gun over the fighting time it was in hand: the fair comparison between guns, reloads and pauses included.",
+    "In hand": "Fighting time with the gun in hand (a fight is open from a hit until 15 s after the last one).",
+    "Id": "The short item id: the first characters of the gun's seed, which stays the same across sessions.",
+    "Best at": "When the best DPS was set.",
+    "Hits": "Lifetime number of hits, status ticks included.",
+    "Avg hit": "Lifetime damage over the number of hits.",
+    "First seen": "The first session that saw the gun.",
+    "Last seen": "The last session that saw the gun."
+  };
+
+  function annotateHeaders() {
+    document.querySelectorAll("th").forEach(function (th) {
+      const help = HEADER_HELP[th.textContent.trim()];
+      if (help) {
+        th.title = help;
+      }
+    });
+  }
+
+  annotateHeaders();
+
   function row(cells, className) {
     const tr = document.createElement("tr");
     if (className) {
@@ -602,7 +647,14 @@
         itemId = gadgetItemIds[r.cells[0]];
       }
       const cells = r.cells.map(function (text, column) {
-        return column === 0 && itemId ? weaponCell(text, itemId) : cell(text);
+        const td = column === 0 && itemId ? weaponCell(text, itemId) : cell(text);
+        if (r.style === "header" || r.style === "total") {
+          const help = HEADER_HELP[text.replace(/^Last .*$/, "Last 5 min")] || HEADER_HELP[text.replace(/ \d+s$/, "")];
+          if (help) {
+            td.title = help;
+          }
+        }
+        return td;
       });
       const grew = !firstRender && (r.style === "row" || r.style === "active") && totals[index] > (liveTotals[index] || 0);
       return row(cells, r.style + (grew ? " flash" : ""));
