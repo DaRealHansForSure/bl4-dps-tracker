@@ -27,8 +27,8 @@ from .character import CharacterIdentity, read_identity
 from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
 from .formatting import format_number
-from .itemidentity import ItemIdentityReader, short_item_id
-from .itemnames import ItemCardReader, NameMatcher, layout_for_build
+from .itemidentity import ItemIdentityReader, seed_of, short_item_id
+from .itemnames import ItemNameReader, layout_for_build
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -96,10 +96,12 @@ DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
 DEFAULT_READOUT_WINDOW_MINUTES = 5.0
 READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
-# How long the item cards may stay unreadable after the character loaded before one
-# warning is logged; the UI builds its models a moment after the character is in the world.
+# How long an equipped gun may stay without an item name before one warning is logged;
+# the first scan for the UI models takes a few seconds and the models lag the equipment.
 ITEM_NAMES_GRACE_S = 120.0
-GAME_INSTANCE_CLASS = "OakGameInstance"
+# Item names are read only once the player has been in play this long: the UI builds its
+# models a moment after the world is up, and a scan during a load finds nothing.
+ITEM_NAMES_SETTLE_S = 3.0
 BUILD_VERSION_LIBRARY = "KismetSystemLibrary"
 # A held-time sample longer than this means the game was paused or loading, not playing.
 MAX_HELD_SAMPLE_S = 1.0
@@ -178,8 +180,7 @@ web_chart_seconds = HiddenOption("web_chart_seconds", DEFAULT_CHART_SECONDS)
 
 identity_reader = ItemIdentityReader()
 resolver = WeaponResolver(identity_reader.item_id)
-card_reader: ItemCardReader | None = None
-name_matcher = NameMatcher()
+name_reader: ItemNameReader | None = None
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -198,9 +199,9 @@ _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
 _transition_hidden = False
 _equipped_cache: list = []
-_game_instance_address = 0
 _item_names_unavailable_since = 0.0
 _item_names_reported = False
+_in_play_since = 0.0
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
 # Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
@@ -309,10 +310,9 @@ def _on_controller_changed(controller: UObject | None) -> None:
 # ------------------------------------------------------------------ item names
 
 def _prepare_item_names() -> None:
-    """Pick the item card layout for this game build. An unknown build gets the latest
-    layout and one warning; the content validation guards the read either way."""
-    global card_reader, _game_instance_address, _item_names_unavailable_since
-    _game_instance_address = 0
+    """Pick the UI model layouts for this game build. An unknown build gets the latest
+    layouts and one warning; the content validation guards every read either way."""
+    global name_reader, _item_names_unavailable_since
     _item_names_unavailable_since = 0.0
     build = ""
     try:
@@ -322,49 +322,48 @@ def _prepare_item_names() -> None:
     layout, verified = layout_for_build(build)
     if build and not verified:
         logging.warning(f"{LOG_PREFIX} game build {build!r} is not verified for item names; trying the layout of build {layout.changelist}")
-    card_reader = ItemCardReader(layout)
+    name_reader = ItemNameReader(layout)
 
 
-def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float) -> None:
-    """Read the equipped weapons' item names from the game's item cards into the weapon
-    record. Runs until every equipped gun has a confirmed name. While the cards cannot be
-    read the reader keeps looking on its own thread; one warning after the grace period."""
-    global _game_instance_address, _item_names_unavailable_since, _item_names_reported
-    if card_reader is None or weapon_store is None or not equipped:
+def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float, in_play: bool) -> None:
+    """Read the item names of the equipped guns that have none yet from the game's UI
+    models into the weapon record, once the player has been in play for a moment. The
+    reader looks for the models on its own thread and answers from memory once it has
+    them; one warning when a gun stays nameless too long."""
+    global _item_names_unavailable_since, _item_names_reported, _in_play_since
+    if name_reader is None or weapon_store is None:
         return
-    item_ids = [weapon.item_id for weapon in equipped]
-    if all(weapon_store.name_for(item_id) for item_id in item_ids) and name_matcher.confirmed(item_ids):
+    if not in_play:
+        _in_play_since = 0.0
+        return
+    if _in_play_since == 0.0:
+        _in_play_since = now
+    if now - _in_play_since < ITEM_NAMES_SETTLE_S:
+        return
+    seeds: dict[str, bytes] = {}
+    for weapon in equipped:
+        seed = seed_of(weapon.item_id)
+        if seed is not None and not weapon_store.name_for(weapon.item_id):
+            seeds[weapon.item_id] = seed
+    if not seeds:
+        _item_names_unavailable_since = 0.0
         return
     try:
-        if not _game_instance_address:
-            _game_instance_address = _find_game_instance()
-        cards = card_reader.cards(_game_instance_address) if _game_instance_address else []
+        names = name_reader.names_for(seeds.values())
     except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
-        card_reader.last_error = f"{type(ex).__name__}: {ex}"
-        cards = []
-    if not cards:
-        # The game instance is looked up again next time; it is the cheap part.
-        _game_instance_address = 0
-        if _item_names_unavailable_since == 0.0:
-            _item_names_unavailable_since = now
-        elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not card_reader.discovering:
-            _item_names_reported = True
-            logging.warning(f"{LOG_PREFIX} item names unavailable ({card_reader.last_error or 'no item cards'}); guns keep their type labels")
-        return
-    _item_names_unavailable_since = 0.0
-    names = name_matcher.match(item_ids, cards)
+        name_reader.last_error = f"{type(ex).__name__}: {ex}"
+        names = {}
     for weapon in equipped:
-        name = names.get(weapon.item_id)
+        name = names.get(seeds.get(weapon.item_id, b""))
         if name and weapon_store.set_name(weapon.item_id, name, weapon.label, weapon.body, wall_now):
             _say(f"{weapon.label} {short_item_id(weapon.item_id)} is {name}")
-
-
-def _find_game_instance() -> int:
-    """The address of the live game instance object, 0 when there is none."""
-    for candidate in unrealsdk.find_all(GAME_INSTANCE_CLASS, exact=False):
-        if not str(candidate.Name).startswith("Default__"):
-            return int(candidate._get_address())
-    return 0
+    if names:
+        _item_names_unavailable_since = 0.0
+    elif _item_names_unavailable_since == 0.0:
+        _item_names_unavailable_since = now
+    elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not name_reader.discovering:
+        _item_names_reported = True
+        logging.warning(f"{LOG_PREFIX} item names unavailable ({name_reader.last_error or 'no UI model found'}); guns keep their type labels")
 
 
 def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
@@ -492,14 +491,15 @@ def _refresh_readout() -> None:
             _transition_hidden = True
             readout.set_visible(False)
         tracker.close_if_idle(wall_now)
-        _advance_play_clock(now, _in_play(controller, pawn))
+        in_play = _in_play(controller, pawn)
+        _advance_play_clock(now, in_play)
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
             _check_character(controller, pawn)
             equipped = resolver.equipped_weapons(pawn)
             if equipped is not None:
-                _learn_item_names(equipped, wall_now, now)
+                _learn_item_names(equipped, wall_now, now, in_play)
                 _equipped_cache = _with_item_names(equipped) if readout_item_names.value else equipped
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
@@ -1037,6 +1037,13 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
     if identity_reader.last_error:
         identity_state += f", last error: {identity_reader.last_error}"
     logging.info(f"{LOG_PREFIX} item identity: {identity_state}")
+    if name_reader is not None:
+        names_state = f"{name_reader.known} known from the UI models, {name_reader.scans} scan(s)"
+        if name_reader.discovering:
+            names_state += ", scanning"
+        if name_reader.last_error:
+            names_state += f", last error: {name_reader.last_error}"
+        logging.info(f"{LOG_PREFIX} item names: {names_state}")
     if session_log is not None:
         logging.info(
             f"{LOG_PREFIX} session log: {session_log.path} ({session_log.written} written, {session_log.buffered()} buffered, "
@@ -1073,17 +1080,16 @@ dmgreset_command.add_argument("--names", action="store_true", help="only forget 
 
 def _forget_item_names() -> None:
     """Drop the stored item names of the current character and read them afresh."""
-    global name_matcher, _item_names_unavailable_since, _item_names_reported
+    global _item_names_unavailable_since, _item_names_reported
     if weapon_store is None:
         logging.info(f"{LOG_PREFIX} no character loaded, no names to forget")
         return
     cleared = weapon_store.clear_names()
-    name_matcher = NameMatcher()
     _item_names_unavailable_since = 0.0
     _item_names_reported = False
-    if card_reader is not None:
-        card_reader.forget()
-    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's item cards")
+    if name_reader is not None:
+        name_reader.forget()
+    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's UI models")
 
 
 def _reset_current_weapon_record() -> None:
