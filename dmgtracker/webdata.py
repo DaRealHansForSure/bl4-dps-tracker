@@ -143,11 +143,12 @@ def _matches(event: dict[str, Any], needle: str) -> bool:
     return False
 
 
-def weapons_payload(store: WeaponStore | None, character: dict[str, str] | None, by: str) -> dict[str, Any]:
+def weapons_payload(store: WeaponStore | None, character: dict[str, str] | None, by: str, names: dict[str, str] | None = None) -> dict[str, Any]:
     """The character's lifetime weapon records, ranked, plus the top ten and the peaks of the
-    non-weapon sources."""
+    non-weapon sources; `names` (item id -> item name) labels the guns whose name is known."""
     if by not in RANKINGS:
         by = RANKINGS[0]
+    names = names or {}
     weapons: list[dict[str, Any]] = []
     sources: dict[str, float] = {}
     if store is not None:
@@ -156,7 +157,7 @@ def weapons_payload(store: WeaponStore | None, character: dict[str, str] | None,
                 "rank": position,
                 "item_id": record.item_id,
                 "label": record.label,
-                "name": record.name,
+                "name": names.get(record.item_id, ""),
                 "body": record.body,
                 "damage": record.damage,
                 "hits": record.hits,
@@ -176,9 +177,11 @@ def weapons_payload(store: WeaponStore | None, character: dict[str, str] | None,
     return {"character": character, "by": by, "top": weapons[:TOP_WEAPONS], "weapons": weapons, "sources": sources}
 
 
-def session_weapons_payload(session: Any) -> list[dict[str, Any]]:
-    """Per-weapon totals of one session (from the report), one list over all characters."""
+def session_weapons_payload(session: Any, names: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Per-weapon totals of one session (from the report), one list over all characters,
+    named by item where `names` knows the gun."""
     weapons: list[dict[str, Any]] = []
+    names = names or {}
     for section in session.sections:
         name = "" if section.identity is None else str(section.identity.get("name", ""))
         for weapon in weapon_records_for(section.events, section.held):
@@ -187,6 +190,7 @@ def session_weapons_payload(session: Any) -> list[dict[str, Any]]:
                 "character": name,
                 "item_id": record.item_id,
                 "label": record.label,
+                "name": names.get(record.item_id, ""),
                 "damage": record.damage,
                 "hits": record.hits,
                 "crits": record.crits,

@@ -106,26 +106,28 @@ class WeaponStoreTests(unittest.TestCase):
         self.assertIn("Fast Gun #2", lines[1])
         self.assertIn("500", lines[1])
 
-    def test_item_name_is_stored_shown_and_saved(self) -> None:
+    def test_the_ranking_names_the_guns_the_table_knows(self) -> None:
         store = WeaponStore(self.path, save_interval_s=30.0)
         store.add_held("ddbe5d", "Jakobs Shotgun", "Body_JAK_SG", 2.0, 100.0)
-        self.assertEqual(store.name_for("ddbe5d"), "")
-        self.assertTrue(store.set_name("ddbe5d", "Maintained Screeching T.K's Wave", "Jakobs Shotgun", "Body_JAK_SG", 101.0))
-        self.assertFalse(store.set_name("ddbe5d", "Maintained Screeching T.K's Wave", "Jakobs Shotgun", "Body_JAK_SG", 102.0), "same name again")
-        self.assertEqual(store.name_for("ddbe5d"), "Maintained Screeching T.K's Wave")
-        self.assertEqual(store.records["ddbe5d"].display_label(), "Maintained Screeching T.K's Wave")
-        self.assertIn("Maintained Screeching  ddbe5d", store.format_ranking()[1], "22 characters of the name, then the id")
-        self.assertTrue(store.set_name("new", "Lionized Parasite", "Vladof SMG", "Body_VLA_SM", 103.0), "a gun seen by name first gets a record")
-        self.assertEqual((store.records["new"].label, store.records["new"].body), ("Vladof SMG", "Body_VLA_SM"))
+        store.add_held("other", "Vladof SMG", "Body_VLA_SM", 2.0, 100.0)
+        self.assertEqual(store.records["ddbe5d"].display_label(), "Jakobs Shotgun")
+        self.assertEqual(store.records["ddbe5d"].display_label("Maintained Screeching T.K's Wave"), "Maintained Screeching T.K's Wave")
+        lines = store.format_ranking(names={"ddbe5d": "Maintained Screeching T.K's Wave"})
+        self.assertIn("Maintained Screeching  ddbe5d", "".join(lines), "22 characters of the name, then the id")
+        self.assertIn("Vladof SMG other", "".join(lines), "a gun without a name keeps its label")
+
+    def test_a_record_written_with_a_name_still_loads(self) -> None:
+        # Records of version 1.2.0 carried the name; the table holds it since.
+        store = WeaponStore(self.path)
+        store.add_held("ddbe5d", "Jakobs Shotgun", "Body_JAK_SG", 2.0, 100.0)
         self.assertTrue(store.save_if_due(now=200.0, force=True))
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data["weapons"][0]["name"] = "Maintained Screeching T.K's Wave"
+        self.path.write_text(json.dumps(data), encoding="utf-8")
         reloaded = WeaponStore(self.path)
         reloaded.load()
-        self.assertEqual(reloaded.name_for("ddbe5d"), "Maintained Screeching T.K's Wave")
-        self.assertEqual(reloaded.name_for("missing"), "")
-        self.assertEqual(reloaded.clear_names(), 2)
-        self.assertEqual((reloaded.name_for("ddbe5d"), reloaded.records["ddbe5d"].label), ("", "Jakobs Shotgun"))
-        self.assertTrue(reloaded.save_if_due(now=300.0, force=True), "forgetting names is a change worth saving")
-        self.assertEqual(reloaded.clear_names(), 0)
+        self.assertEqual(reloaded.records["ddbe5d"].label, "Jakobs Shotgun")
+        self.assertFalse(hasattr(reloaded.records["ddbe5d"], "name"))
 
     def test_peak_dps_needs_a_long_enough_window_and_only_rises(self) -> None:
         store = WeaponStore(self.path)

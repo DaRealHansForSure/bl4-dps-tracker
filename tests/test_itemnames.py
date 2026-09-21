@@ -1,5 +1,5 @@
-"""The item name reader against a fake process memory: the three UI models, the scan for
-the seed, the pairing of slots with cards, the confirming read, the retry policy."""
+"""The item name reader against a fake process memory: the cards' node and the inventory
+list, the one-pass scan, the pairing by slot order, the confirming read, the retry policy."""
 
 from __future__ import annotations
 
@@ -18,9 +18,11 @@ from dmgtracker.itemnames import (
 )
 
 # Fake addresses, all above the reader's lowest plausible pointer: one heap block for the
-# equipped models, one for the inventory list, one for the string buffers.
+# cards' node and records, one for the inventory list, one for the string buffers.
 MODELS_BLOCK = 0x400000
 MODELS_BLOCK_BYTES = 0x10000
+NODE_AT = MODELS_BLOCK + 0x3000
+CARDS_AT = MODELS_BLOCK + 0x800
 LIST_BLOCK = 0x800000
 STRINGS_BLOCK = 0xC00000
 SEEDS = [bytes([index + 1] * 12) for index in range(4)]
@@ -30,6 +32,7 @@ GUNS = [
     ("pistol", "pearl", "Inoculated Performative Handcannon", "@Ugct)%Fme##", "noelement", "4.781"),
     ("shotgun", "legendary", "Maintained Screeching T.K's Wave", "@Ugd_t@Fme!K", "noelement", "1.612 x 10"),
 ]
+NAMES_BY_SEED = {seed: gun[2] for seed, gun in zip(SEEDS, GUNS)}
 
 
 class FakeMemory:
@@ -77,14 +80,6 @@ class StringHeap:
         return struct.pack("<QII", address, len(text) + 1, len(text) + 1)
 
 
-def make_slot(heap: StringHeap, type_slug: str, rarity: str, seed: bytes, layout: BuildLayout = LATEST_LAYOUT) -> bytes:
-    record = bytearray(layout.slots.record_bytes)
-    record[layout.slots.type_offset:layout.slots.type_offset + 16] = heap.fstring(type_slug)
-    record[layout.slots.rarity_offset:layout.slots.rarity_offset + 16] = heap.fstring(rarity)
-    record[layout.slots.seed_offset:layout.slots.seed_offset + 12] = seed
-    return bytes(record)
-
-
 def make_card(heap: StringHeap, name: str, serial: str, rarity: str, element: str = "corrosive", damage: str = "911", slot_type: str = "weapon", layout: BuildLayout = LATEST_LAYOUT) -> bytes:
     record = bytearray(layout.cards.record_bytes)
     fields = {
@@ -98,6 +93,15 @@ def make_card(heap: StringHeap, name: str, serial: str, rarity: str, element: st
     for offset, text in fields.items():
         record[offset:offset + 16] = heap.fstring(text)
     return bytes(record)
+
+
+def make_node(cards_at: int, count: int, capacity: int | None = None, tail: bytes | None = None) -> bytes:
+    """The 64-byte node around the cards' array header, as seen live: an unrelated
+    one-element array header, {data, num, max}, two ints, a zero, a minus one."""
+    node_layout = LATEST_LAYOUT.cards_node
+    capacity = count if capacity is None else capacity
+    tail = node_layout.after if tail is None else tail
+    return struct.pack("<Q", 0x14B99E490) + node_layout.before + struct.pack("<QII", cards_at, count, capacity) + struct.pack("<QQ", 0x29, 0xD) + tail
 
 
 def make_list_record(heap: StringHeap, type_slug: str, rarity: str, name: str, serial: str, seed: bytes, element: str = "impact", slot_type: str = "weapon", layout: BuildLayout = LATEST_LAYOUT) -> bytes:
@@ -116,13 +120,12 @@ def make_list_record(heap: StringHeap, type_slug: str, rarity: str, name: str, s
     return bytes(record)
 
 
-def write_models(memory: FakeMemory, heap: StringHeap, slots_at: int, cards_at: int, guns=GUNS, seeds=SEEDS, card_rarities: list[str] | None = None) -> None:
-    """The slot records and the item cards of the four guns, in slot order."""
-    for index, (type_slug, rarity, _name, _serial, _element, _damage) in enumerate(guns):
-        memory.write(slots_at + index * LATEST_LAYOUT.slots.record_bytes, make_slot(heap, type_slug, rarity, seeds[index]))
+def write_cards(memory: FakeMemory, heap: StringHeap, node_at: int = NODE_AT, cards_at: int = CARDS_AT, guns=GUNS, capacity: int | None = None) -> None:
+    """The cards of the guns in slot order and the node that names their array; the node
+    address is where the preceding one-element header starts."""
     for index, (_type_slug, rarity, name, serial, element, damage) in enumerate(guns):
-        card_rarity = card_rarities[index] if card_rarities else rarity
-        memory.write(cards_at + index * LATEST_LAYOUT.cards.record_bytes, make_card(heap, name, serial, card_rarity, element, damage))
+        memory.write(cards_at + index * LATEST_LAYOUT.cards.record_bytes, make_card(heap, name, serial, rarity, element, damage))
+    memory.write(node_at, make_node(cards_at, len(guns), capacity))
 
 
 def write_list(memory: FakeMemory, heap: StringHeap, list_at: int, guns=GUNS, seeds=SEEDS) -> None:
@@ -144,9 +147,10 @@ class ReaderHarness:
     def __init__(self, memory: FakeMemory) -> None:
         self.memory = memory
         self.clock = FakeClock()
-        self.reader = ItemNameReader(LATEST_LAYOUT, memory.read, memory.regions, self.clock)
+        self.log: list[str] = []
+        self.reader = ItemNameReader(LATEST_LAYOUT, memory.read, memory.regions, self.clock, self.log.append)
 
-    def names_after_scan(self, seeds: list[bytes]) -> dict[bytes, str]:
+    def names_after_scan(self, seeds: list[bytes | None]) -> dict[bytes, str]:
         """One call that starts the scan, the scan itself, and the call after it."""
         self.reader.names_for(seeds)
         self.wait_for_scan()
@@ -157,43 +161,64 @@ class ReaderHarness:
             self.reader._scan.join(timeout=30.0)
 
 
-NAMES_BY_SEED = {seed: gun[2] for seed, gun in zip(SEEDS, GUNS)}
-
-
 class ItemNameReaderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.memory = FakeMemory()
         self.memory.block(MODELS_BLOCK, MODELS_BLOCK_BYTES)
         self.heap = StringHeap(self.memory)
 
-    def test_names_come_from_the_slot_records_and_the_cards_near_them(self) -> None:
-        # Session 3 layout: the cards 9 KB before the slot records.
-        write_models(self.memory, self.heap, MODELS_BLOCK + 0x3000, MODELS_BLOCK + 0x800)
+    def test_names_come_from_the_cards_found_through_their_node(self) -> None:
+        write_cards(self.memory, self.heap)
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.reader.names_for(SEEDS), {})
         harness.wait_for_scan()
         # The scan's read is the first of the two that must agree; the next call confirms.
         self.assertEqual(harness.reader.names_for(SEEDS), NAMES_BY_SEED)
         self.assertEqual(harness.reader.scans, 1)
+        self.assertIn("item cards at", harness.log[-1])
 
-    def test_cards_right_after_the_slot_records_are_found_too(self) -> None:
-        slots_at = MODELS_BLOCK + 0x1000
-        write_models(self.memory, self.heap, slots_at, slots_at + 5 * LATEST_LAYOUT.slots.record_bytes + 8)
+    def test_a_node_with_the_wrong_tail_or_count_is_not_the_cards(self) -> None:
+        for index, (_type_slug, rarity, name, serial, element, damage) in enumerate(GUNS):
+            self.memory.write(CARDS_AT + index * LATEST_LAYOUT.cards.record_bytes, make_card(self.heap, name, serial, rarity, element, damage))
+        self.memory.write(NODE_AT, make_node(CARDS_AT, 4, tail=bytes(16)))
+        self.memory.write(NODE_AT + 0x100, make_node(CARDS_AT, 4, capacity=40))
         harness = ReaderHarness(self.memory)
-        self.assertEqual(harness.names_after_scan(SEEDS), NAMES_BY_SEED)
+        self.assertEqual(harness.names_after_scan(SEEDS), {})
+        self.assertIn("no item cards were found", harness.reader.last_error)
 
     def test_a_pairing_that_changes_between_the_reads_waits_for_a_steady_one(self) -> None:
-        cards_at = MODELS_BLOCK + 0x800
-        write_models(self.memory, self.heap, MODELS_BLOCK + 0x3000, cards_at)
+        write_cards(self.memory, self.heap)
         harness = ReaderHarness(self.memory)
         harness.reader.names_for(SEEDS)
         harness.wait_for_scan()
         # The UI lagged: card 1 changes before the confirming read.
-        self.memory.write(cards_at + LATEST_LAYOUT.cards.record_bytes, make_card(self.heap, "Lionized Mercurious", "@UgxFw!2}TYg", "pearl"))
+        self.memory.write(CARDS_AT + LATEST_LAYOUT.cards.record_bytes, make_card(self.heap, "Lionized Mercurious", "@UgxFw!2}TYg", "pearl"))
         names = harness.reader.names_for(SEEDS)
         self.assertNotIn(SEEDS[1], names)
         self.assertEqual(names[SEEDS[0]], GUNS[0][2])
         self.assertEqual(harness.reader.names_for(SEEDS)[SEEDS[1]], "Lionized Mercurious")
+
+    def test_a_card_count_that_differs_from_the_slots_pairs_nothing(self) -> None:
+        write_cards(self.memory, self.heap, guns=GUNS[:3])
+        harness = ReaderHarness(self.memory)
+        self.assertEqual(harness.names_after_scan(SEEDS), {})
+        # With three slots the remembered cards pair; the second read confirms.
+        harness.reader.names_for(SEEDS[:3])
+        self.assertEqual(harness.reader.names_for(SEEDS[:3]), {seed: NAMES_BY_SEED[seed] for seed in SEEDS[:3]})
+
+    def test_an_empty_slot_is_skipped_on_both_sides(self) -> None:
+        # Four card records, the second one blank: the game's slot list skips that slot too.
+        guns = [GUNS[0], ("smg", "", "", "", "", ""), GUNS[2], GUNS[3]]
+        write_cards(self.memory, self.heap, guns=guns)
+        harness = ReaderHarness(self.memory)
+        slots = [SEEDS[0], SEEDS[2], SEEDS[3]]
+        self.assertEqual(harness.names_after_scan(slots), {seed: NAMES_BY_SEED[seed] for seed in slots})
+
+    def test_a_gun_without_a_seed_keeps_its_slot_in_the_pairing(self) -> None:
+        write_cards(self.memory, self.heap)
+        harness = ReaderHarness(self.memory)
+        slots = [SEEDS[0], None, SEEDS[2], SEEDS[3]]
+        self.assertEqual(harness.names_after_scan(slots), {seed: NAMES_BY_SEED[seed] for seed in (SEEDS[0], SEEDS[2], SEEDS[3])})
 
     def test_names_come_from_the_inventory_list_at_once(self) -> None:
         write_list(self.memory, self.heap, LIST_BLOCK)
@@ -216,46 +241,22 @@ class ItemNameReaderTest(unittest.TestCase):
         harness.reader.names_for(SEEDS)
         self.assertEqual(harness.reader.scans, 2)
 
-    def test_a_rarity_mismatch_pairs_nothing(self) -> None:
-        write_models(self.memory, self.heap, MODELS_BLOCK + 0x3000, MODELS_BLOCK + 0x800, card_rarities=["legendary", "epic", "pearl", "legendary"])
-        harness = ReaderHarness(self.memory)
-        self.assertEqual(harness.names_after_scan(SEEDS), {})
-
-    def test_the_card_array_that_pairs_with_the_slots_wins_over_a_nearer_stale_one(self) -> None:
-        slots_at = MODELS_BLOCK + 0x6000
-        write_models(self.memory, self.heap, slots_at, MODELS_BLOCK + 0x800)
-        stale_guns = [(type_slug, "common", "Old " + name, serial, element, damage) for type_slug, _rarity, name, serial, element, damage in GUNS]
-        for index, (_type_slug, rarity, name, serial, element, damage) in enumerate(stale_guns):
-            self.memory.write(MODELS_BLOCK + 0x5000 + index * LATEST_LAYOUT.cards.record_bytes, make_card(self.heap, name, serial, rarity, element, damage))
-        harness = ReaderHarness(self.memory)
-        self.assertEqual(harness.names_after_scan(SEEDS), NAMES_BY_SEED)
-
-    def test_a_seed_on_a_chunk_boundary_is_still_found(self) -> None:
+    def test_the_node_on_a_chunk_boundary_is_still_found(self) -> None:
         big_block = 0x2000000
         self.memory.block(big_block, SCAN_CHUNK_BYTES + 0x4000)
-        # The seed's twelve bytes start 8 bytes before the chunk boundary.
-        slots_at = big_block + SCAN_CHUNK_BYTES - LATEST_LAYOUT.slots.seed_offset - 8
-        write_models(self.memory, self.heap, slots_at, slots_at + 4 * LATEST_LAYOUT.slots.record_bytes + 8)
-        harness = ReaderHarness(self.memory)
-        self.assertEqual(harness.names_after_scan(SEEDS[:1]), {SEEDS[0]: GUNS[0][2]})
-
-    def test_the_window_around_the_slots_skips_unreadable_pages(self) -> None:
-        # The slots at the very start of their block: the window before them is unmapped.
-        slots_at = MODELS_BLOCK
-        write_models(self.memory, self.heap, slots_at, slots_at + 0x2000)
+        write_cards(self.memory, self.heap, node_at=big_block + SCAN_CHUNK_BYTES - 16, cards_at=big_block + 0x1000)
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.names_after_scan(SEEDS), NAMES_BY_SEED)
 
-    def test_a_new_gun_is_read_from_the_remembered_models_without_a_scan(self) -> None:
-        slots_at, cards_at = MODELS_BLOCK + 0x3000, MODELS_BLOCK + 0x800
-        write_models(self.memory, self.heap, slots_at, cards_at)
+    def test_a_new_gun_is_read_from_the_remembered_cards_without_a_scan(self) -> None:
+        write_cards(self.memory, self.heap)
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.names_after_scan(SEEDS), NAMES_BY_SEED)
         new_seed = bytes([9] * 12)
-        self.memory.write(slots_at + LATEST_LAYOUT.slots.record_bytes, make_slot(self.heap, "smg", "legendary", new_seed))
-        self.memory.write(cards_at + LATEST_LAYOUT.cards.record_bytes, make_card(self.heap, "Plasma Coil", "@Ugw$Yw38oGr", "legendary"))
-        self.assertEqual(harness.reader.names_for([new_seed]), {})
-        self.assertEqual(harness.reader.names_for([new_seed]), {new_seed: "Plasma Coil"})
+        self.memory.write(CARDS_AT + LATEST_LAYOUT.cards.record_bytes, make_card(self.heap, "Plasma Coil", "@Ugw$Yw38oGr", "legendary"))
+        slots = [SEEDS[0], new_seed, SEEDS[2], SEEDS[3]]
+        self.assertNotIn(new_seed, harness.reader.names_for(slots))
+        self.assertEqual(harness.reader.names_for(slots)[new_seed], "Plasma Coil")
         self.assertEqual(harness.reader.scans, 1)
 
     def test_a_scan_that_finds_nothing_rests_longer_each_time(self) -> None:
@@ -271,7 +272,7 @@ class ItemNameReaderTest(unittest.TestCase):
         self.assertEqual(harness.reader._next_scan_at, harness.clock.now + 2 * SCAN_RETRY_FIRST_S)
 
     def test_forget_drops_the_names_and_starts_over(self) -> None:
-        write_models(self.memory, self.heap, MODELS_BLOCK + 0x3000, MODELS_BLOCK + 0x800)
+        write_cards(self.memory, self.heap)
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.names_after_scan(SEEDS), NAMES_BY_SEED)
         harness.reader.forget()
@@ -280,10 +281,10 @@ class ItemNameReaderTest(unittest.TestCase):
         self.assertEqual(harness.reader.scans, 2)
 
     def test_unreadable_name_text_fails_the_card(self) -> None:
-        write_models(self.memory, self.heap, MODELS_BLOCK + 0x3000, MODELS_BLOCK + 0x800)
+        write_cards(self.memory, self.heap)
         broken = bytearray(make_card(self.heap, "Broken", "@Ug", "legendary"))
         broken[LATEST_LAYOUT.cards.name_offset:LATEST_LAYOUT.cards.name_offset + 16] = struct.pack("<QII", 0x7F0000, 8, 8)
-        self.memory.write(MODELS_BLOCK + 0x800, bytes(broken))
+        self.memory.write(CARDS_AT, bytes(broken))
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.names_after_scan(SEEDS), {})
 
@@ -299,6 +300,12 @@ class ItemNameReaderTest(unittest.TestCase):
         harness = ReaderHarness(self.memory)
         self.assertEqual(harness.reader.names_for([b"short"]), {})
         self.assertIsNone(harness.reader._scan)
+
+
+class SearchNeedleTest(unittest.TestCase):
+    def test_trailing_zeros_are_stripped(self) -> None:
+        self.assertEqual(itemnames._search_needle(b"\x01\x00\x00\x00\x01\x00\x00\x00"), b"\x01\x00\x00\x00\x01")
+        self.assertEqual(itemnames._search_needle(b"\x00\x00"), b"\x00\x00")
 
 
 class BuildLayoutTest(unittest.TestCase):

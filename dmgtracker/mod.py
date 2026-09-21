@@ -29,6 +29,7 @@ from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
 from .formatting import format_number
 from .itemidentity import ItemIdentityReader, seed_of, short_item_id
 from .itemnames import ItemNameReader, layout_for_build
+from .itemnamestore import ITEM_NAMES_FILE, ItemNameStore
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
@@ -181,6 +182,7 @@ web_chart_seconds = HiddenOption("web_chart_seconds", DEFAULT_CHART_SECONDS)
 identity_reader = ItemIdentityReader()
 resolver = WeaponResolver(identity_reader.item_id)
 name_reader: ItemNameReader | None = None
+name_store: ItemNameStore | None = None
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -201,6 +203,7 @@ _transition_hidden = False
 _equipped_cache: list = []
 _item_names_unavailable_since = 0.0
 _item_names_reported = False
+_item_names_asked = False
 _in_play_since = 0.0
 # Seconds of fighting so far: the window's clock. It only advances while an encounter is
 # open, so the table stands still in menus, vehicles and between fights.
@@ -322,7 +325,7 @@ def _prepare_item_names() -> None:
     layout, verified = layout_for_build(build)
     if build and not verified:
         logging.warning(f"{LOG_PREFIX} game build {build!r} is not verified for item names; trying the layout of build {layout.changelist}")
-    name_reader = ItemNameReader(layout)
+    name_reader = ItemNameReader(layout, log=lambda message: logging.info(f"{LOG_PREFIX} item names: {message}"))
 
 
 def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float, in_play: bool) -> None:
@@ -330,8 +333,8 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     models into the weapon record, once the player has been in play for a moment. The
     reader looks for the models on its own thread and answers from memory once it has
     them; one warning when a gun stays nameless too long."""
-    global _item_names_unavailable_since, _item_names_reported, _in_play_since
-    if name_reader is None or weapon_store is None:
+    global _item_names_unavailable_since, _item_names_reported, _in_play_since, _item_names_asked
+    if name_reader is None or name_store is None:
         return
     if not in_play:
         _in_play_since = 0.0
@@ -340,22 +343,24 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
         _in_play_since = now
     if now - _in_play_since < ITEM_NAMES_SETTLE_S:
         return
-    seeds: dict[str, bytes] = {}
-    for weapon in equipped:
-        seed = seed_of(weapon.item_id)
-        if seed is not None and not weapon_store.name_for(weapon.item_id):
-            seeds[weapon.item_id] = seed
-    if not seeds:
+    # The reader pairs the UI's item cards with the guns by slot order, so it gets every
+    # equipped gun's seed (None where a gun only has the fallback id), named or not.
+    slot_seeds = [seed_of(weapon.item_id) for weapon in equipped]
+    unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and not name_store.name_for(weapon.item_id)]
+    if not unnamed:
         _item_names_unavailable_since = 0.0
         return
+    if not _item_names_asked:
+        _item_names_asked = True
+        logging.info(f"{LOG_PREFIX} item names: in play, asking for {len(unnamed)} gun(s) without a name")
     try:
-        names = name_reader.names_for(seeds.values())
+        names = name_reader.names_for(slot_seeds)
     except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
         name_reader.last_error = f"{type(ex).__name__}: {ex}"
         names = {}
-    for weapon in equipped:
-        name = names.get(seeds.get(weapon.item_id, b""))
-        if name and weapon_store.set_name(weapon.item_id, name, weapon.label, weapon.body, wall_now):
+    for weapon in unnamed:
+        name = names.get(seed_of(weapon.item_id) or b"")
+        if name and name_store.set_name(weapon.item_id, name, weapon.label, wall_now):
             _say(f"{weapon.label} {short_item_id(weapon.item_id)} is {name}")
     if names:
         _item_names_unavailable_since = 0.0
@@ -368,11 +373,11 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
 
 def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
     """item id -> item name for the equipped weapons whose name is known."""
-    if weapon_store is None:
+    if name_store is None:
         return {}
     names: dict[str, str] = {}
     for weapon in equipped:
-        name = weapon_store.name_for(weapon.item_id)
+        name = name_store.name_for(weapon.item_id)
         if name:
             names[weapon.item_id] = name
     return names
@@ -839,6 +844,7 @@ def on_enable() -> None:
     rolling = RollingStats(float(readout_window_minutes.value) * 60.0)
     character = None
     weapon_store = None
+    name_store = _load_name_store(_log_dir().parent / ITEM_NAMES_FILE)
     _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
@@ -850,8 +856,9 @@ def on_enable() -> None:
     poller.on_controller_changed = _on_controller_changed
     session_log = _start_session_log()
     if session_log is not None:
-        # The writer thread wakes every flush interval; let it save the weapon record too.
-        session_log.add_flush_listener(_save_weapon_store_if_due)
+        # The writer thread wakes every flush interval, hits or not; let it save the weapon
+        # record and the item names when their save interval has passed.
+        session_log.add_tick_listener(_save_stores_if_due)
     if web_enabled.value:
         _start_dashboard()
     if not _install_tick_hook():
@@ -882,6 +889,7 @@ def _dashboard_sources() -> DashboardSources:
         session_path=lambda: None if session_log is None else session_log.path,
         window_minutes=lambda: float(readout_window_minutes.value),
         encounter_gap_s=lambda: float(encounter_gap_s.value),
+        item_names=lambda: {} if name_store is None else name_store.names(),
     )
 
 
@@ -917,10 +925,19 @@ def _set_dashboard_enabled(enabled: bool) -> None:
         _stop_dashboard()
 
 
-def _save_weapon_store_if_due(_batch: list[dict[str, Any]]) -> None:
-    store = weapon_store
-    if store is not None:
-        store.save_if_due(time.time())
+def _save_stores_if_due() -> None:
+    now = time.time()
+    for store in (weapon_store, name_store):
+        if store is not None:
+            store.save_if_due(now)
+
+
+def _load_name_store(path: Path) -> ItemNameStore:
+    store = ItemNameStore(path)
+    store.load()
+    if store.load_error:
+        logging.error(f"{LOG_PREFIX} item names {store.path} could not be read ({store.load_error}); starting a new table")
+    return store
 
 
 def _start_session_log() -> SessionLog | None:
@@ -942,7 +959,7 @@ def _start_session_log() -> SessionLog | None:
 
 
 def on_disable() -> None:
-    global poller, session_log, weapon_store
+    global poller, session_log, weapon_store, name_store
     _remove_tick_hook()
     _destroy_readout()
     _stop_dashboard()
@@ -951,6 +968,11 @@ def on_disable() -> None:
         if weapon_store.save_error:
             logging.error(f"{LOG_PREFIX} weapon record not saved: {weapon_store.save_error}")
         weapon_store = None
+    if name_store is not None:
+        name_store.save_if_due(time.time(), force=True)
+        if name_store.save_error:
+            logging.error(f"{LOG_PREFIX} item names not saved: {name_store.save_error}")
+        name_store = None
     if session_log is not None:
         session_log.stop()
         _say(f"disabled; {session_log.written} events written to {session_log.path}")
@@ -968,7 +990,7 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} no character loaded yet (the mod must be enabled and you must be in the world)")
         return
     logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}), by {args.by}:")
-    for line in weapon_store.format_ranking(limit=args.limit, by=args.by):
+    for line in weapon_store.format_ranking(limit=args.limit, by=args.by, names=name_store.names() if name_store is not None else None):
         logging.info(line)
     for line in weapon_store.format_source_peaks():
         logging.info(line)
@@ -1033,6 +1055,8 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} character: not known yet")
     if weapon_store is not None:
         logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
+    if name_store is not None:
+        logging.info(f"{LOG_PREFIX} item name table: {name_store.path} ({name_store.count} names)")
     identity_state = f"{identity_reader.fallbacks} fallback(s) to the instance id"
     if identity_reader.last_error:
         identity_state += f", last error: {identity_reader.last_error}"
@@ -1057,13 +1081,10 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} dashboard: not running")
 
 
-@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's; --names forgets the stored item names only (of this character, with --all of every character).")
+@command("dmgreset", description="Reset the damage table; with --weapons also this character's lifetime record, with --all every character's; --names forgets the stored item names only (one table for every character).")
 def dmgreset_command(args: argparse.Namespace) -> None:
     if poller is None:
         logging.info(f"{LOG_PREFIX} the mod is not enabled")
-        return
-    if args.names and args.all:
-        _forget_all_item_names()
         return
     if args.names:
         _forget_item_names()
@@ -1078,48 +1099,23 @@ def dmgreset_command(args: argparse.Namespace) -> None:
 
 dmgreset_command.add_argument("--weapons", action="store_true", help="also start a fresh lifetime record for the current character")
 dmgreset_command.add_argument("--all", action="store_true", help="also start fresh lifetime records for every character")
-dmgreset_command.add_argument("--names", action="store_true", help="only forget the stored item names (this character's, with --all every character's); they are read from the game again")
+dmgreset_command.add_argument("--names", action="store_true", help="only forget the stored item names (one table for every character); they are read from the game again")
 
 
 def _forget_item_names() -> None:
-    """Drop the stored item names of the current character and read them afresh."""
-    _start_item_names_over()
-    if weapon_store is None:
-        logging.info(f"{LOG_PREFIX} no character loaded, no names to forget")
-        return
-    cleared = weapon_store.clear_names()
-    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's UI models")
-
-
-def _forget_all_item_names() -> None:
-    """Drop the stored item names of every character's record, the current one included."""
-    _start_item_names_over()
-    cleared = weapon_store.clear_names() if weapon_store is not None else 0
-    characters_dir = _log_dir().parent / CHARACTERS_DIR_NAME
-    records = 0
-    for record_path in characters_dir.glob(f"*/{WEAPON_STORE_NAME}"):
-        if weapon_store is not None and record_path == weapon_store.path:
-            continue
-        store = WeaponStore(record_path)
-        store.load()
-        if store.load_error or store.set_aside_old_schema is not None:
-            logging.warning(f"{LOG_PREFIX} {record_path}: not readable, names left alone")
-            continue
-        records += 1
-        count = store.clear_names()
-        if count:
-            store.save_if_due(time.time(), force=True)
-        cleared += count
-    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten across {records + (1 if weapon_store is not None else 0)} character record(s); they are read again from the game's UI models")
-
-
-def _start_item_names_over() -> None:
-    """The reader and the warning state forget everything; the next read starts afresh."""
-    global _item_names_unavailable_since, _item_names_reported
+    """Empty the item name table (shared by every character) and read the names afresh."""
+    global _item_names_unavailable_since, _item_names_reported, _item_names_asked
     _item_names_unavailable_since = 0.0
     _item_names_reported = False
+    _item_names_asked = False
     if name_reader is not None:
         name_reader.forget()
+    if name_store is None:
+        logging.info(f"{LOG_PREFIX} the mod is not enabled, no names to forget")
+        return
+    cleared = name_store.clear()
+    name_store.save_if_due(time.time(), force=True)
+    logging.info(f"{LOG_PREFIX} {cleared} item name(s) forgotten; they are read again from the game's UI models")
 
 
 def _reset_current_weapon_record() -> None:

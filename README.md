@@ -23,7 +23,7 @@ Last 5 min           3'219'066     32'190
 - Every row's **DPS is its damage over the window's fighting time**, so the rows add up to the `Last X min` row and a gun you stop firing comes down like any other source. The fair comparison between guns, damage per second *while a gun was in hand*, lives in the lifetime record (`dmgweapons`, the dashboard's Weapons tab).
 - `Total` is the window damage. Three more columns can be switched on in the settings: `Share [%]` (share of the window total), `Crit [%]` (share of the row's direct hits that were crits; status ticks cannot crit and are left out) and `Kills`; the window row sums them all.
 - A gun is recognised across sessions by its item identity (twelve seed bytes of the item, read from the game's item data), so a record follows the gun, not the slot or the session.
-- Guns carry their **item name** ("Maintained Screeching T.K's Wave"), read from the game's own item cards a second after they are equipped and kept in the weapon record. The in-game table keeps the short manufacturer-and-type label for width (`readout_item_names` switches it to the item name); the dashboard shows the item name with the item id, and `dmgweapons` and the reports use it too.
+- Guns carry their **item name** ("Maintained Screeching T.K's Wave"), read from the game's own item cards a few seconds after they are equipped and kept in one table for every character (`item-names.json`). The in-game table keeps the short manufacturer-and-type label for width (`readout_item_names` switches it to the item name); the dashboard shows the item name with the item id, and `dmgweapons` and the reports use it too.
 - `Best DPS` is the highest value the `DPS` column ever reached for that row, over all sessions of the character, counted once the window covers at least 10 s. It only rises; `dmgreset --weapons` clears it.
 - A row whose Total grows flashes briefly (in the game and on the dashboard), so you see which source is doing damage right now.
 - Rows never move: four weapon slots in slot order, then Skill, Grenade, Melee and Other, then the total. Melee is hidden by default (`readout_hidden_rows`); a hidden row's damage still counts in the total. A gun swapped out of the slots drops from the table; its damage stays in the total and in its lifetime record.
@@ -38,7 +38,7 @@ Open the console with F6 (in the world, not in the main menu):
 |---|---|
 | `dmgweapons` | Rank the current character's weapons over all sessions: DPS in hand, peak DPS, damage, hits, average hit, crit share, kills, minutes in hand. `-n 30` for a longer list. |
 | `dmgreport` | Report over the current session: each fight (total, duration, DPS, active DPS, targets, kills, crit share, per-source split), a session summary, a weapons table. `--last 300` adds the average over the final five minutes, `--gap 30` changes the fight boundary. |
-| `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. `--names` only forgets the stored item names of the current character (`--names --all`: of every character), which are then read from the game again. |
+| `dmgreset` | Reset the on-screen table. `--weapons` also starts a fresh lifetime record for the current character, `--all` for every character; old records are kept as `weapons.reset-<timestamp>.json`. `--names` only forgets the stored item names (one table for every character), which are then read from the game again. |
 | `dmgweb` | Print the dashboard address (`--open` opens it in the browser). |
 | `dmgstatus` | Counters, hooks, character, files, item identity, dashboard. |
 
@@ -105,7 +105,7 @@ BL4 applies damage natively; no Unreal function fires per hit. The local player 
 
 ## Known limitations
 
-- Item names come from the game's own UI models, found in memory by the equipped gun's item id and checked by content ([`docs/item-names.md`](docs/item-names.md)); the first look takes a few seconds on a background thread. After a game patch the mod may not find them; it then logs one line and the guns keep their manufacturer-and-type labels ("Jakobs Sniper", with the item id after it), which is also what a gun shows until its name was read.
+- Item names come from the game's own UI models, found in memory by content in one pass ([`docs/item-names.md`](docs/item-names.md)), a second or two on a background thread. After a game patch the mod may not find them; it then logs one line and the guns keep their manufacturer-and-type labels ("Jakobs Sniper", with the item id after it), which is also what a gun shows until its name was read.
 - Damage that lands in the same frame as a knife swing during a running action skill cannot be told from the swing and counts as melee.
 - A very fast burst of more than six instances within one frame could overflow the game's ring; the log window reports such frames.
 - Untested in co-op.

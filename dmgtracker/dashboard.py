@@ -105,6 +105,8 @@ class DashboardSources:
     session_path: Callable[[], Path | None]
     window_minutes: Callable[[], float]
     encounter_gap_s: Callable[[], float]
+    # item id -> item name, for the weapon lists (the live table gets them with its rows).
+    item_names: Callable[[], dict[str, str]] = lambda: {}
 
 
 class Dashboard:
@@ -421,7 +423,7 @@ class Dashboard:
             return _json_response({"sessions": list_sessions(self.sources.log_dir), "current": self._current_session_name()})
         if path == "/api/weapons":
             by = _first(query, "by", "dps")
-            return _json_response(weapons_payload(self.sources.weapon_store(), self.sources.character(), by))
+            return _json_response(weapons_payload(self.sources.weapon_store(), self.sources.character(), by, self.sources.item_names()))
         session = self._session_for(query)
         if session is None:
             return _json_response({"error": "no such session"}, HTTPStatus.NOT_FOUND)
@@ -430,7 +432,7 @@ class Dashboard:
             size = _int(query, "size", DEFAULT_PAGE_SIZE)
             return _json_response(hits_page(session, page, size, _first(query, "q", "")))
         if path == "/api/session-weapons":
-            return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session)})
+            return _json_response({"session": session.path.name, "weapons": session_weapons_payload(session, self.sources.item_names())})
         if path == "/api/encounters":
             return _json_response(encounters_payload(session, self.sources.encounter_gap_s()))
         return _text_response(HTTPStatus.NOT_FOUND, "not found")

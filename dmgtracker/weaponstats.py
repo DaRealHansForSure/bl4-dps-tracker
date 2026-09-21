@@ -50,9 +50,6 @@ class WeaponRecord:
     item_id: str
     label: str
     body: str
-    # The item name as the inventory shows it ("Maintained Screeching T.K's Wave"), read
-    # from the game's item cards (itemnames.py); empty until it was read once.
-    name: str = ""
     damage: float = 0.0
     hits: int = 0
     # Hits that are not status ticks; only those can be crits, so the crit rate is over them.
@@ -103,9 +100,10 @@ class WeaponRecord:
     def crit_share(self) -> str:
         return format_share(self.crits, self.direct_hits)
 
-    def display_label(self) -> str:
-        """The item name when it is known, the manufacturer-and-type label otherwise."""
-        return self.name or self.label
+    def display_label(self, name: str = "") -> str:
+        """The item name when one is known (itemnamestore.py, keyed by the item id), the
+        manufacturer-and-type label otherwise."""
+        return name or self.label
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WeaponRecord:
@@ -113,7 +111,6 @@ class WeaponRecord:
             item_id=str(data["item_id"]),
             label=str(data.get("label", UNKNOWN_LABEL)),
             body=str(data.get("body", "")),
-            name=str(data.get("name", "")),
             damage=float(data.get("damage", 0.0)),
             hits=int(data.get("hits", 0)),
             # Records written before direct hits were counted: treat every hit as direct.
@@ -225,19 +222,6 @@ class WeaponStore:
             return False
         return True
 
-    def clear_names(self) -> int:
-        """Forget every stored item name, so they are read from the game again; returns how
-        many there were. The records themselves stay."""
-        with self._lock:
-            cleared = 0
-            for record in self.records.values():
-                if record.name:
-                    record.name = ""
-                    cleared += 1
-            if cleared:
-                self._dirty = True
-        return cleared
-
     def reset(self) -> Path | None:
         """Start over: set the current file aside (never delete history) and empty the
         records. Returns where the old file went, or None if there was none."""
@@ -308,21 +292,6 @@ class WeaponStore:
             peak.peak_dps_at = now
             self._dirty = True
 
-    def set_name(self, item_id: str, name: str, label: str, body: str, now: float) -> bool:
-        """Remember the item name of a weapon; True when it is new or changed."""
-        with self._lock:
-            record = self._record(item_id, label, body, now)
-            if record.name == name:
-                return False
-            record.name = name
-            self._dirty = True
-            return True
-
-    def name_for(self, item_id: str) -> str:
-        """The stored item name of a weapon, '' when none was read yet."""
-        record = self.records.get(item_id)
-        return record.name if record is not None else ""
-
     def _record(self, item_id: str, label: str, body: str, now: float) -> WeaponRecord:
         record = self.records.get(item_id)
         if record is None:
@@ -367,8 +336,10 @@ class WeaponStore:
             return sorted(records, key=lambda record: (record.damage, record.dps_in_hand()), reverse=True)
         return sorted(records, key=lambda record: (record.dps_in_hand(), record.damage), reverse=True)
 
-    def format_ranking(self, limit: int = 15, by: str = "dps") -> list[str]:
-        """Text lines for the console: one header, one line per weapon."""
+    def format_ranking(self, limit: int = 15, by: str = "dps", names: dict[str, str] | None = None) -> list[str]:
+        """Text lines for the console: one header, one line per weapon, named by item where
+        `names` (item id -> item name) knows the gun."""
+        names = names or {}
         lines = [
             f"{'#':>2}  {'Weapon':30} {'DPS in hand':>12} {'Peak DPS':>10} {'Damage':>14} {'Hits':>6} "
             f"{'Avg hit':>9} {'Crit %':>7} {'Kills':>6} {'In hand':>9}"
@@ -376,7 +347,7 @@ class WeaponStore:
         for position, record in enumerate(self.ranking(by)[:limit], start=1):
             minutes = record.held_seconds / 60.0
             lines.append(
-                f"{position:>2}  {record.display_label()[:22] + ' ' + short_item_id(record.item_id):30} "
+                f"{position:>2}  {record.display_label(names.get(record.item_id, ''))[:22] + ' ' + short_item_id(record.item_id):30} "
                 f"{format_number(record.dps_in_hand()):>12} {format_number(record.peak_dps):>10} "
                 f"{format_number(record.damage):>14} {record.hits:>6} {format_number(record.average_hit()):>9} "
                 f"{record.crit_share():>7} {record.kills:>6} {format_number(minutes, decimals=1) + ' min':>9}"
