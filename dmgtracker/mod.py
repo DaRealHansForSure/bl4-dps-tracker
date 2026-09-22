@@ -481,10 +481,16 @@ def _report_missing_identity(equipped: list[DamageSource], slot_seeds: list[byte
     if _identity_missing_reported or not equipped or any(seed is not None for seed in slot_seeds):
         return
     _identity_missing_reported = True
+    # The same session tells the mod it is not alone: an action skill trick names no owner,
+    # so a team mate's skill would otherwise start the player's skill state and take their
+    # grenade's damage with it (2026-09-22, a co-op fight where every grenade hit read as
+    # Skill). Without the tricks the skill falls back to its window, below the grenade.
+    if poller is not None:
+        poller.trust_skill_tricks = False
     logging.warning(
         f"{LOG_PREFIX} the equipped guns have no stable item id (their identity reads as empty, which is what a "
-        f"co-op client sees): item names, pictures and the lifetime record fall back to per-launch ids this session. "
-        f"Damage attribution is unaffected."
+        f"co-op client sees): item names come from the inventory cards by slot, pictures and the lifetime record fall "
+        f"back to per-launch ids, and action skill tricks are ignored because they do not say whose skill they are."
     )
 
 

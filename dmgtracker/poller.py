@@ -224,6 +224,9 @@ class DamagePoller:
         # The action skill tricks that have begun and not ended yet, by class name and start
         # time: while one runs, its damage is the skill's, however long it lasts.
         self._skill_tricks: dict[str, float] = {}
+        # Whether an action skill trick may be taken for the player's own. It carries no
+        # owner, so in a session with other players it says nothing (see note_skill_started).
+        self.trust_skill_tricks = True
         # The last hit that only a window explained, and when: the rest of that stream keeps
         # its answer instead of following whichever window happens to be open.
         self._soft_source: DamageSource | None = None
@@ -284,9 +287,17 @@ class DamagePoller:
     def note_skill_started(self, now: float, trick: str = "") -> None:
         """An action skill trick began: the skill runs until that trick ends. The Exo
         Soldier's cannons fire for 18 s, far longer than any window, and everything they
-        hit in that time is the skill's."""
+        hit in that time is the skill's. Ignored while the tricks are not trusted (co-op,
+        where the trick names no owner and a team mate's skill fires the same hook)."""
         self._skill_signal_at = max(self._skill_signal_at, now)
-        self._skill_tricks[trick] = now
+        if self.trust_skill_tricks:
+            self._skill_tricks[trick] = now
+
+    def skill_state(self) -> str:
+        """What the mod would say about the action skill right now, for dmgstatus."""
+        if not self.trust_skill_tricks:
+            return "tricks ignored (no owner in a shared session)"
+        return f"{len(self._skill_tricks)} trick(s) running"
 
     def note_skill_ended(self, now: float, trick: str = "") -> None:
         """That trick ended: the skill stops owning damage, after a short grace for what is
@@ -509,16 +520,19 @@ class DamagePoller:
             return continued, RULE_CONTINUED
         if now < self._melee_until:
             return MELEE_SOURCE, RULE_MELEE_WINDOW
+        # An action skill that is really running owns what it hits.
         if self._skill_running(now):
-            return SKILL_SOURCE, RULE_SKILL_RUNNING
-        # A grenade that went off seconds ago is a fact; the skill window is a guess that
-        # passive skill scripts keep open through a whole fight, so the blast comes first.
+            return self._remember_soft(SKILL_SOURCE, now), RULE_SKILL_RUNNING
+        # Then the grenade's own facts: the throw is a call on the player's pawn and the
+        # explosion carries its instigator. The skill window below is not a fact at all,
+        # because passive skill scripts open it several times a second through a whole
+        # fight; on 2026-09-22 it took every grenade hit of a co-op fight, kills included.
         if now < self._blast_until:
             return self.grenade_source, RULE_BLAST_WINDOW
-        if now < self._skill_until:
-            return self._remember_soft(SKILL_SOURCE, now), RULE_SKILL_WINDOW
         if now < self._grenade_until:
             return self._remember_soft(self.grenade_source, now), RULE_GRENADE_WINDOW
+        if now < self._skill_until:
+            return self._remember_soft(SKILL_SOURCE, now), RULE_SKILL_WINDOW
         # No window explains this one. If the same stream of unexplained hits was running a
         # moment ago, it is still that source: a window lapsing in the middle must not
         # rename what is plainly one burst.

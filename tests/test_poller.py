@@ -15,6 +15,8 @@ from dmgtracker.poller import (
     SKILL_HIT_GRACE_S,
     SKILL_GRACE_CAP_S,
     SKILL_MAX_RUN_S,
+    EXPLOSION_WINDOW_S,
+    GRENADE_WINDOW_S,
     SKILL_WINDOW_S,
     SOFT_STREAM_GAP_S,
     SWAP_GRACE_S,
@@ -408,17 +410,18 @@ class DamagePollerTests(unittest.TestCase):
     def test_skill_window_claims_hits_while_the_skill_runs(self) -> None:
         self.poller.tick()
         self.poller.note_grenade_thrown(self.clock.now)
-        self.poller.note_skill_activity(self.clock.now)
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_C")
         self.clock.advance(1.0)
         write_hit(self.controller, 0, 24.3, flags=0, target="Char_A_1")
         write_hit(self.controller, 1, 9.1, flags=0, target="Char_A_1", dtype="Fire")
         self.poller.tick()
         self.assertEqual([e["src"] for e in self.received], ["skill", "skill"])
         self.assertEqual(self.received[0]["weapon"], "Skill")
+        self.poller.note_skill_ended(self.clock.now, "Trick_ActionSkill_C")
         self.clock.advance(2.5)
-        write_hit(self.controller, 2, 24.3, flags=0, target="Char_A_1")
+        write_hit(self.controller, 2, 24.3, flags=0, target="Char_B_2")
         self.poller.tick()
-        self.assertEqual(self.received[-1]["src"], "grenade", "the skill window closed, the throw window is still open")
+        self.assertEqual(self.received[-1]["src"], "grenade", "the skill is over, the throw window is still open")
 
     def test_skill_hits_keep_the_skill_window_open(self) -> None:
         """Tokens attack for seconds after the last script action: the window follows the hits."""
@@ -501,11 +504,13 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 0, 270.7, flags=0, target="Char_Blasted_1")
         self.poller.tick()
         self.assertEqual((self.received[-1]["src"], self.received[-1]["why"]), ("grenade", "blast-window"))
-        self.clock.advance(1.0)
+        # An explosion also refreshes the throw window, which outranks the skill window, so
+        # both have to lapse before the skill window is the rule under test.
+        self.clock.advance(EXPLOSION_WINDOW_S + 1.0)
         self.poller.note_skill_activity(self.clock.now)
         write_hit(self.controller, 1, 270.7, flags=0, target="Char_Other_2")
         self.poller.tick()
-        self.assertEqual(self.received[-1]["why"], "skill-window", "once the blast is old the window may have it")
+        self.assertEqual(self.received[-1]["why"], "skill-window", "once the grenade is old the window may have it")
         self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_Cannons_C")
         self.poller.note_grenade_exploded(self.clock.now)
         self.clock.advance(0.5)
@@ -561,7 +566,7 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 0, 12.8, flags=0, target="Char_CatElder_1")
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "grenade")
-        self.poller.note_skill_activity(self.clock.now)
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_C")
         self.clock.advance(0.3)
         write_hit(self.controller, 1, 12.7, flags=0, target="Char_CatElder_1")
         write_hit(self.controller, 2, 240.0, flags=0, target="Char_CatElder_2")
@@ -575,9 +580,8 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.note_grenade_thrown(self.clock.now)
         write_hit(self.controller, 0, 12.8, flags=0, target="Char_CatElder_1")
         self.poller.tick()
-        self.poller.note_skill_activity(self.clock.now)
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_C")
         self.clock.advance(STREAM_CONTINUATION_S + 0.5)
-        self.poller.note_skill_activity(self.clock.now)
         write_hit(self.controller, 1, 240.0, flags=0, target="Char_CatElder_1")
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "skill", "the area stopped hitting it; the skill may have it")
@@ -591,6 +595,8 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 0, 12.8, flags=0, target="Char_A_1")
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "grenade", "a token from anywhere is not the player's skill")
+        # Past the throw window, so the skill window below it is the one being tested.
+        self.clock.advance(GRENADE_WINDOW_S)
         self.poller.note_skill_activity(self.clock.now)
         self.clock.advance(2.5)
         self.poller.note_skill_token(self.clock.now)
