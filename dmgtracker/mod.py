@@ -240,6 +240,8 @@ _item_names_unavailable_since = 0.0
 _item_names_reported = False
 # Whether the "no stable item id" line has been said this session (a co-op client).
 _identity_missing_reported = False
+# How many players the last check found, so the line is said only when it changes.
+_players_seen = -1
 # Names for a session whose items have no stable id (a co-op client), by the id that only
 # lasts this launch. They are never written to the shared table, which is keyed by item.
 _session_infos: dict[str, ItemInfo] = {}
@@ -355,9 +357,10 @@ def _on_controller_changed(controller: UObject | None) -> None:
 def _prepare_item_names() -> None:
     """Pick the UI model layouts for this game build. An unknown build gets the latest
     layouts and one warning; the content validation guards every read either way."""
-    global name_reader, _item_names_unavailable_since, _identity_missing_reported
+    global name_reader, _item_names_unavailable_since, _identity_missing_reported, _players_seen
     _item_names_unavailable_since = 0.0
     _identity_missing_reported = False
+    _players_seen = -1
     _session_infos.clear()
     build = ""
     try:
@@ -658,6 +661,35 @@ def _character_store_path(identity: CharacterIdentity) -> Path:
     return _log_dir().parent / CHARACTERS_DIR_NAME / identity.key / WEAPON_STORE_NAME
 
 
+def _note_other_players(controller: UObject) -> None:
+    """Count the players in the session once a second. An action skill trick carries no
+    owner, so with anyone else around it says nothing about whose skill it is: on
+    2026-09-22, hosting a co-op game, a team mate's DarkSiren tricks (the class names are
+    the same) held the player's skill state open and Skill took 68% of the session's damage.
+    Alone, the tricks are the only honest signal the action skill has, so they are used."""
+    global _players_seen
+    if poller is None:
+        return
+    players = _player_count(controller)
+    if players == _players_seen:
+        return
+    _players_seen = players
+    alone = players <= 1
+    poller.trust_skill_tricks = alone
+    logging.info(
+        f"{LOG_PREFIX} {players} player(s) in this session: action skill tricks are "
+        f"{'used' if alone else 'ignored, because they do not say whose skill they are'}"
+    )
+
+
+def _player_count(controller: UObject) -> int:
+    """How many players the game state lists, 0 when it cannot be read."""
+    try:
+        return len(controller.GetWorld().GameState.PlayerArray)
+    except Exception:  # noqa: BLE001 - no world or no game state yet
+        return 0
+
+
 def _check_character(controller: UObject, pawn: Any) -> None:
     """Adopt the character behind this controller; switching saves the old record, loads the
     new one, and starts the live table from zero. Called once a second while in the world."""
@@ -764,6 +796,7 @@ def _refresh_readout() -> None:
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
             _check_character(controller, pawn)
+            _note_other_players(controller)
             equipped = resolver.equipped_weapons(pawn)
             if equipped is not None:
                 _learn_item_names(equipped, wall_now, now, in_play)
@@ -1403,6 +1436,7 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} character: {character.display} ({character.class_name}), key {character.key[:8]}")
     else:
         logging.info(f"{LOG_PREFIX} character: not known yet")
+    logging.info(f"{LOG_PREFIX} players in the session: {_players_seen if _players_seen >= 0 else '?'}; action skill: {poller.skill_state()}")
     if weapon_store is not None:
         logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
     if name_store is not None:
