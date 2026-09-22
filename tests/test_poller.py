@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from dmgtracker.attribution import GRENADE_SOURCE, MELEE_SOURCE, DamageSource, WeaponResolver
 from dmgtracker.poller import (
     CRIT_FLAG,
-    GRENADE_CONTINUATION_S,
+    STREAM_CONTINUATION_S,
     HEALING_FLAG,
     KILL_FLAG,
     PENDING_HOLD_S,
     SKILL_HIT_GRACE_S,
+    SKILL_GRACE_CAP_S,
     SKILL_MAX_RUN_S,
+    SKILL_WINDOW_S,
     SWAP_GRACE_S,
     WEAPON_FLAG,
     DamagePoller,
@@ -432,6 +434,63 @@ class DamagePollerTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.received[-1]["src"], "other", "1.5 s without a skill hit closes the window")
 
+    def test_an_action_skill_owns_its_damage_until_its_trick_ends(self) -> None:
+        """The Exo Soldier's cannons fire for 18 s with gaps between the bursts, and a
+        grenade window is open the whole time (session of 2026-09-22, 18:58): without the
+        skill being a state, the gaps fell to the grenade window and then to Other."""
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.clock.advance(1.0)
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_Cannons_C")
+        for gap, target in ((1.5, "Char_A_1"), (5.0, "Char_B_2"), (5.0, "Char_C_3"), (5.0, "Char_D_4")):
+            self.clock.advance(gap)
+            write_hit(self.controller, 0, 26.5, flags=0, target=target)
+            write_hit(self.controller, 1, 9.9, flags=0, target=target, dtype="Fire")
+            self.poller.tick()
+            self.assertEqual([event["src"] for event in self.received[-2:]], ["skill", "skill"],
+                             f"{gap} s into the skill, on {target}")
+        self.poller.note_skill_ended(self.clock.now, "Trick_ActionSkill_Cannons_C")
+        self.clock.advance(SKILL_WINDOW_S + 0.5)
+        self.poller.note_grenade_thrown(self.clock.now)
+        write_hit(self.controller, 2, 26.5, flags=0, target="Char_E_5")
+        self.poller.tick()
+        self.settle()
+        self.assertEqual(self.received[-1]["src"], "grenade", "the skill is over; the throw window may have it again")
+
+    def test_gun_grenade_and_skill_deal_damage_at_the_same_time(self) -> None:
+        """A running action skill may not swallow the rest: gun hits carry the gun flag, an
+        explosion names its own source, and a target the grenade is already burning keeps
+        the grenade. Only what nothing else explains is the skill's."""
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.clock.advance(0.5)
+        write_hit(self.controller, 0, 14.6, flags=0, target="Char_Burning_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "grenade", "the area hits first")
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_Cannons_C")
+        self.clock.advance(0.3)
+        write_hit(self.controller, 1, 14.6, flags=0, target="Char_Burning_1")
+        write_hit(self.controller, 2, 368.2, flags=WEAPON_FLAG, target="Char_Shot_2")
+        write_hit(self.controller, 3, 26.5, flags=0, target="Char_Cannons_3")
+        self.poller.tick()
+        by_target = {event["target"]: (event["src"], event["why"]) for event in self.received[-3:]}
+        self.assertEqual(by_target["Char_Burning_1"], ("grenade", "continued"), "the burning target stays the grenade's")
+        self.assertEqual(by_target["Char_Shot_2"][0], "weapon", "the gun keeps its flagged hits")
+        self.assertEqual(by_target["Char_Cannons_3"], ("skill", "skill-running"), "what nothing else explains is the skill's")
+        self.poller.note_explosion(self.clock.now, GRENADE_SOURCE)
+        write_hit(self.controller, 4, 146.4, flags=0, target="Char_Blasted_4")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "grenade", "an explosion names its own source, skill or not")
+
+    def test_a_skill_trick_that_never_ends_is_dropped(self) -> None:
+        self.poller.tick()
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_Stuck_C")
+        self.clock.advance(SKILL_MAX_RUN_S + 1.0)
+        write_hit(self.controller, 0, 26.5, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.settle()
+        self.assertEqual(self.received[-1]["src"], "other", "a missed end may not own the rest of the session")
+
     def test_every_hit_says_which_rule_claimed_it(self) -> None:
         """The rule is written to the event, so a hit that looks wrong is explained by the
         log instead of by a probe run."""
@@ -454,7 +513,7 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.note_skill_activity(self.clock.now)
         write_hit(self.controller, 4, 333.0, flags=0, target="Char_B_2")
         self.poller.tick()
-        self.assertEqual(self.received[-1]["why"], "burning")
+        self.assertEqual(self.received[-1]["why"], "continued")
         self.clock.advance(20.0)
         write_hit(self.controller, 5, 333.0, flags=0, target="Char_C_3")
         self.poller.tick()
@@ -486,7 +545,7 @@ class DamagePollerTests(unittest.TestCase):
         write_hit(self.controller, 0, 12.8, flags=0, target="Char_CatElder_1")
         self.poller.tick()
         self.poller.note_skill_activity(self.clock.now)
-        self.clock.advance(GRENADE_CONTINUATION_S + 0.5)
+        self.clock.advance(STREAM_CONTINUATION_S + 0.5)
         self.poller.note_skill_activity(self.clock.now)
         write_hit(self.controller, 1, 240.0, flags=0, target="Char_CatElder_1")
         self.poller.tick()
@@ -518,7 +577,7 @@ class DamagePollerTests(unittest.TestCase):
             write_hit(self.controller, step % 6, 12.0, flags=0, target=f"Char_Cat_{step}")
             self.poller.tick()
         self.settle()
-        late = [event for event in self.received if event["t"] > signal_at + SKILL_MAX_RUN_S + SKILL_HIT_GRACE_S]
+        late = [event for event in self.received if event["t"] > signal_at + SKILL_GRACE_CAP_S + SKILL_HIT_GRACE_S]
         self.assertTrue(late, "the fight ran past the cap")
         self.assertEqual({event["src"] for event in late}, {"other"}, "the grace cannot outlive the skill signal")
 

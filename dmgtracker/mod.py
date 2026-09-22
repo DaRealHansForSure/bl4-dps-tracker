@@ -937,6 +937,9 @@ def _on_grenade_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: Boun
 
 
 _seen_melee_tricks: set[str] = set()
+# The action skill tricks seen this session, one log line each: an unexplained Skill row can
+# be traced to the trick that opened it without a probe run.
+_seen_skill_tricks: set[str] = set()
 
 
 def _is_player_melee_trick(class_name: str) -> bool:
@@ -960,7 +963,10 @@ def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunc
             return
         class_name = str(obj.Class.Name)
         if SKILL_TRICK_CLASS_FRAGMENT in class_name:
-            poller.note_skill_activity(time.time())
+            if class_name not in _seen_skill_tricks:
+                _seen_skill_tricks.add(class_name)
+                _say(f"action skill trick seen: {class_name}")
+            poller.note_skill_started(time.time(), class_name)
             return
         if MELEE_TRICK_FRAGMENT in class_name and class_name not in _seen_melee_tricks:
             # One line per new melee-like trick, so an unexplained Melee/Other case can be
@@ -1003,7 +1009,7 @@ def _on_trick_end(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFuncti
             return
         class_name = str(obj.Class.Name)
         if SKILL_TRICK_CLASS_FRAGMENT in class_name:
-            poller.note_skill_activity(time.time())
+            poller.note_skill_ended(time.time(), class_name)
         elif _is_player_melee_trick(class_name):
             poller.note_melee_end(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game

@@ -122,8 +122,8 @@ def deliver(poller: DamagePoller, name: str, now: float, tokens_open_the_window:
 
 
 def replay(hits: list[dict], signals: list[tuple[float, str]], tokens_open_the_window: bool, continuation_s: float) -> list[dict]:
-    original_continuation = poller_module.GRENADE_CONTINUATION_S
-    poller_module.GRENADE_CONTINUATION_S = continuation_s
+    original_continuation = poller_module.STREAM_CONTINUATION_S
+    poller_module.STREAM_CONTINUATION_S = continuation_s
     try:
         clock = Clock(float(hits[0]["t"]) - 1.0)
         controller = fake_controller()
@@ -155,7 +155,7 @@ def replay(hits: list[dict], signals: list[tuple[float, str]], tokens_open_the_w
         poller.tick()
         return received
     finally:
-        poller_module.GRENADE_CONTINUATION_S = original_continuation
+        poller_module.STREAM_CONTINUATION_S = original_continuation
 
 
 def summarise(title: str, events: list[dict]) -> int:
@@ -195,7 +195,7 @@ def main(argv: list[str]) -> int:
     before = summarise("   as the rules were (a token opens the skill window, no continuation)",
                        replay(hits, signals, tokens_open_the_window=True, continuation_s=0.0))
     after = summarise("   as the rules are  (a token only keeps one open, a burning target keeps its source)",
-                      replay(hits, signals, tokens_open_the_window=False, continuation_s=poller_module.GRENADE_CONTINUATION_S))
+                      replay(hits, signals, tokens_open_the_window=False, continuation_s=poller_module.STREAM_CONTINUATION_S))
     print(f"   flips before {before}, after {after}")
     return 0 if after <= before else 2
 
