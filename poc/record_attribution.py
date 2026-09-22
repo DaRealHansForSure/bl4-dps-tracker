@@ -86,7 +86,8 @@ poller._read_instance = read_instance
 _installed = read_instance
 
 SIGNALS = ("note_grenade_thrown", "note_grenade_exploded", "note_explosion", "note_melee_swing",
-           "note_melee_end", "note_skill_activity", "note_skill_token", "note_weapon_in_hand")
+           "note_melee_end", "note_skill_activity", "note_skill_token", "note_skill_started",
+           "note_skill_ended", "note_weapon_in_hand")
 originals = {}
 for name in SIGNALS:
     if not hasattr(poller, name):

@@ -482,6 +482,31 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.assertEqual(self.received[-1]["src"], "grenade", "an explosion names its own source, skill or not")
 
+    def test_a_grenade_that_went_off_beats_the_soft_skill_window(self) -> None:
+        """Passive skill scripts fire K2_StartSkillAction several times a second, so the
+        3 s window is open through a whole fight (session of 2026-09-22, 19:05). A grenade
+        that actually exploded is a fact and outranks that guess; a running action skill
+        still comes first."""
+        self.poller.tick()
+        self.poller.note_skill_activity(self.clock.now)
+        self.clock.advance(0.5)
+        self.poller.note_grenade_exploded(self.clock.now)
+        self.clock.advance(1.5)
+        write_hit(self.controller, 0, 270.7, flags=0, target="Char_Blasted_1")
+        self.poller.tick()
+        self.assertEqual((self.received[-1]["src"], self.received[-1]["why"]), ("grenade", "blast-window"))
+        self.clock.advance(2.0)
+        self.poller.note_skill_activity(self.clock.now)
+        write_hit(self.controller, 1, 270.7, flags=0, target="Char_Other_2")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["why"], "skill-window", "once the blast is old the window may have it")
+        self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_Cannons_C")
+        self.poller.note_grenade_exploded(self.clock.now)
+        self.clock.advance(0.5)
+        write_hit(self.controller, 2, 112.9, flags=0, target="Char_Third_3")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["why"], "skill-running", "a skill that really runs still comes first")
+
     def test_a_skill_trick_that_never_ends_is_dropped(self) -> None:
         self.poller.tick()
         self.poller.note_skill_started(self.clock.now, "Trick_ActionSkill_Stuck_C")

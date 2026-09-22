@@ -86,6 +86,7 @@ RULE_EXPLOSION_LATE = "explosion-late"
 RULE_CONTINUED = "continued"
 RULE_MELEE_WINDOW = "melee-window"
 RULE_SKILL_RUNNING = "skill-running"
+RULE_BLAST_WINDOW = "blast-window"
 RULE_SKILL_WINDOW = "skill-window"
 RULE_GRENADE_WINDOW = "grenade-window"
 RULE_NONE = "none"
@@ -195,6 +196,9 @@ class DamagePoller:
         self._explosions: deque[tuple[float, DamageSource]] = deque()
         self._pending: list[tuple[float, dict[str, Any]]] = []
         self._grenade_until = 0.0
+        # Until when a grenade that actually exploded explains an unattributed hit. The
+        # throw window is a guess and yields to the skill; a blast does not.
+        self._blast_until = 0.0
         # The grenade as a damage source: GRENADE_SOURCE until the equipped grenade's item
         # id is known, then the same with that id, so its hits can be named.
         self.grenade_source = GRENADE_SOURCE
@@ -222,6 +226,7 @@ class DamagePoller:
             self._explosions.popleft()
         if source.kind != SOURCE_WEAPON:
             self._grenade_until = max(self._grenade_until, now + EXPLOSION_WINDOW_S)
+            self._blast_until = max(self._blast_until, now + EXPLOSION_WINDOW_S)
             self._last_grenade_action = now
         for _deadline, event in self._pending:
             if event["src"] == OTHER_SOURCE.kind and abs(now - float(event["t"])) <= EXPLOSION_MATCH_WINDOW_S:
@@ -479,6 +484,10 @@ class DamagePoller:
             return MELEE_SOURCE, RULE_MELEE_WINDOW
         if self._skill_running(now):
             return SKILL_SOURCE, RULE_SKILL_RUNNING
+        # A grenade that went off seconds ago is a fact; the skill window is a guess that
+        # passive skill scripts keep open through a whole fight, so the blast comes first.
+        if now < self._blast_until:
+            return self.grenade_source, RULE_BLAST_WINDOW
         if now < self._skill_until:
             return SKILL_SOURCE, RULE_SKILL_WINDOW
         if now < self._grenade_until:
