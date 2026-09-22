@@ -988,10 +988,11 @@ def _on_skill_action(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFun
 
 
 def _on_skill_token(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
-    """A static call with no owner; only the local player's skills run this code here."""
+    """A static call with no owner, so it does not say whose skill added the token: it keeps
+    a running skill open and never starts one (see `note_skill_token`)."""
     try:
         if poller is not None:
-            poller.note_skill_activity(time.time())
+            poller.note_skill_token(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 

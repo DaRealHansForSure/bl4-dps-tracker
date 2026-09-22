@@ -18,10 +18,12 @@ Attribution, all of it from recorded sessions and probes (findings, section B):
   5. an unflagged hit within a few frames of a projectile explosion whose owner is a weapon
      (the mod reports those from a hook on projectile:Explode) belongs to that weapon;
      an explosion owned by the character is a grenade;
-  6. otherwise the melee window (one second after a knife swing starts; the swing's own
+  6. a target the grenade is already burning keeps the grenade while its window runs, so
+     an area's stream does not change owner in the middle;
+  7. otherwise the melee window (one second after a knife swing starts; the swing's own
      trick lasts about 0.6 s) claims it, then the skill window (while action skill tricks
      run), then the grenade window (after a throw);
-  7. anything left is Other, held back for a few frames first so a late explosion event can
+  8. anything left is Other, held back for a few frames first so a late explosion event can
      still claim it.
 
 The controller is fetched fresh on every tick and never reused across frames: a cached
@@ -44,6 +46,7 @@ from .attribution import (
     MELEE_SOURCE,
     OTHER_SOURCE,
     SKILL_SOURCE,
+    SOURCE_GRENADE,
     SOURCE_WEAPON,
     UNKNOWN_SOURCE,
     DamageSource,
@@ -95,6 +98,16 @@ SKILL_WINDOW_S = 3.0
 # window open this much longer: the window follows the skill's own damage and closes once
 # the hits stop.
 SKILL_HIT_GRACE_S = 1.5
+# That grace may not carry the window further than this past the last real skill signal.
+# Without the cap one wrong attribution feeds itself: a grenade's area ticking three times
+# a second was credited to the skill, and each of those hits pushed the window out again,
+# so the stream never came back (session of 2026-09-22, 18:30:51 on).
+SKILL_MAX_RUN_S = 30.0
+# A grenade's area (a corrosive cloud, a singularity) keeps hitting the same target for
+# seconds. The skill window is checked first and a token can open one from anywhere, so
+# without this the stream would change owner in the middle: a target whose last direct hit
+# was the grenade's, no longer ago than this, stays with the grenade while its window runs.
+GRENADE_CONTINUATION_S = 2.0
 
 # The swap rule: a sticky detonates when its gun is swapped away, and the ring shows the hit
 # with the new gun already in hand, within about 0.3 s of the swap being observed. The grace
@@ -156,6 +169,9 @@ class DamagePoller:
         self.grenade_source = GRENADE_SOURCE
         self._melee_until = 0.0
         self._skill_until = 0.0
+        # When a signal that really is the player's action skill last arrived; the hit grace
+        # may not push the skill window further than SKILL_MAX_RUN_S past it.
+        self._skill_signal_at = 0.0
         self._last_grenade_action = 0.0
         self._last_melee_action = 0.0
         self._current_held: DamageSource | None = None
@@ -201,7 +217,16 @@ class DamagePoller:
     def note_skill_activity(self, now: float) -> None:
         """A skill script started an action, or an action skill trick started or ended: the
         skill is running."""
+        self._skill_signal_at = max(self._skill_signal_at, now)
         self._skill_until = max(self._skill_until, now + SKILL_WINDOW_S)
+
+    def note_skill_token(self, now: float) -> None:
+        """A skill token was added to a stack. The call is static and carries no owner, so
+        it does not say whose skill it was: it keeps a skill that is already running open
+        and never starts one. Before that rule, tokens from anywhere opened the window and
+        took a burning grenade's damage with them."""
+        if now < self._skill_until:
+            self.note_skill_activity(now)
 
     def note_weapon_in_hand(self, now: float, held: DamageSource) -> None:
         """Called by the refresh loop; a change of the held weapon starts the swap grace."""
@@ -364,7 +389,7 @@ class DamagePoller:
             source = self._direct_source(flags, target_name, flagged_targets, pawn, now)
             self._remember_hit(target_name, source, now)
             if source is SKILL_SOURCE:
-                self._skill_until = max(self._skill_until, now + SKILL_HIT_GRACE_S)
+                self._extend_skill_window(now)
         event = {
             "t": now,
             "dmg": float(instance.TotalDamage),
@@ -396,6 +421,9 @@ class DamagePoller:
         exploded_by = self._recent_explosion_source(now)
         if exploded_by is not None:
             return exploded_by
+        burning = self._continued_grenade(target_name, now)
+        if burning is not None:
+            return burning
         if now < self._melee_until:
             return MELEE_SOURCE
         if now < self._skill_until:
@@ -433,6 +461,26 @@ class DamagePoller:
         if self._previous_held is not None and self._previous_held.item_id != "":
             return self._previous_held
         return UNKNOWN_SOURCE
+
+    def _extend_skill_window(self, now: float) -> None:
+        """A hit credited to the skill keeps the window open, but never further than
+        SKILL_MAX_RUN_S past the last real skill signal, so the window cannot live on its
+        own attributions."""
+        limit = self._skill_signal_at + SKILL_MAX_RUN_S
+        self._skill_until = max(self._skill_until, min(now + SKILL_HIT_GRACE_S, limit))
+
+    def _continued_grenade(self, target_name: str, now: float) -> DamageSource | None:
+        """The grenade is already burning this target and its window still runs: the hit
+        continues that stream, whatever window opened meanwhile."""
+        if now >= self._grenade_until:
+            return None
+        remembered = self._last_hit_by_target.get(target_name)
+        if remembered is None:
+            return None
+        source, when = remembered
+        if source.kind != SOURCE_GRENADE or now - when > GRENADE_CONTINUATION_S:
+            return None
+        return self.grenade_source
 
     def _recent_explosion_source(self, now: float) -> DamageSource | None:
         for when, source in reversed(self._explosions):

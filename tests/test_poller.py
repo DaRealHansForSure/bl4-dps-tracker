@@ -8,9 +8,12 @@ from types import SimpleNamespace
 from dmgtracker.attribution import GRENADE_SOURCE, MELEE_SOURCE, DamageSource, WeaponResolver
 from dmgtracker.poller import (
     CRIT_FLAG,
+    GRENADE_CONTINUATION_S,
     HEALING_FLAG,
     KILL_FLAG,
     PENDING_HOLD_S,
+    SKILL_HIT_GRACE_S,
+    SKILL_MAX_RUN_S,
     SWAP_GRACE_S,
     WEAPON_FLAG,
     DamagePoller,
@@ -428,6 +431,67 @@ class DamagePollerTests(unittest.TestCase):
         self.poller.tick()
         self.settle()
         self.assertEqual(self.received[-1]["src"], "other", "1.5 s without a skill hit closes the window")
+
+    def test_a_burning_target_keeps_the_grenade_when_a_skill_starts(self) -> None:
+        """A corrosive cloud ticking three times a second was taken over by the skill window
+        in the middle of its stream (session of 2026-09-22): the target it is burning keeps
+        it, a target it never hit does not."""
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.clock.advance(1.0)
+        write_hit(self.controller, 0, 12.8, flags=0, target="Char_CatElder_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "grenade")
+        self.poller.note_skill_activity(self.clock.now)
+        self.clock.advance(0.3)
+        write_hit(self.controller, 1, 12.7, flags=0, target="Char_CatElder_1")
+        write_hit(self.controller, 2, 240.0, flags=0, target="Char_CatElder_2")
+        self.poller.tick()
+        by_target = {event["target"]: event["src"] for event in self.received[-2:]}
+        self.assertEqual(by_target["Char_CatElder_1"], "grenade", "the burning target keeps its source")
+        self.assertEqual(by_target["Char_CatElder_2"], "skill", "a target the grenade never hit is the skill's")
+
+    def test_the_grenade_stream_ends_when_its_hits_stop(self) -> None:
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        write_hit(self.controller, 0, 12.8, flags=0, target="Char_CatElder_1")
+        self.poller.tick()
+        self.poller.note_skill_activity(self.clock.now)
+        self.clock.advance(GRENADE_CONTINUATION_S + 0.5)
+        self.poller.note_skill_activity(self.clock.now)
+        write_hit(self.controller, 1, 240.0, flags=0, target="Char_CatElder_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "skill", "the area stopped hitting it; the skill may have it")
+
+    def test_a_skill_token_alone_does_not_open_the_skill_window(self) -> None:
+        """AddToTokenStack is a static call and says nothing about whose skill it was."""
+        self.poller.tick()
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.poller.note_skill_token(self.clock.now)
+        self.clock.advance(0.5)
+        write_hit(self.controller, 0, 12.8, flags=0, target="Char_A_1")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "grenade", "a token from anywhere is not the player's skill")
+        self.poller.note_skill_activity(self.clock.now)
+        self.clock.advance(2.5)
+        self.poller.note_skill_token(self.clock.now)
+        self.clock.advance(2.0)
+        write_hit(self.controller, 1, 240.0, flags=0, target="Char_B_2")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["src"], "skill", "a token keeps a running skill open")
+
+    def test_the_skill_window_cannot_live_on_its_own_hits(self) -> None:
+        self.poller.tick()
+        self.poller.note_skill_activity(self.clock.now)
+        signal_at = self.clock.now
+        for step in range(80):
+            self.clock.advance(0.5)
+            write_hit(self.controller, step % 6, 12.0, flags=0, target=f"Char_Cat_{step}")
+            self.poller.tick()
+        self.settle()
+        late = [event for event in self.received if event["t"] > signal_at + SKILL_MAX_RUN_S + SKILL_HIT_GRACE_S]
+        self.assertTrue(late, "the fight ran past the cap")
+        self.assertEqual({event["src"] for event in late}, {"other"}, "the grace cannot outlive the skill signal")
 
     def test_the_swing_end_closes_the_melee_window_early(self) -> None:
         self.poller.tick()
