@@ -26,6 +26,9 @@ Attribution, all of it from recorded sessions and probes (findings, section B):
   8. anything left is Other, held back for a few frames first so a late explosion event can
      still claim it.
 
+Every event carries the rule that claimed it (`why`, the RULE_* values below), so a hit that
+looks wrong can be explained from the log alone instead of from a probe run.
+
 The controller is fetched fresh on every tick and never reused across frames: a cached
 wrapper points at freed memory once its world is torn down, and reading through it crashed
 the game during a character switch (access violation, 2026-09-20).
@@ -69,6 +72,21 @@ KILL_FLAG = 1 << 14
 KIND_DIRECT = "direct"
 KIND_DOT = "dot"
 KIND_HEAL = "heal"
+
+# Which rule gave a hit its source, written to every event as "why".
+RULE_HEAL = "heal"
+RULE_STATUS = "status"
+RULE_GUN_FLAG = "gun-flag"
+RULE_SWAP_STICKY = "swap-sticky"
+RULE_NO_GUN_IN_HAND = "no-gun-in-hand"
+RULE_SAME_FRAME = "same-frame"
+RULE_EXPLOSION = "explosion"
+RULE_EXPLOSION_LATE = "explosion-late"
+RULE_BURNING = "burning"
+RULE_MELEE_WINDOW = "melee-window"
+RULE_SKILL_WINDOW = "skill-window"
+RULE_GRENADE_WINDOW = "grenade-window"
+RULE_NONE = "none"
 
 # Status effect ticks carry no reference to what applied them. They are credited to the last
 # non-status hit on the same target inside this window; the game's own damage type names end
@@ -191,7 +209,7 @@ class DamagePoller:
             self._last_grenade_action = now
         for _deadline, event in self._pending:
             if event["src"] == OTHER_SOURCE.kind and abs(now - float(event["t"])) <= EXPLOSION_MATCH_WINDOW_S:
-                self._assign(event, source)
+                self._assign(event, source, RULE_EXPLOSION_LATE)
 
     def note_grenade_thrown(self, now: float) -> None:
         self._grenade_until = max(self._grenade_until, now + GRENADE_WINDOW_S)
@@ -380,13 +398,13 @@ class DamagePoller:
         is_status = bool(getattr(damage_type, "bIsDoT", False)) or type_name.endswith(STATUS_TYPE_SUFFIX)
         if is_heal:
             kind = KIND_HEAL
-            source = OTHER_SOURCE
+            source, why = OTHER_SOURCE, RULE_HEAL
         elif is_status:
             kind = KIND_DOT
-            source = self._status_source(target_name, now)
+            source, why = self._status_source(target_name, now), RULE_STATUS
         else:
             kind = KIND_DIRECT
-            source = self._direct_source(flags, target_name, flagged_targets, pawn, now)
+            source, why = self._direct_source(flags, target_name, flagged_targets, pawn, now)
             self._remember_hit(target_name, source, now)
             if source is SKILL_SOURCE:
                 self._extend_skill_window(now)
@@ -401,38 +419,40 @@ class DamagePoller:
             "dtype": type_name,
             "target": target_name,
         }
-        self._assign(event, source)
+        self._assign(event, source, why)
         return event
 
     @staticmethod
-    def _assign(event: dict[str, Any], source: DamageSource) -> None:
+    def _assign(event: dict[str, Any], source: DamageSource, why: str) -> None:
         event["src"] = source.kind
         event["weapon"] = source.label
         event["body"] = source.body
         event["wid"] = source.item_id
+        event["why"] = why
 
     # ------------------------------------------------------------------ attribution
 
-    def _direct_source(self, flags: int, target_name: str, flagged_targets: set[str], pawn: Any, now: float) -> DamageSource:
+    def _direct_source(self, flags: int, target_name: str, flagged_targets: set[str], pawn: Any, now: float) -> tuple[DamageSource, str]:
+        """The source of a direct hit and the rule that decided it."""
         if flags & WEAPON_FLAG:
             return self._flagged_source(target_name, pawn, now)
         if target_name in flagged_targets:
-            return self._resolver.weapon_in_hand(pawn)
+            return self._resolver.weapon_in_hand(pawn), RULE_SAME_FRAME
         exploded_by = self._recent_explosion_source(now)
         if exploded_by is not None:
-            return exploded_by
+            return exploded_by, RULE_EXPLOSION
         burning = self._continued_grenade(target_name, now)
         if burning is not None:
-            return burning
+            return burning, RULE_BURNING
         if now < self._melee_until:
-            return MELEE_SOURCE
+            return MELEE_SOURCE, RULE_MELEE_WINDOW
         if now < self._skill_until:
-            return SKILL_SOURCE
+            return SKILL_SOURCE, RULE_SKILL_WINDOW
         if now < self._grenade_until:
-            return self.grenade_source
-        return OTHER_SOURCE
+            return self.grenade_source, RULE_GRENADE_WINDOW
+        return OTHER_SOURCE, RULE_NONE
 
-    def _flagged_source(self, target_name: str, pawn: Any, now: float) -> DamageSource:
+    def _flagged_source(self, target_name: str, pawn: Any, now: float) -> tuple[DamageSource, str]:
         """The gun in hand, or the previous gun for a sticky that went off on the swap."""
         held = self._resolver.weapon_in_hand(pawn)
         previous = self._previous_held
@@ -442,12 +462,12 @@ class DamagePoller:
             if remembered is not None:
                 last_source, when = remembered
                 if last_source.item_id == previous.item_id and now - when <= STICK_WINDOW_S:
-                    return previous
+                    return previous, RULE_SWAP_STICKY
         if target_name:
             self._hits_since_swap.add(target_name)
         if held.item_id == "":
-            return self._gun_without_one_in_hand(target_name, now)
-        return held
+            return self._gun_without_one_in_hand(target_name, now), RULE_NO_GUN_IN_HAND
+        return held, RULE_GUN_FLAG
 
     def _gun_without_one_in_hand(self, target_name: str, now: float) -> DamageSource:
         """Gun damage while no gun resolves (mid swap, the slot empty for a moment): a sticky

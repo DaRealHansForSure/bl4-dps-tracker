@@ -27,7 +27,7 @@ TOP_WEAPONS = 10
 TOP_TARGETS = 3
 CACHED_SESSIONS = 4
 # The event fields a search term is matched against, case-insensitively.
-SEARCH_FIELDS = ("weapon", "target", "src", "dtype", "elem", "kind", "character")
+SEARCH_FIELDS = ("weapon", "target", "src", "dtype", "elem", "kind", "character", "why")
 RANKINGS = ("dps", "peak", "damage")
 
 

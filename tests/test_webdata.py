@@ -93,6 +93,9 @@ class WebDataTests(unittest.TestCase):
         self.assertEqual([event["dmg"] for event in fire["events"]], [900.0])
         by_character = hits_page(session, page=1, size=100, query="darksiren")
         self.assertEqual(by_character["total"], 1)
+        session.sections[0].events[0]["why"] = "burning"
+        by_rule = hits_page(session, page=1, size=100, query="burning")
+        self.assertEqual(by_rule["total"], 1, "the hit lists can be filtered by the rule that claimed a hit")
 
     def test_hits_of_one_frame_keep_their_write_order_when_reversed(self) -> None:
         path = self.log_dir / "session-20260920-130000.jsonl"

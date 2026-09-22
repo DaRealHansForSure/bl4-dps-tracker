@@ -432,6 +432,35 @@ class DamagePollerTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.received[-1]["src"], "other", "1.5 s without a skill hit closes the window")
 
+    def test_every_hit_says_which_rule_claimed_it(self) -> None:
+        """The rule is written to the event, so a hit that looks wrong is explained by the
+        log instead of by a probe run."""
+        self.poller.tick()
+        # The bullet and its elemental half land in the same frame.
+        write_hit(self.controller, 0, 50.0, flags=WEAPON_FLAG, target="Char_A_1")
+        write_hit(self.controller, 1, 9.0, flags=0, target="Char_A_1", dtype="Fire")
+        self.poller.tick()
+        self.assertEqual([event["why"] for event in self.received[-2:]], ["gun-flag", "same-frame"])
+        self.clock.advance(1.0)
+        write_hit(self.controller, 2, 4.0, flags=0, target="Char_A_1", dtype="Fire_Status", is_dot=True)
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["why"], "status")
+        self.poller.note_grenade_thrown(self.clock.now)
+        self.clock.advance(1.0)
+        write_hit(self.controller, 3, 333.0, flags=0, target="Char_B_2")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["why"], "grenade-window")
+        self.clock.advance(0.3)
+        self.poller.note_skill_activity(self.clock.now)
+        write_hit(self.controller, 4, 333.0, flags=0, target="Char_B_2")
+        self.poller.tick()
+        self.assertEqual(self.received[-1]["why"], "burning")
+        self.clock.advance(20.0)
+        write_hit(self.controller, 5, 333.0, flags=0, target="Char_C_3")
+        self.poller.tick()
+        self.settle()
+        self.assertEqual(self.received[-1]["why"], "none")
+
     def test_a_burning_target_keeps_the_grenade_when_a_skill_starts(self) -> None:
         """A corrosive cloud ticking three times a second was taken over by the skill window
         in the middle of its stream (session of 2026-09-22): the target it is burning keeps
