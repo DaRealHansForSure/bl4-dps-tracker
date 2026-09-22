@@ -78,8 +78,9 @@ else:
     else:
         poller = getattr(fresh, "poller", None)
         dashboard = getattr(fresh, "dashboard", None)
-        rules = getattr(sys.modules[f"{PACKAGE}.poller"], "RULE_BURNING", None)
+        poller_module = sys.modules[f"{PACKAGE}.poller"]
+        rules = [name for name in dir(poller_module) if name.startswith("RULE_")]
         say(f"   enabled {new_mod.is_enabled}; poller {poller is not None}, dashboard {dashboard is not None}"
             f", log {getattr(getattr(fresh, 'session_log', None), 'path', None)}")
-        say(f"   the new attribution rules are live: {rules!r}")
+        say(f"   attribution rules live: {len(rules)} ({', '.join(sorted(getattr(poller_module, name) for name in rules))})")
     say("done")
