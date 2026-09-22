@@ -16,6 +16,7 @@ from dmgtracker.poller import (
     SKILL_GRACE_CAP_S,
     SKILL_MAX_RUN_S,
     SKILL_WINDOW_S,
+    SOFT_STREAM_GAP_S,
     SWAP_GRACE_S,
     WEAPON_FLAG,
     DamagePoller,
@@ -431,8 +432,13 @@ class DamagePollerTests(unittest.TestCase):
         self.clock.advance(2.0)
         write_hit(self.controller, 0, 239.7, flags=0, target="Char_A_1")
         self.poller.tick()
+        self.assertEqual((self.received[-1]["src"], self.received[-1]["why"]), ("skill", "same-stream"),
+                         "the window closed, but the burst is plainly still running")
+        self.clock.advance(SOFT_STREAM_GAP_S + 1.0)
+        write_hit(self.controller, 1, 239.7, flags=0, target="Char_A_1")
+        self.poller.tick()
         self.settle()
-        self.assertEqual(self.received[-1]["src"], "other", "1.5 s without a skill hit closes the window")
+        self.assertEqual(self.received[-1]["src"], "other", "a burst that really stopped is not the skill's any more")
 
     def test_an_action_skill_owns_its_damage_until_its_trick_ends(self) -> None:
         """The Exo Soldier's cannons fire for 18 s with gaps between the bursts, and a

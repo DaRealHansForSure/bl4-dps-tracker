@@ -87,6 +87,7 @@ RULE_CONTINUED = "continued"
 RULE_MELEE_WINDOW = "melee-window"
 RULE_SKILL_RUNNING = "skill-running"
 RULE_BLAST_WINDOW = "blast-window"
+RULE_SAME_STREAM = "same-stream"
 RULE_SKILL_WINDOW = "skill-window"
 RULE_GRENADE_WINDOW = "grenade-window"
 RULE_NONE = "none"
@@ -145,6 +146,17 @@ STREAM_CONTINUATION_S = 1.0
 # The sources whose streams are continued this way; melee is left out because its window is
 # a single swing, and "other" because continuing a guess is not worth anything.
 CONTINUED_KINDS = (SOURCE_GRENADE, SKILL_SOURCE.kind)
+# Hits that only the windows explain are one stream while they keep coming this closely,
+# whatever target each one lands on. Without this a single source changes label in the
+# middle as a window lapses: the Exo Soldier's cannons read Skill from 19:27:58 and Other
+# from 19:28:07 on 2026-09-22, seven identical pairs a second throughout.
+# An action skill fires in bursts with gaps while the player looks for the next target: the
+# cannons paused 3.7 s in the middle of one burst on 2026-09-22 (19:28:03.98 to 19:28:07.70)
+# and the rest of the burst read Other. This rule only ever competes with Other, so the span
+# is generous.
+SOFT_STREAM_GAP_S = 5.0
+# ... and a stream carried that way may not outlast the longest action skill.
+SOFT_STREAM_MAX_S = 20.0
 
 # The swap rule: a sticky detonates when its gun is swapped away, and the ring shows the hit
 # with the new gun already in hand, within about 0.3 s of the swap being observed. The grace
@@ -212,6 +224,11 @@ class DamagePoller:
         # The action skill tricks that have begun and not ended yet, by class name and start
         # time: while one runs, its damage is the skill's, however long it lasts.
         self._skill_tricks: dict[str, float] = {}
+        # The last hit that only a window explained, and when: the rest of that stream keeps
+        # its answer instead of following whichever window happens to be open.
+        self._soft_source: DamageSource | None = None
+        self._soft_at = 0.0
+        self._soft_since = 0.0
         # When a signal that really is the player's action skill last arrived; the hit grace
         # may not push the skill window further than SKILL_MAX_RUN_S past it.
         self._skill_signal_at = 0.0
@@ -447,6 +464,11 @@ class DamagePoller:
             kind = KIND_DIRECT
             source, why = self._direct_source(flags, target_name, flagged_targets, pawn, now)
             self._remember_hit(target_name, source, now)
+            # Every hit of a source that has no flag of its own belongs to the running
+            # stream, however it was decided: that is what keeps a burst on one label when
+            # the window that explained its first hits lapses in the middle.
+            if source.kind in CONTINUED_KINDS:
+                self._remember_soft(source, now)
             if source is SKILL_SOURCE:
                 self._extend_skill_window(now)
         event = {
@@ -494,9 +516,16 @@ class DamagePoller:
         if now < self._blast_until:
             return self.grenade_source, RULE_BLAST_WINDOW
         if now < self._skill_until:
-            return SKILL_SOURCE, RULE_SKILL_WINDOW
+            return self._remember_soft(SKILL_SOURCE, now), RULE_SKILL_WINDOW
         if now < self._grenade_until:
-            return self.grenade_source, RULE_GRENADE_WINDOW
+            return self._remember_soft(self.grenade_source, now), RULE_GRENADE_WINDOW
+        # No window explains this one. If the same stream of unexplained hits was running a
+        # moment ago, it is still that source: a window lapsing in the middle must not
+        # rename what is plainly one burst.
+        carried = self._carried_soft_stream(now)
+        if carried is not None:
+            return carried, RULE_SAME_STREAM
+        self._soft_source = None
         return OTHER_SOURCE, RULE_NONE
 
     def _flagged_source(self, target_name: str, pawn: Any, now: float) -> tuple[DamageSource, str]:
@@ -528,6 +557,25 @@ class DamagePoller:
         if self._previous_held is not None and self._previous_held.item_id != "":
             return self._previous_held
         return UNKNOWN_SOURCE
+
+    def _remember_soft(self, source: DamageSource, now: float) -> DamageSource:
+        """Start (or continue) the stream of hits that only a window explains."""
+        if self._soft_source is None or self._soft_source.kind != source.kind or now - self._soft_at > SOFT_STREAM_GAP_S:
+            self._soft_since = now
+        self._soft_source = source
+        self._soft_at = now
+        return source
+
+    def _carried_soft_stream(self, now: float) -> DamageSource | None:
+        """The source of the stream of window-explained hits that is still running, if the
+        last one is barely older than this one and the stream has not run longer than a
+        skill could. A stream that outlives that is a guess feeding itself."""
+        if self._soft_source is None:
+            return None
+        if now - self._soft_at > SOFT_STREAM_GAP_S or now - self._soft_since > SOFT_STREAM_MAX_S:
+            return None
+        self._soft_at = now
+        return self._soft_source
 
     def _skill_running(self, now: float) -> bool:
         """Whether an action skill trick is running. A trick whose end never arrived is
