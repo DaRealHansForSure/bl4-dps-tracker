@@ -10,7 +10,7 @@ import zlib
 from pathlib import Path
 
 from dmgtracker import thumbnails
-from dmgtracker.thumbnails import ThumbnailError, convert_exr_to_png, thumbnail_path
+from dmgtracker.thumbnails import ThumbnailError, convert_exr_to_png, thumbnail_key, thumbnail_path
 
 WIDTH, HEIGHT = 20, 18
 CHANNELS = ("A", "B", "G", "R")
@@ -86,6 +86,17 @@ def read_png(data: bytes) -> tuple[int, int, bytes]:
 def srgb8(value: float) -> int:
     value = min(max(value, 0.0), 1.0)
     return round(255 * (12.92 * value if value <= 0.0031308 else 1.055 * value ** (1 / 2.4) - 0.055))
+
+
+class ThumbnailKeyTests(unittest.TestCase):
+    def test_a_seed_id_is_its_own_file_name(self) -> None:
+        self.assertEqual(thumbnail_key("9bf02ca566b1c0010e1227cd"), "9bf02ca566b1c0010e1227cd")
+
+    def test_a_per_launch_id_loses_the_characters_a_file_name_cannot_hold(self) -> None:
+        """A co-op client has no item identities, so ids look like "instance:206" and the
+        export failed with FileNotFoundError until the colon was replaced."""
+        self.assertEqual(thumbnail_key("instance:206"), "instance-206")
+        self.assertEqual(thumbnail_path(Path("pictures"), "instance:206").name, "instance-206.png")
 
 
 class ThumbnailConversionTest(unittest.TestCase):

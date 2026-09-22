@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Callable
 
 THUMBNAILS_DIR_NAME = "thumbnails"
+# What a thumbnail's file name may contain; everything else becomes a hyphen.
+THUMBNAIL_KEY_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyz-"
 EXR_MAGIC = b"\x76\x2f\x31\x01"
 EXR_COMPRESSION_NONE = 0
 EXR_COMPRESSION_ZIPS = 2
@@ -39,8 +41,15 @@ class ThumbnailError(ValueError):
     """The EXR file is not one this decoder handles."""
 
 
+def thumbnail_key(item_id: str) -> str:
+    """The item id as a file name. A seed id is hex and needs nothing; the per-launch
+    fallback of a session without identities is `instance:206`, and a colon is not a legal
+    file name on Windows (the export failed with FileNotFoundError until this existed)."""
+    return "".join(character if character in THUMBNAIL_KEY_CHARACTERS else "-" for character in item_id.lower())
+
+
 def thumbnail_path(folder: Path, item_id: str) -> Path:
-    return folder / f"{item_id}.png"
+    return folder / f"{thumbnail_key(item_id)}.png"
 
 
 def convert_exr_to_png(exr_path: Path, png_path: Path, rest: Callable[[], None] = lambda: time.sleep(0)) -> None:

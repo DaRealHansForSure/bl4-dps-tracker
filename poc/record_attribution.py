@@ -18,7 +18,7 @@ import json, sys, time, threading
 from pathlib import Path
 from unrealsdk import logging
 
-MINUTES = 10.0
+MINUTES = 15.0
 FLUSH_INTERVAL_S = 2.0
 OUT = Path(__file__).parent / "probe_output.txt"
 # The probe runner copies this file into poc/runs/<run>/, so __file__ is two levels below

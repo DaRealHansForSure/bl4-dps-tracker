@@ -58,6 +58,7 @@ from .webdata import (  # noqa: E402
     session_weapons_payload,
     weapons_payload,
 )
+from .thumbnails import thumbnail_path  # noqa: E402
 from .weaponstats import WeaponStore  # noqa: E402
 
 DEFAULT_HOST = "0.0.0.0"
@@ -68,7 +69,9 @@ PROBE_ADDRESS = ("192.0.2.1", 9)
 PAGE_PACKAGE = "dmgtracker.web"
 PAGE_FILE = "index.html"
 THUMBNAILS_PATH = "/thumbnails/"
-THUMBNAIL_NAME = re.compile(r"[0-9a-f]{24}\.png")
+# A picture is served only under a name the mod itself writes: a seed id, or the
+# per-launch fallback of a session without identities ("instance-206").
+THUMBNAIL_NAME = re.compile(r"(?:[0-9a-f]{24}|instance-[0-9]{1,12})\.png")
 # A gun's picture never changes once written; a page may keep it for a day.
 THUMBNAIL_CACHE_CONTROL = "max-age=86400"
 # Longest wait of the broadcaster and of a connection handler before they look at the stop flag.
@@ -486,7 +489,7 @@ class Dashboard:
         folder = self.sources.thumbnails_dir
         items = self.sources.item_infos()
         for item_id, info in items.items():
-            info["thumbnail"] = folder is not None and (folder / f"{item_id}.png").is_file()
+            info["thumbnail"] = folder is not None and thumbnail_path(folder, item_id).is_file()
         return items
 
     def _thumbnail(self, name: str) -> Response:

@@ -128,6 +128,11 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual((status, headers["Content-Type"], body[:4]), (200, "image/png", b"\x89PNG"))
         self.assertIn("max-age", headers["Cache-Control"])
         self.assertEqual(fetch(self.url + "thumbnails/notes.png")[0], 404, "only item ids reach the disk")
+        # A co-op session has no item identities and falls back to per-launch ids, whose
+        # colon cannot be a file name; the mod writes them with a hyphen and serves those.
+        (folder / "instance-206.png").write_bytes(b"co-op")
+        status, _headers, body = fetch(self.url + "thumbnails/instance-206.png")
+        self.assertEqual((status, body), (200, b"co-op"))
         self.assertEqual(fetch(self.url + "thumbnails/..%2Fweapons.json")[0], 404)
         self.assertEqual(fetch(self.url + "thumbnails/0123456789abcdef01234567.png")[0], 404, "no picture yet")
         status, payload = fetch_json(self.url + "api/weapons?by=damage")

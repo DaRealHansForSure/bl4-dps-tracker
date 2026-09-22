@@ -738,6 +738,12 @@
     return itemsLoading;
   }
 
+  // A picture's file name: the item id with everything a file name may not hold replaced,
+  // the same rule as the mod's (a co-op session's ids look like "instance:206").
+  function thumbnailKey(itemId) {
+    return String(itemId).toLowerCase().replace(/[^0-9a-z-]/g, "-");
+  }
+
   function rarityClass(itemId) {
     const info = itemInfos[itemId];
     return info && info.rarity ? "rarity-" + info.rarity : "";
@@ -756,7 +762,7 @@
     element.addEventListener("mouseenter", function (event) {
       itemCardItemId = itemId;
       fillItemCard(itemId);
-      itemCardImage.src = "/thumbnails/" + itemId + ".png";
+      itemCardImage.src = "/thumbnails/" + thumbnailKey(itemId) + ".png";
       itemCard.classList.add("visible");
       placeItemCard(event);
     });
@@ -1506,7 +1512,7 @@
       img.className = "thumb";
       img.loading = "lazy";
       img.alt = "";
-      img.src = "/thumbnails/" + w.item_id + ".png";
+      img.src = "/thumbnails/" + thumbnailKey(w.item_id) + ".png";
       img.addEventListener("error", function () { img.remove(); });
       td.appendChild(img);
     }
