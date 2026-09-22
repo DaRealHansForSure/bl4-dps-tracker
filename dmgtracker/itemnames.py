@@ -344,6 +344,10 @@ class ItemNameReader:
         self._names: dict[bytes, str] = {}
         self._cards: dict[bytes, ItemCard] = {}
         self._last_pairs: dict[bytes, str] = {}
+        # The same for a session without seeds: the confirmed card of each weapon slot, and
+        # the cards the previous read saw there.
+        self._slot_cards: dict[int, ItemCard] = {}
+        self._last_slot_cards: dict[int, ItemCard] = {}
         self._cards_header: int | None = None
         self._list_address: int | None = None
         self._last_list_read = 0.0
@@ -372,6 +376,20 @@ class ItemNameReader:
         if unknown:
             self._start_scan(unknown[0], list(slot_seeds))
         return {seed: self._names[seed] for seed in wanted if seed in self._names}
+
+    def cards_by_slot(self, slot_count: int) -> dict[int, ItemCard]:
+        """The card of each weapon slot, by slot index, for a session where the guns have no
+        seed of their own (a co-op client: the identity is not replicated). The cards model
+        describes the equipped guns in slot order, so the slot is the only key needed. Two
+        reads must agree, as for the seed pairing, because the model lags an equipment
+        change by a moment."""
+        header = self._cards_header
+        if header is not None and not self._learn_slot_cards(header, slot_count):
+            self._cards_header = None
+        if self._cards_header is None:
+            self._start_scan(b"", [], want_cards=True)
+        with self._lock:
+            return dict(self._slot_cards)
 
     def card_for(self, seed: bytes) -> ItemCard | None:
         """The card of an item whose name is known: what the inventory says about it."""
@@ -409,6 +427,8 @@ class ItemNameReader:
             self._cards = {}
             self._last_pairs = {}
             self._cards_header = None
+            self._slot_cards = {}
+            self._last_slot_cards = {}
             self._list_address = None
             self._next_scan_at = 0.0
             self._retry_s = SCAN_RETRY_FIRST_S
@@ -461,6 +481,26 @@ class ItemNameReader:
             self._last_pairs = pairs
         return True
 
+    def _learn_slot_cards(self, header: int, slot_count: int) -> bool:
+        """Read the cards at the remembered header as one card per weapon slot; a slot's
+        card counts once two reads in a row agree on its name. False when the node is gone."""
+        node = self._node_at(header)
+        if node is None:
+            return False
+        data, count = node
+        cards = [card for card in self._cards_at(data, count) if card is not None]
+        if len(cards) != slot_count or any(not card.is_weapon or not card.name for card in cards):
+            # A model in transition, or a count that does not match the slots: keep what we have.
+            return True
+        seen = dict(enumerate(cards))
+        with self._lock:
+            for index, card in seen.items():
+                previous = self._last_slot_cards.get(index)
+                if previous is not None and previous.name == card.name:
+                    self._slot_cards[index] = card
+            self._last_slot_cards = seen
+        return True
+
     def _learn_from_list(self, list_address: int) -> bool:
         """Take every seed -> name of the inventory list at the remembered address; False
         when there is no list there any more."""
@@ -503,7 +543,8 @@ class ItemNameReader:
         self.scans += 1
         started = time.perf_counter()
         what = "" if want_cards else " (the inventory list only)"
-        self._log(f"scan {self.scans} for the seed {seed.hex()[:6]}{what} started, {self._scan_order_text()} first")
+        wanted = f"the seed {seed.hex()[:6]}" if seed else "the item cards (no item ids in this session)"
+        self._log(f"scan {self.scans} for {wanted}{what} started, {self._scan_order_text()} first")
         try:
             found = self._scan_for(seed, slot_seeds, want_cards)
         except Exception as ex:  # noqa: BLE001 - a scan that fails is a scan that found nothing
@@ -543,7 +584,9 @@ class ItemNameReader:
                 chunk = self._read(chunk_start, min(SCAN_CHUNK_BYTES + SCAN_OVERLAP_BYTES, base + size - chunk_start))
                 if chunk is None:
                     continue
-                position = chunk.find(seed)
+                # An empty seed means the caller has none (a co-op client): only the cards
+                # are searched for, and `find` on an empty needle would never move on.
+                position = chunk.find(seed) if seed else -1
                 while 0 <= position < SCAN_CHUNK_BYTES:
                     if self._learn_list_around(chunk_start + position) and seed in self._names:
                         return True
@@ -557,7 +600,10 @@ class ItemNameReader:
                 if since_rest >= SCAN_REST_EVERY_BYTES:
                     since_rest = 0
                     time.sleep(SCAN_REST_S)
-        self.last_error = f"no UI model holds the seed {seed.hex()[:6]} and no item cards were found"
+        self.last_error = (
+            "no item cards were found" if not seed
+            else f"no UI model holds the seed {seed.hex()[:6]} and no item cards were found"
+        )
         return False
 
     def _scan_order(self, regions: list[tuple[int, int]]) -> list[tuple[int, int]]:

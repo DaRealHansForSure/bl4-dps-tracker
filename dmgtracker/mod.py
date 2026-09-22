@@ -14,6 +14,7 @@ import os
 import time
 import webbrowser
 from pathlib import Path
+from dataclasses import asdict
 from typing import Any
 
 import unrealsdk
@@ -239,6 +240,9 @@ _item_names_unavailable_since = 0.0
 _item_names_reported = False
 # Whether the "no stable item id" line has been said this session (a co-op client).
 _identity_missing_reported = False
+# Names for a session whose items have no stable id (a co-op client), by the id that only
+# lasts this launch. They are never written to the shared table, which is keyed by item.
+_session_infos: dict[str, ItemInfo] = {}
 _item_names_asked = False
 _in_play_since = 0.0
 # The window's clock: the seconds the game was in play since the mod was enabled. It stops
@@ -354,6 +358,7 @@ def _prepare_item_names() -> None:
     global name_reader, _item_names_unavailable_since, _identity_missing_reported
     _item_names_unavailable_since = 0.0
     _identity_missing_reported = False
+    _session_infos.clear()
     build = ""
     try:
         build = str(unrealsdk.find_class(BUILD_VERSION_LIBRARY).ClassDefaultObject.GetBuildVersion())
@@ -384,6 +389,9 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     # equipped gun's seed (None where a gun only has the fallback id), named or not.
     slot_seeds = [seed_of(weapon.item_id) for weapon in equipped]
     _report_missing_identity(equipped, slot_seeds)
+    if equipped and all(seed is None for seed in slot_seeds):
+        _learn_names_by_slot(equipped, wall_now)
+        return
     # A gun without a name, or one named before the table kept the card's details.
     unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _needs_item_info(weapon.item_id)]
     unpictured = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _thumbnail_wanted(weapon.item_id)]
@@ -415,6 +423,53 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not name_reader.discovering:
         _item_names_reported = True
         logging.warning(f"{LOG_PREFIX} item names unavailable ({name_reader.last_error or 'no UI model found'}); guns keep their type labels")
+
+
+def _learn_names_by_slot(equipped: list[DamageSource], wall_now: float) -> None:
+    """Name the guns of a session without item ids (a co-op client, where the identity is
+    not replicated). The UI's item cards still describe the equipped guns in slot order, so
+    the slot is the key. The names hang on ids that last one launch, so they stay in memory
+    and never reach the shared table."""
+    if name_reader is None:
+        return
+    try:
+        cards = name_reader.cards_by_slot(len(equipped))
+    except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
+        name_reader.last_error = f"{type(ex).__name__}: {ex}"
+        return
+    for index, weapon in enumerate(equipped):
+        card = cards.get(index)
+        if card is None or not card.name:
+            continue
+        known = _session_infos.get(weapon.item_id)
+        if known is not None and known.name == card.name:
+            continue
+        _session_infos[weapon.item_id] = _item_info(card.name, weapon.label, card, wall_now)
+        _say(f"{weapon.label} in slot {index + 1} is {card.name}")
+        _queue_thumbnail(weapon.item_id, weapon.label, card)
+
+
+def _known_name(item_id: str) -> str:
+    """The item's name from the shared table, or from this launch's slot names."""
+    stored = "" if name_store is None else name_store.name_for(item_id)
+    if stored:
+        return stored
+    info = _session_infos.get(item_id)
+    return "" if info is None else info.name
+
+
+def _all_known_names() -> dict[str, str]:
+    names = {} if name_store is None else dict(name_store.names())
+    names.update({item_id: info.name for item_id, info in _session_infos.items() if info.name})
+    return names
+
+
+def _all_known_infos() -> dict[str, dict[str, Any]]:
+    """Every item the dashboard may show, as plain data: the shared table plus this
+    launch's slot names."""
+    infos = {} if name_store is None else dict(name_store.infos())
+    infos.update({item_id: asdict(info) for item_id, info in _session_infos.items()})
+    return infos
 
 
 def _report_missing_identity(equipped: list[DamageSource], slot_seeds: list[bytes | None]) -> None:
@@ -572,11 +627,11 @@ def _convert_thumbnails() -> None:
 
 def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
     """item id -> item name for the equipped weapons whose name is known."""
-    if name_store is None:
+    if name_store is None and not _session_infos:
         return {}
     names: dict[str, str] = {}
     for item_id in [weapon.item_id for weapon in equipped] + list(_gadget_ids.values()):
-        name = name_store.name_for(item_id)
+        name = _known_name(item_id)
         if name:
             names[item_id] = name
     return names
@@ -1171,8 +1226,8 @@ def _dashboard_sources() -> DashboardSources:
         session_path=lambda: None if session_log is None else session_log.path,
         window_minutes=lambda: float(readout_window_minutes.value),
         encounter_gap_s=lambda: float(encounter_gap_s.value),
-        item_names=lambda: {} if name_store is None else name_store.names(),
-        item_infos=lambda: {} if name_store is None else name_store.infos(),
+        item_names=_all_known_names,
+        item_infos=_all_known_infos,
         thumbnails_dir=_log_dir().parent / THUMBNAILS_DIR_NAME,
         element_names=_element_names,
     )
