@@ -692,6 +692,7 @@ def _refresh_readout() -> None:
         _export_thumbnail_if_in_menu(controller)
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
+        _note_action_skill_weapon(held, on_foot, in_play, wall_now)
         _sample_held_time(held)
         _sample_grenade_time()
         rolling.prune(_play_clock)
@@ -822,6 +823,23 @@ def _sample_held_time(held: Any) -> None:
     _held_pending[held.item_id] = (held.label, seconds + _last_fight_step)
 
 
+def _note_action_skill_weapon(held: DamageSource, on_foot: bool, in_play: bool, now: float) -> None:
+    """An action skill that replaces the gun (the Exo Soldier's Peacebreaker cannons) leaves
+    no weapon in hand while it runs, which is a state the game really holds, unlike the
+    skill window that passive skill scripts keep open through a whole fight. The captures of
+    2026-09-22 show it exactly around the skill's damage (19:16:34 to 19:17:11). Skills that
+    keep the gun in hand do not show it; they still rely on their tricks."""
+    global _skill_weapon_gone
+    gone = on_foot and in_play and held.item_id == ""
+    if gone == _skill_weapon_gone:
+        return
+    _skill_weapon_gone = gone
+    if gone:
+        poller.note_skill_started(now, NO_WEAPON_TRICK)
+    else:
+        poller.note_skill_ended(now, NO_WEAPON_TRICK)
+
+
 def _sample_grenade_time() -> None:
     """Credit the equipped grenade with the same fighting time as the gun in hand, so its
     lifetime record has a DPS over the fights it was equipped in."""
@@ -940,6 +958,10 @@ _seen_melee_tricks: set[str] = set()
 # The action skill tricks seen this session, one log line each: an unexplained Skill row can
 # be traced to the trick that opened it without a probe run.
 _seen_skill_tricks: set[str] = set()
+# The name the no-weapon-in-hand state uses as its "trick", so it starts and ends like one.
+NO_WEAPON_TRICK = "no weapon in hand"
+# Whether the gun is currently gone from the player's hands (an action skill that swaps it).
+_skill_weapon_gone = False
 
 
 def _is_player_melee_trick(class_name: str) -> bool:
@@ -1065,7 +1087,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen, _cursor_shown, _paused_since
+    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen, _cursor_shown, _paused_since, _skill_weapon_gone
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
@@ -1084,6 +1106,7 @@ def on_enable() -> None:
     _menu_seen = False
     _cursor_shown = False
     _paused_since = 0.0
+    _skill_weapon_gone = False
     _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),

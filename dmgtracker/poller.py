@@ -107,6 +107,11 @@ MAX_REMEMBERED_EXPLOSIONS = 32
 # the damage lands inside it; the window is short so it takes little from a running skill).
 GRENADE_WINDOW_S = 12.0
 EXPLOSION_WINDOW_S = 3.0
+# How long a blast that really happened outranks the soft skill window. The blast's own
+# damage lands within a few frames; longer than that and it steals the next burst of an
+# action skill, which is what a 3 s window did to the Exo Soldier's cannons on
+# 2026-09-22 at 19:13:15 (two cannon hits read as the UAV grenade).
+BLAST_WINDOW_S = 0.6
 MELEE_WINDOW_S = 1.0
 # When the swing trick ends, the melee window closes a few frames later: skill hits landing
 # in the same second as a knife swing are otherwise indistinguishable from the knife's hit.
@@ -226,7 +231,7 @@ class DamagePoller:
             self._explosions.popleft()
         if source.kind != SOURCE_WEAPON:
             self._grenade_until = max(self._grenade_until, now + EXPLOSION_WINDOW_S)
-            self._blast_until = max(self._blast_until, now + EXPLOSION_WINDOW_S)
+            self._blast_until = max(self._blast_until, now + BLAST_WINDOW_S)
             self._last_grenade_action = now
         for _deadline, event in self._pending:
             if event["src"] == OTHER_SOURCE.kind and abs(now - float(event["t"])) <= EXPLOSION_MATCH_WINDOW_S:
