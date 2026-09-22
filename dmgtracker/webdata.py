@@ -16,9 +16,10 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+from .attribution import SOURCE_GRENADE, SOURCE_WEAPON
 from .report import SESSION_GLOB, encounters_for, read_session, weapon_records_for
 from .stats import Encounter
-from .weaponstats import WeaponStore
+from .weaponstats import WeaponRecord, WeaponStore
 
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGE_SIZE = 1000
@@ -26,7 +27,7 @@ TOP_WEAPONS = 10
 TOP_TARGETS = 3
 CACHED_SESSIONS = 4
 # The event fields a search term is matched against, case-insensitively.
-SEARCH_FIELDS = ("weapon", "target", "src", "dtype", "elem", "kind", "character")
+SEARCH_FIELDS = ("weapon", "target", "src", "dtype", "elem", "kind", "character", "why")
 RANKINGS = ("dps", "peak", "damage")
 
 
@@ -144,37 +145,53 @@ def _matches(event: dict[str, Any], needle: str) -> bool:
 
 
 def weapons_payload(store: WeaponStore | None, character: dict[str, str] | None, by: str, names: dict[str, str] | None = None) -> dict[str, Any]:
-    """The character's lifetime weapon records, ranked, plus the top ten and the peaks of the
-    non-weapon sources; `names` (item id -> item name) labels the guns whose name is known."""
+    """The character's lifetime records, ranked: the guns (with the top ten of them), the
+    grenades, and the peaks of the non-weapon sources; `names` (item id -> item name)
+    labels the items whose name is known."""
     if by not in RANKINGS:
         by = RANKINGS[0]
     names = names or {}
     weapons: list[dict[str, Any]] = []
+    grenades: list[dict[str, Any]] = []
     sources: dict[str, float] = {}
     if store is not None:
-        for position, record in enumerate(store.ranking(by), start=1):
-            weapons.append({
-                "rank": position,
-                "item_id": record.item_id,
-                "label": record.label,
-                "name": names.get(record.item_id, ""),
-                "body": record.body,
-                "damage": record.damage,
-                "hits": record.hits,
-                "direct_hits": record.direct_hits,
-                "crits": record.crits,
-                "kills": record.kills,
-                "held_seconds": record.held_seconds,
-                "dps_in_hand": record.dps_in_hand(),
-                "average_hit": record.average_hit(),
-                "crit_share": record.crit_rate(),
-                "peak_dps": record.peak_dps,
-                "peak_dps_at": record.peak_dps_at,
-                "first_seen": record.first_seen,
-                "last_seen": record.last_seen,
-            })
+        weapons = _ranked_records(store, by, SOURCE_WEAPON, names)
+        grenades = _ranked_records(store, by, SOURCE_GRENADE, names)
         sources = store.source_peaks()
-    return {"character": character, "by": by, "top": weapons[:TOP_WEAPONS], "weapons": weapons, "sources": sources}
+    return {"character": character, "by": by, "top": weapons[:TOP_WEAPONS], "weapons": weapons, "grenades": grenades, "sources": sources}
+
+
+def _ranked_records(store: WeaponStore, by: str, kind: str, names: dict[str, str]) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    for position, record in enumerate(store.ranking(by, kind), start=1):
+        ranked.append(_record_json(position, record, names.get(record.item_id, "")))
+    return ranked
+
+
+def _record_json(position: int, record: WeaponRecord, name: str) -> dict[str, Any]:
+    return {
+        "rank": position,
+        "kind": record.kind,
+        "item_id": record.item_id,
+        "label": record.label,
+        "name": name,
+        "body": record.body,
+        "damage": record.damage,
+        "hits": record.hits,
+        "direct_hits": record.direct_hits,
+        "crits": record.crits,
+        "kills": record.kills,
+        "held_seconds": record.held_seconds,
+        "dps_in_hand": record.dps_in_hand(),
+        "average_hit": record.average_hit(),
+        "crit_share": record.crit_rate(),
+        "peak_dps": record.peak_dps,
+        "peak_dps_at": record.peak_dps_at,
+        "first_seen": record.first_seen,
+        "last_seen": record.last_seen,
+        "throws": record.throws,
+        "damage_per_throw": record.damage_per_throw(),
+    }
 
 
 def session_weapons_payload(session: Any, names: dict[str, str] | None = None) -> list[dict[str, Any]]:

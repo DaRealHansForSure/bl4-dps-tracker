@@ -93,6 +93,9 @@ class WebDataTests(unittest.TestCase):
         self.assertEqual([event["dmg"] for event in fire["events"]], [900.0])
         by_character = hits_page(session, page=1, size=100, query="darksiren")
         self.assertEqual(by_character["total"], 1)
+        session.sections[0].events[0]["why"] = "burning"
+        by_rule = hits_page(session, page=1, size=100, query="burning")
+        self.assertEqual(by_rule["total"], 1, "the hit lists can be filtered by the rule that claimed a hit")
 
     def test_hits_of_one_frame_keep_their_write_order_when_reversed(self) -> None:
         path = self.log_dir / "session-20260920-130000.jsonl"
@@ -107,9 +110,14 @@ class WebDataTests(unittest.TestCase):
             store.add_event(hit(1.0, 100.0 * (index + 1), weapon=f"Gun {index}", wid=f"seed{index}"))
             store.add_held(f"seed{index}", f"Gun {index}", "", 10.0, 2.0)
         store.note_source_peak("skill", 1234.0, 60.0, 3.0)
-        payload = weapons_payload(store, ROGUE, "damage", {"seed11": "Nightmarish Rangefinder"})
+        store.add_event(hit(1.0, 5000.0, weapon="Grenade", wid="nade", src="grenade"))
+        store.add_throw("nade", "Grenade", 1.0)
+        payload = weapons_payload(store, ROGUE, "damage", {"seed11": "Nightmarish Rangefinder", "nade": "Cheeky Fireball"})
         self.assertEqual(payload["by"], "damage")
-        self.assertEqual(len(payload["weapons"]), 12)
+        self.assertEqual(len(payload["weapons"]), 12, "the grenade is not among the weapons")
+        self.assertEqual(len(payload["grenades"]), 1)
+        grenade = payload["grenades"][0]
+        self.assertEqual((grenade["rank"], grenade["kind"], grenade["name"], grenade["throws"], grenade["damage_per_throw"]), (1, "grenade", "Cheeky Fireball", 1, 5000.0))
         self.assertEqual(len(payload["top"]), 10)
         self.assertEqual((payload["top"][0]["label"], payload["top"][0]["name"]), ("Gun 11", "Nightmarish Rangefinder"))
         self.assertEqual(payload["top"][1]["name"], "")
@@ -119,7 +127,7 @@ class WebDataTests(unittest.TestCase):
         self.assertEqual(payload["character"], ROGUE)
         self.assertEqual(weapons_payload(store, ROGUE, "nonsense")["by"], "dps")
         empty = weapons_payload(None, None, "dps")
-        self.assertEqual((empty["weapons"], empty["top"], empty["sources"]), ([], [], {}))
+        self.assertEqual((empty["weapons"], empty["top"], empty["grenades"], empty["sources"]), ([], [], [], {}))
 
     def test_session_weapons_payload(self) -> None:
         weapons = session_weapons_payload(read_session(self.new))

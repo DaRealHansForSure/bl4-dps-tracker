@@ -9,6 +9,10 @@ second is not a peak. The non-weapon sources (skill, grenade, melee) get the sam
 Files of schema 2 held peaks of the DPS in hand, a different quantity; loading one keeps
 the records and drops those peaks.
 
+The grenades get records of their own (kind "grenade") since their hits carry the equipped
+grenade's item id: the same numbers, "in hand" meaning equipped during fights, plus the
+number of throws for the damage per throw. Files of schema 3 have weapon records only.
+
 Records are keyed by the item id from itemidentity.py (the seed bytes of the item, stable
 across launches). Files written by schema 1 were keyed by the instance id, which shifted
 between launches; such a file is set aside on load and the store starts empty.
@@ -26,12 +30,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .attribution import GRENADE_SOURCE, MELEE_SOURCE, SKILL_SOURCE
+from .attribution import GRENADE_SOURCE, MELEE_SOURCE, SKILL_SOURCE, SOURCE_GRENADE, SOURCE_WEAPON
 from .formatting import format_number, format_share
 from .itemidentity import short_item_id
 
-STORE_SCHEMA = 3
+STORE_SCHEMA = 4
 # Schema 2 records are the same apart from their peaks, which measured the DPS in hand.
+# Schema 3 records have no kind (every record is a weapon) and no throws.
 FIRST_SCHEMA_WITH_WINDOW_PEAKS = 3
 OLDEST_READABLE_SCHEMA = 2
 DEFAULT_SAVE_INTERVAL_S = 30.0
@@ -39,7 +44,9 @@ MIN_HELD_SECONDS_FOR_DPS = 1.0
 PEAK_MIN_WINDOW_SECONDS = 10.0
 # The non-weapon sources whose row gets a lifetime peak; "other" is unattributed damage.
 PEAK_SOURCE_KINDS = (SKILL_SOURCE.kind, GRENADE_SOURCE.kind, MELEE_SOURCE.kind)
-SOURCE_WEAPON = "weapon"
+# The sources with a record per item: the guns, and the grenade (its hits carry the
+# equipped grenade's item id). Skill and melee have no item and get a peak per kind only.
+RECORDED_KINDS = (SOURCE_WEAPON, SOURCE_GRENADE)
 KIND_HEAL = "heal"
 KIND_DOT = "dot"
 UNKNOWN_LABEL = "Unknown"
@@ -50,17 +57,22 @@ class WeaponRecord:
     item_id: str
     label: str
     body: str
+    # What the item is: a weapon, or the grenade (see RECORDED_KINDS).
+    kind: str = SOURCE_WEAPON
     damage: float = 0.0
     hits: int = 0
     # Hits that are not status ticks; only those can be crits, so the crit rate is over them.
     direct_hits: int = 0
     crits: int = 0
     kills: int = 0
+    # A gun's fighting time in hand; the grenade's fighting time equipped.
     held_seconds: float = 0.0
     first_seen: float = 0.0
     last_seen: float = 0.0
     peak_dps: float = 0.0
     peak_dps_at: float = 0.0
+    # The grenade only: how often it was thrown, for its damage per throw.
+    throws: int = 0
 
     def note_dps(self, dps: float, now: float) -> bool:
         """Remember a new peak DPS in hand; True when it is one."""
@@ -91,6 +103,12 @@ class WeaponRecord:
             return 0.0
         return self.damage / self.hits
 
+    def damage_per_throw(self) -> float:
+        """The grenade's damage over its throws, 0 for a gun or before the first throw."""
+        if self.throws == 0:
+            return 0.0
+        return self.damage / self.throws
+
     def crit_rate(self) -> float:
         """Crits per direct hit, 0 without any."""
         if self.direct_hits <= 0:
@@ -111,6 +129,8 @@ class WeaponRecord:
             item_id=str(data["item_id"]),
             label=str(data.get("label", UNKNOWN_LABEL)),
             body=str(data.get("body", "")),
+            # Records written before the grenades had records: every one is a weapon.
+            kind=str(data.get("kind", SOURCE_WEAPON)),
             damage=float(data.get("damage", 0.0)),
             hits=int(data.get("hits", 0)),
             # Records written before direct hits were counted: treat every hit as direct.
@@ -122,6 +142,7 @@ class WeaponRecord:
             last_seen=float(data.get("last_seen", 0.0)),
             peak_dps=float(data.get("peak_dps", 0.0)),
             peak_dps_at=float(data.get("peak_dps_at", 0.0)),
+            throws=int(data.get("throws", 0)),
         )
 
 
@@ -248,31 +269,44 @@ class WeaponStore:
     # ------------------------------------------------------------------ updates
 
     def add_event(self, event: dict[str, Any]) -> None:
-        if event.get("src") != SOURCE_WEAPON or event.get("kind") == KIND_HEAL:
+        """Count a hit of a gun or of the grenade under its item; the other sources have
+        no item, and healing is not damage."""
+        kind = str(event.get("src", ""))
+        if kind not in RECORDED_KINDS or event.get("kind") == KIND_HEAL:
             return
         item_id = str(event.get("wid", ""))
         if item_id == "":
             return
         with self._lock:
-            record = self._record(item_id, str(event.get("weapon", UNKNOWN_LABEL)), str(event.get("body", "")), float(event["t"]))
+            record = self._record(item_id, str(event.get("weapon", UNKNOWN_LABEL)), str(event.get("body", "")), float(event["t"]), kind)
             record.add(event)
             self._dirty = True
 
-    def add_held(self, item_id: str, label: str, body: str, seconds: float, now: float) -> None:
+    def add_held(self, item_id: str, label: str, body: str, seconds: float, now: float, kind: str = SOURCE_WEAPON) -> None:
+        """Credit fighting time: a gun's time in hand, the grenade's time equipped."""
         if item_id == "" or seconds <= 0:
             return
         with self._lock:
-            record = self._record(item_id, label, body, now)
+            record = self._record(item_id, label, body, now, kind)
             record.held_seconds += seconds
             self._dirty = True
 
-    def note_peak(self, item_id: str, label: str, body: str, dps: float, window_seconds: float, now: float) -> None:
-        """Offer a weapon row's current DPS (its window damage over the window's fighting
-        time) as a peak candidate."""
+    def add_throw(self, item_id: str, label: str, now: float) -> None:
+        """Count one throw of the grenade, for its damage per throw."""
+        if item_id == "":
+            return
+        with self._lock:
+            record = self._record(item_id, label, "", now, SOURCE_GRENADE)
+            record.throws += 1
+            self._dirty = True
+
+    def note_peak(self, item_id: str, label: str, body: str, dps: float, window_seconds: float, now: float, kind: str = SOURCE_WEAPON) -> None:
+        """Offer a weapon's or the grenade's current DPS (its window damage over the
+        window's fighting time) as a peak candidate."""
         if item_id == "" or window_seconds < PEAK_MIN_WINDOW_SECONDS:
             return
         with self._lock:
-            record = self._record(item_id, label, body, now)
+            record = self._record(item_id, label, body, now, kind)
             if record.note_dps(dps, now):
                 self._dirty = True
 
@@ -292,10 +326,10 @@ class WeaponStore:
             peak.peak_dps_at = now
             self._dirty = True
 
-    def _record(self, item_id: str, label: str, body: str, now: float) -> WeaponRecord:
+    def _record(self, item_id: str, label: str, body: str, now: float, kind: str) -> WeaponRecord:
         record = self.records.get(item_id)
         if record is None:
-            record = WeaponRecord(item_id, label, body, first_seen=now)
+            record = WeaponRecord(item_id, label, body, kind, first_seen=now)
             self.records[item_id] = record
         # A label read too early is "Unknown"; take the real one as soon as it shows up.
         if record.label == UNKNOWN_LABEL and label != UNKNOWN_LABEL:
@@ -307,7 +341,7 @@ class WeaponStore:
     # ------------------------------------------------------------------ reading
 
     def peaks(self) -> dict[str, float]:
-        """Peak DPS in hand per weapon item id, for the table's Best DPS column."""
+        """Peak DPS per item id (guns and grenades), for the table's Best DPS column."""
         with self._lock:
             return {item_id: record.peak_dps for item_id, record in self.records.items() if record.peak_dps > 0}
 
@@ -326,10 +360,11 @@ class WeaponStore:
                 lines.append(f"    {labels[kind]:24} peak DPS {format_number(peaks[kind]):>12}")
         return lines
 
-    def ranking(self, by: str = "dps") -> list[WeaponRecord]:
-        """Records best first: by DPS in hand (default), by peak DPS, or by damage."""
+    def ranking(self, by: str = "dps", kind: str = SOURCE_WEAPON) -> list[WeaponRecord]:
+        """The records of one kind (the guns unless asked for the grenades) best first: by
+        DPS in hand (default), by peak DPS, or by damage."""
         with self._lock:
-            records = list(self.records.values())
+            records = [record for record in self.records.values() if record.kind == kind]
         if by == "peak":
             return sorted(records, key=lambda record: (record.peak_dps, record.damage), reverse=True)
         if by == "damage":
@@ -354,4 +389,25 @@ class WeaponStore:
             )
         if len(lines) == 1:
             lines.append("no weapon data yet")
+        return lines
+
+    def format_grenade_ranking(self, by: str = "dps", names: dict[str, str] | None = None) -> list[str]:
+        """Text lines for the console: the grenades in the same order, with their throws
+        and damage per throw; nothing when no grenade hit yet."""
+        names = names or {}
+        grenades = self.ranking(by, SOURCE_GRENADE)
+        if not grenades:
+            return []
+        lines = [
+            f"{'#':>2}  {'Grenade':30} {'DPS equipped':>12} {'Peak DPS':>10} {'Damage':>14} {'Throws':>6} "
+            f"{'Per throw':>10} {'Hits':>6} {'Crit %':>7} {'Kills':>6} {'Equipped':>9}"
+        ]
+        for position, record in enumerate(grenades, start=1):
+            minutes = record.held_seconds / 60.0
+            lines.append(
+                f"{position:>2}  {record.display_label(names.get(record.item_id, ''))[:22] + ' ' + short_item_id(record.item_id):30} "
+                f"{format_number(record.dps_in_hand()):>12} {format_number(record.peak_dps):>10} "
+                f"{format_number(record.damage):>14} {record.throws:>6} {format_number(record.damage_per_throw()):>10} "
+                f"{record.hits:>6} {record.crit_share():>7} {record.kills:>6} {format_number(minutes, decimals=1) + ' min':>9}"
+            )
         return lines

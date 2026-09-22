@@ -64,11 +64,16 @@
   .card h2 select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 4px; font: inherit; padding: 1px 4px; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { padding: 4px 10px; text-align: right; white-space: nowrap; }
+  th[title], tr.header td[title] { cursor: help; }
   th:first-child, td:first-child { text-align: left; }
   th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
-  .ranked th:nth-child(2), .ranked td:nth-child(2) { text-align: left; }
+  /* The picture and the name columns of the ranked lists read from the left. */
+  .ranked th:nth-child(2), .ranked td:nth-child(2), .ranked th:nth-child(3), .ranked td:nth-child(3) { text-align: left; }
   tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.04); }
-  tr.active td { color: var(--accent); font-weight: 600; }
+  /* The gun in hand: a marker at the left and a bold row, so the name keeps its rarity
+     colour (yellow text read as "legendary"). */
+  tr.active td { font-weight: 600; background: rgba(245, 197, 66, 0.07); }
+  tr.active td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
   tr.spacer td { padding: 0; height: 8px; }
   tr.header td { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
@@ -81,9 +86,79 @@
   td.crit { color: var(--accent); }
   td.kill { color: var(--good); }
   .card.chart { display: flex; flex-direction: column; }
-  canvas { flex: 1; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
+  /* The canvas must not size its own box: its drawing buffer is set from its laid-out
+     size times the device pixel ratio, and a box that followed that buffer would grow on
+     every draw. A flex basis of zero with an explicit minimum keeps the box the card's. */
+  canvas { flex: 1 1 0; height: 0; width: 100%; min-height: 200px; display: block; cursor: crosshair; }
   .muted { color: var(--muted); }
   .item-id { font-size: 0.85em; }
+  .inline-badge { vertical-align: 1px; margin-left: 2px; }
+  .badges { display: flex; gap: 4px; flex-wrap: wrap; }
+  .has-thumbnail { cursor: help; }
+  /* The item card: the gun's picture and what the inventory says about it, shown next to
+     the pointer while it rests on a weapon name. */
+  #item-card { position: fixed; display: none; width: 336px; padding: 8px; background: rgba(12, 14, 18, 0.96);
+    border: 1px solid #3a3f47; border-radius: 8px; pointer-events: none; z-index: 20; font-size: 13px; line-height: 18px; }
+  #item-card.visible { display: block; }
+  #item-card img { display: block; width: 320px; height: 160px; object-fit: contain; }
+  #item-card .name { font-weight: 600; font-size: 14px; margin-top: 6px; }
+  #item-card .code { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 4px; }
+  #item-card .line { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  #item-card .id { font-size: 12px; margin-top: 4px; }
+  /* A rarity as a badge keeps its colour as text on a tinted ground, not the gradient. */
+  .badge.rarity-badge { background: rgba(255, 255, 255, 0.08); -webkit-background-clip: border-box; background-clip: border-box; -webkit-text-fill-color: currentcolor; text-shadow: none; }
+  .badge.rarity-badge.rarity-pearl { color: #6fe8dc; background: rgba(111, 232, 220, 0.14); }
+  .badge.rarity-badge.rarity-legendary { background: rgba(255, 176, 46, 0.14); }
+  .badge.rarity-badge.rarity-epic { background: rgba(178, 92, 255, 0.14); }
+  .badge.rarity-badge.rarity-rare { background: rgba(74, 143, 255, 0.14); }
+  .badge.rarity-badge.rarity-uncommon { background: rgba(79, 211, 90, 0.14); }
+  /* Rarity colours as the game shows them; legendary glows orange, pearlescent shimmers
+     cyan to violet like the pearl frame of the weapon wheel. */
+  .rarity-common { color: #d0d3d8; }
+  .rarity-uncommon { color: #4fd35a; }
+  .rarity-rare { color: #4a8fff; }
+  .rarity-epic { color: #b25cff; }
+  .rarity-legendary { color: #ffb02e; text-shadow: 0 0 6px rgba(255, 176, 46, 0.35); }
+  /* Pearlescent: the weapon wheel's teal frame with its magenta glow. */
+  .rarity-pearl { color: #6fe8dc; background: linear-gradient(90deg, #5ce9dc 0%, #c9fbf7 40%, #ff7ad9 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 8px rgba(92, 233, 220, 0.3); }
+  .rarity-pearl .muted, .rarity-pearl .item-id, .rarity-pearl .badge { -webkit-text-fill-color: currentcolor; text-shadow: none; }
+  .badge.kind-weapon { color: #d0d3d8; }
+  .badge.kind-skill { color: #c77dff; background: rgba(199, 125, 255, 0.14); }
+  .badge.kind-grenade { color: #ff9f43; background: rgba(255, 159, 67, 0.14); }
+  .badge.kind-melee { color: #f06292; background: rgba(240, 98, 146, 0.14); }
+  .badge.kind-other { color: var(--muted); }
+  img.thumb { width: 64px; height: 32px; object-fit: contain; vertical-align: middle; display: block; }
+  td.thumb-cell { width: 68px; padding-top: 2px; padding-bottom: 2px; }
+  tr.group-header td { color: var(--muted); font-weight: 600; padding-top: 10px; }
+  /* The chart's legend: an HTML row above the canvas, each entry a switch for its line. */
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 0 6px; font-size: 12px; color: var(--muted); }
+  .legend .entry { cursor: pointer; user-select: none; white-space: nowrap; }
+  .legend .entry:hover { color: var(--text); }
+  .legend .entry.off { opacity: 0.45; text-decoration: line-through; }
+  .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 4px; margin-right: 5px; }
+  /* The manufacturer-and-type label of a gun as a badge, tinted by the gun's type. */
+  .badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 11px; line-height: 17px; font-weight: 600;
+    background: rgba(255, 255, 255, 0.08); color: var(--muted); margin-top: 2px; }
+  .badge.type-pistol { color: #9ecbff; background: rgba(158, 203, 255, 0.14); }
+  .badge.type-smg { color: #e6a7ff; background: rgba(230, 167, 255, 0.14); }
+  .badge.type-shotgun { color: #ffb37a; background: rgba(255, 179, 122, 0.14); }
+  .badge.type-assault { color: #b8f28b; background: rgba(184, 242, 139, 0.14); }
+  .badge.type-sniper { color: #7fe3ff; background: rgba(127, 227, 255, 0.14); }
+  .badge.type-heavy { color: #ff8a8a; background: rgba(255, 138, 138, 0.14); }
+  /* Elements, in the game's colours. */
+  .badge.element-corrosive { color: #8bd346; background: rgba(139, 211, 70, 0.14); }
+  .badge.element-cryo { color: #9fe6ff; background: rgba(159, 230, 255, 0.14); }
+  .badge.element-fire { color: #ff8a3d; background: rgba(255, 138, 61, 0.14); }
+  .badge.element-shock { color: #6f9dff; background: rgba(111, 157, 255, 0.16); }
+  .badge.element-radiation { color: #e8f542; background: rgba(232, 245, 66, 0.14); }
+  /* The chart's tooltip lives on the body, so the panel's edge cannot cut it off. */
+  #chart-tooltip { position: fixed; display: none; padding: 6px 8px; font-size: 12px; line-height: 16px;
+    background: rgba(20, 22, 26, 0.95); border: 1px solid #2f343d; border-radius: 6px; color: #e8e8e8;
+    pointer-events: none; z-index: 30; white-space: nowrap; }
+  #chart-tooltip.visible { display: block; }
+  #chart-tooltip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 4px; margin-right: 6px; vertical-align: 0; }
+  #chart-tooltip .footer { color: #9aa3ad; }
   .rank { color: var(--muted); }
   .top { font-size: 16px; }
   .top td:first-child { font-weight: 600; }
@@ -105,6 +180,8 @@
 </style>
 </head>
 <body>
+<div id="item-card"><img alt=""><div class="name"></div><div class="line muted"></div><div class="damage"></div><div class="id muted"></div><div class="code"></div></div>
+<div id="chart-tooltip"></div>
 <header>
   <h1>BL4 Damage Tracker</h1>
   <nav>
@@ -123,7 +200,8 @@
         <table id="live-table"><tbody></tbody></table>
       </div>
       <div class="card chart">
-        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the <span id="chart-window"></span> min window</span></h2>
+        <h2>DPS over time <span class="muted">now = the last <select id="chart-seconds"></select> s, dashed = the table's DPS; click a name to hide or show it</span></h2>
+        <div id="chart-legend" class="legend"></div>
         <canvas id="chart"></canvas>
       </div>
       <div class="card wide">
@@ -151,7 +229,7 @@
     </div>
     <div class="card">
       <table id="hits-table">
-        <thead><tr><th>Time</th><th>Character</th><th>Source</th><th>Damage</th><th>Kind</th><th>Crit</th><th>Kill</th><th>Target</th><th>Element</th><th>Type</th></tr></thead>
+        <thead><tr><th>Time</th><th>Character</th><th>Source</th><th>Damage</th><th>Kind</th><th>Crit</th><th>Kill</th><th>Target</th><th>Element</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -173,7 +251,7 @@
       <div class="card">
         <h2>Top 10</h2>
         <table id="weapons-top" class="top ranked">
-          <thead><tr><th>#</th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Damage</th><th>Crit %</th><th>Kills</th><th>In hand</th></tr></thead>
+          <thead><tr><th>#</th><th></th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Damage</th><th>Crit %</th><th>Kills</th><th>In hand</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -185,9 +263,23 @@
         </table>
       </div>
       <div class="card wide">
+        <h2>Same type, compared <span class="muted">guns of one manufacturer and type, ranked like above</span></h2>
+        <table id="weapons-types" class="ranked">
+          <thead><tr><th>#</th><th></th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Damage</th><th>Crit %</th><th>Kills</th><th>In hand</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card wide">
         <h2>All weapons of this character</h2>
         <table id="weapons-all" class="ranked">
-          <thead><tr><th>#</th><th>Weapon</th><th>Id</th><th>DPS in hand</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>In hand</th><th>First seen</th><th>Last seen</th></tr></thead>
+          <thead><tr><th>#</th><th></th><th>Weapon</th><th>DPS in hand</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>In hand</th><th>First seen</th><th>Last seen</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card wide">
+        <h2>Grenades of this character <span class="muted">every grenade that dealt damage, ranked like above</span></h2>
+        <table id="weapons-grenades" class="ranked">
+          <thead><tr><th>#</th><th></th><th>Grenade</th><th>DPS equipped</th><th>Best DPS</th><th>Best at</th><th>Damage</th><th>Throws</th><th>Per throw</th><th>Hits</th><th>Avg hit</th><th>Crit %</th><th>Kills</th><th>Equipped</th><th>First seen</th><th>Last seen</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -256,11 +348,40 @@
     return parseFloat(String(text).replace(/'/g, "")) || 0;
   }
 
+  // Why the hit went to this source: the rule the mod applied, in words. Hits recorded
+  // before 1.4 have no rule and say so.
+  const WHY_TEXT = {
+    "gun-flag": "the hit carries the gun flag, so it is the gun in hand",
+    "swap-sticky": "a sticky of the gun swapped away, detonated by the swap",
+    "no-gun-in-hand": "gun damage while no gun resolved: the gun that last hit this target",
+    "same-frame": "the elemental half of a bullet that hit this target in the same frame",
+    "explosion": "a projectile of this source exploded at that moment",
+    "explosion-late": "an explosion of this source was reported just after the hit",
+    "continued": "this source was already hitting this target, tick after tick, so the hit continues that stream",
+    "melee-window": "a knife swing was running",
+    "skill-running": "the action skill was running (from its start until it ended)",
+    "skill-window": "a skill signal had just arrived (passive skills fire these too, so it is the weakest rule)",
+    "blast-window": "the grenade had just gone off",
+    "same-stream": "the same burst was already running: the window that explained its first hits had lapsed",
+    "grenade-window": "the grenade was thrown a moment ago",
+    "status": "a status tick, credited to the last hit on this target",
+    "heal": "healing, not damage",
+    "none": "no rule matched"
+  };
+
+  function whyText(event) {
+    if (!event.why) {
+      return "";
+    }
+    return (WHY_TEXT[event.why] || event.why) + " (" + event.why + ")";
+  }
+
   function sourceLabel(event) {
     if (event.src === "weapon") {
       return itemNames[event.wid] || event.weapon || "Unknown";
     }
-    return event.weapon || event.src || "Other";
+    // The grenade's hits carry the grenade's item id since 1.3, so they read by name.
+    return (event.wid && itemNames[event.wid]) || event.weapon || event.src || "Other";
   }
 
   function targetLabel(name) {
@@ -275,6 +396,54 @@
     }
     return td;
   }
+
+  // What every column means, shown as the header's tooltip; the live table's header
+  // comes from the mod with its rows, the others are in the markup.
+  const HEADER_HELP = {
+    "Weapon": "The gun in each of the four weapon slots (its item name once read, the short id after it), then the other sources of damage. The marked row is the gun in hand.",
+    "Total": "Damage dealt in the table's window (the last 60 minutes unless set otherwise), by the clock on the wall.",
+    "DPS": "Damage per second right now: the row's hits of the last 10 seconds over the seconds in which it landed one. 40'000 in one second reads 40'000; ten seconds after the row's last hit it reads 0.",
+    "Share [%]": "The row's share of the window's damage.",
+    "Crit [%]": "Share of the row's direct hits that were critical hits (status ticks cannot crit).",
+    "Kills": "Kills credited to the row.",
+    "Best DPS": "The highest value the DPS column ever reached for this row, over every session of the character. It only rises.",
+    "Last": "Everything together, over the table's window.",
+    "Encounter": "The current fight: its damage and its damage over its duration.",
+    "Time": "The clock time of the hit.",
+    "Character": "The character that dealt the hit.",
+    "Source": "What dealt the hit: a weapon (by its item name, marked W), the grenade (by its name, marked G), or Skill, Melee, Other. Rest the pointer on a source to read why the hit went there; the search box takes those rule names too.",
+    "Damage": "The damage of the hit as the game counted it (on the weapons tab: the gun's lifetime damage).",
+    "Kind": "Direct: a hit; DoT: a tick of a status effect (burning, corrosion, ...).",
+    "Crit": "A critical hit.",
+    "Kill": "The hit killed its target.",
+    "Target": "The enemy's family, from its class name.",
+    "Element": "The element of the hit's damage: Corrosive, Cryo, Fire, Shock or Radiation, Normal for kinetic damage; \"status\" marks a status effect tick. The game's own damage type name is the badge's tooltip.",
+    "#": "Rank in the chosen order.",
+    "DPS in hand": "Lifetime damage of the gun over the fighting time it was in hand: the fair comparison between guns, reloads and pauses included.",
+    "In hand": "Fighting time with the gun in hand (a fight is open from a hit until 15 s after the last one).",
+    "Id": "The short item id: the first characters of the gun's seed, which stays the same across sessions.",
+    "Best at": "When the best DPS was set.",
+    "Hits": "Lifetime number of hits, status ticks included.",
+    "Avg hit": "Lifetime damage over the number of hits.",
+    "First seen": "The first session that saw the gun.",
+    "Last seen": "The last session that saw the gun.",
+    "Grenade": "The equipped grenade, by its item name once the inventory has been open (its hits carry its id from the first second in the world).",
+    "DPS equipped": "Lifetime damage of the grenade over the fighting time it was equipped: what it added per second of fighting, cooldowns included.",
+    "Equipped": "Fighting time with the grenade equipped (a fight is open from a hit until 15 s after the last one).",
+    "Throws": "How often the grenade was thrown.",
+    "Per throw": "Lifetime damage over the number of throws: what one throw did on average, every enemy it hit included."
+  };
+
+  function annotateHeaders() {
+    document.querySelectorAll("th").forEach(function (th) {
+      const help = HEADER_HELP[th.textContent.trim()];
+      if (help) {
+        th.title = help;
+      }
+    });
+  }
+
+  annotateHeaders();
 
   function row(cells, className) {
     const tr = document.createElement("tr");
@@ -356,10 +525,9 @@
   function handleMessage(data) {
     if (data.type === "hello") {
       character = data.character;
-      rememberNames(data.slots, data.names);
+      rememberNames(data.slots, data.names, data.gadgets);
+      elementNames = data.elements || {};
       document.getElementById("live-window").textContent = "last " + formatNumber(data.window_minutes, 0) + " min of play";
-      windowMinutes = data.window_minutes || 5;
-      document.getElementById("chart-window").textContent = formatNumber(windowMinutes, 0);
       setChartWindows(data.chart_windows || [10], data.chart_seconds || 10);
       setStatus(true, "live, " + characterText());
       renderLive(data.rows);
@@ -368,7 +536,7 @@
       (data.history || []).forEach(function (sample) { samples.push(sample); });
       drawChart();
     } else if (data.type === "table") {
-      rememberNames(data.slots, data.names);
+      rememberNames(data.slots, data.names, data.gadgets);
       renderLive(data.rows);
     } else if (data.type === "sample") {
       recordSample(data.sample);
@@ -388,11 +556,101 @@
   let slotItemIds = [];
   const itemNames = {};
 
-  function rememberNames(slots, names) {
+  let gadgetItemIds = {};
+
+  // ElementalType value -> element name, from the game's enum (the hello message);
+  // a value the enum does not name stays a number, none at all stays blank.
+  let elementNames = {};
+
+  function elementLabel(elem) {
+    if (!elem) {
+      return "";
+    }
+    return elementNames[String(elem)] || String(elem);
+  }
+
+  // Slugs from the inventory ("legendary", "radiation") read like the hit lists' names.
+  function capitalized(text) {
+    const value = String(text || "");
+    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+  }
+
+  function badge(text, className) {
+    const span = document.createElement("span");
+    span.className = "badge " + (className || "");
+    span.textContent = capitalized(text);
+    return span;
+  }
+
+  // One element per hit: the element its damage type name carries ("Radiation",
+  // "Radiation_Status"), else the one the type's enum value names, else Normal for
+  // kinetic damage; the type's own name is the badge's tooltip. The two fields do not
+  // always agree (the value is 0 on some elemental hits), and the name is the one the
+  // game shows.
+  function hitElementCell(event) {
+    const typeName = event.dtype || "";
+    let element = elementFromName(typeName) || elementLabel(event.elem) || "";
+    if (!element || element === "Normal") {
+      element = "Normal";
+    }
+    const status = /status/i.test(typeName);
+    const td = badgeCell(status ? element + " status" : element, elementClass(element));
+    if (typeName) {
+      td.title = "damage type " + typeName;
+    }
+    return td;
+  }
+
+  function elementFromName(text) {
+    const lower = String(text || "").toLowerCase();
+    const names = { corrosive: "Corrosive", cryo: "Cryo", fire: "Fire", incendiary: "Fire", shock: "Shock", radiation: "Radiation" };
+    const keys = Object.keys(names);
+    for (let index = 0; index < keys.length; index++) {
+      if (lower.indexOf(keys[index]) >= 0) {
+        return names[keys[index]];
+      }
+    }
+    return "";
+  }
+
+  // A cell holding one badge (blank when there is nothing to say), tinted by a class.
+  function badgeCell(text, className) {
+    const td = cell("");
+    if (text) {
+      td.appendChild(badge(text, className));
+    }
+    return td;
+  }
+
+  // The element's tint from a name that mentions it ("Corrosive", "Corrosive_Status").
+  function elementClass(text) {
+    const lower = String(text || "").toLowerCase();
+    const elements = ["corrosive", "cryo", "fire", "incendiary", "shock", "radiation"];
+    for (let index = 0; index < elements.length; index++) {
+      if (lower.indexOf(elements[index]) >= 0) {
+        return "element-" + (elements[index] === "incendiary" ? "fire" : elements[index]);
+      }
+    }
+    return "";
+  }
+
+  function rememberNames(slots, names, gadgets) {
     if (Array.isArray(slots)) {
       slotItemIds = slots;
     }
-    Object.keys(names || {}).forEach(function (itemId) { itemNames[itemId] = names[itemId]; });
+    if (gadgets) {
+      gadgetItemIds = gadgets;
+    }
+    let unknown = false;
+    Object.keys(names || {}).forEach(function (itemId) {
+      itemNames[itemId] = names[itemId];
+      if (!itemInfos[itemId]) {
+        unknown = true;
+      }
+    });
+    if (unknown) {
+      loadItems();
+    }
   }
 
   function shortId(itemId) {
@@ -401,25 +659,201 @@
 
   // The label cell of a weapon slot row: item name plus id when the name is known.
   function weaponCell(label, itemId) {
-    const td = cell(itemNames[itemId] || label);
+    const td = cell("");
+    td.appendChild(nameSpan(itemNames[itemId] || label, itemId));
     if (itemId) {
-      const id = document.createElement("span");
-      id.className = "muted item-id";
-      id.textContent = " " + shortId(itemId);
-      td.appendChild(id);
+      const element = elementBadge(itemId);
+      if (element) {
+        td.appendChild(document.createTextNode(" "));
+        td.appendChild(element);
+      }
+      showItemCardOnHover(td, itemId);
     }
     return td;
   }
 
+  // The item's name in its rarity colour, on a span of its own: the pearl gradient clips
+  // the backgrounds of the element it sits on, and a cell has backgrounds of its own.
+  function nameSpan(text, itemId) {
+    const span = document.createElement("span");
+    span.className = "item-name " + (itemId ? rarityClass(itemId) : "");
+    span.textContent = text;
+    return span;
+  }
+
+  // W or G after a named source: what kind of source dealt the hit.
+  const KIND_LETTERS = { weapon: "W", skill: "S", grenade: "G", melee: "M", other: "O" };
+
+  function kindBadge(kind) {
+    const letter = KIND_LETTERS[kind] || "O";
+    const span = badge(letter, "kind-" + (KIND_LETTERS[kind] ? kind : "other"));
+    span.title = capitalized(KIND_LETTERS[kind] ? kind : "other");
+    return span;
+  }
+
+  // The gun's element as a badge beside its name, nothing for a kinetic gun; the id is
+  // on the item card.
+  // The inventory calls kinetic damage "noelement" on a card and "impact" in its list.
+  function isKinetic(element) {
+    return !element || element === "noelement" || element === "impact";
+  }
+
+  function elementBadge(itemId) {
+    const info = itemInfos[itemId];
+    if (!info || isKinetic(info.element)) {
+      return null;
+    }
+    const span = badge(info.element, elementClass(info.element));
+    span.classList.add("inline-badge");
+    return span;
+  }
+
+  // What the inventory said about each named item (rarity, element, the card's damage
+  // figure, the item code, whether a picture exists), by item id, from /api/items. Loaded
+  // once and again whenever the table brings a name the page has not seen.
+  const itemInfos = {};
+  let itemsLoading = null;
+  const itemsReady = loadItems();
+
+  // Every entry of the table names its item for every list on the page, not only the
+  // guns of the character playing now: a session's hits may be another character's.
+  function loadItems() {
+    if (itemsLoading) {
+      return itemsLoading;
+    }
+    itemsLoading = fetch("/api/items").then(function (r) { return r.json(); }).then(function (data) {
+      Object.keys(data.items || {}).forEach(function (itemId) {
+        itemInfos[itemId] = data.items[itemId];
+        if (!itemNames[itemId] && data.items[itemId].name) {
+          itemNames[itemId] = data.items[itemId].name;
+        }
+      });
+      itemsLoading = null;
+      // Details that arrived after the table was drawn (rarity colours, element badges)
+      // go onto the rows now, not with the next change of the numbers.
+      if (lastLiveRows) {
+        renderLive(lastLiveRows);
+      }
+    }).catch(function () { itemsLoading = null; });
+    return itemsLoading;
+  }
+
+  // A picture's file name: the item id with everything a file name may not hold replaced,
+  // the same rule as the mod's (a co-op session's ids look like "instance:206").
+  function thumbnailKey(itemId) {
+    return String(itemId).toLowerCase().replace(/[^0-9a-z-]/g, "-");
+  }
+
+  function rarityClass(itemId) {
+    const info = itemInfos[itemId];
+    return info && info.rarity ? "rarity-" + info.rarity : "";
+  }
+
+  // The item card (the gun's picture, exported by the mod as /thumbnails/<item id>.png,
+  // and what the inventory said about the gun) follows the pointer while it rests on a
+  // weapon name; a gun without a picture yet gets a placeholder saying so.
+  const itemCard = document.getElementById("item-card");
+  const itemCardImage = itemCard.querySelector("img");
+  const ITEM_CARD_OFFSET = 18;
+  let itemCardItemId = "";
+
+  function showItemCardOnHover(element, itemId) {
+    element.classList.add("has-thumbnail");
+    element.addEventListener("mouseenter", function (event) {
+      itemCardItemId = itemId;
+      fillItemCard(itemId);
+      itemCardImage.src = "/thumbnails/" + thumbnailKey(itemId) + ".png";
+      itemCard.classList.add("visible");
+      placeItemCard(event);
+    });
+    element.addEventListener("mousemove", placeItemCard);
+    element.addEventListener("mouseleave", hideItemCard);
+  }
+
+  function fillItemCard(itemId) {
+    const info = itemInfos[itemId] || {};
+    const name = itemCard.querySelector(".name");
+    name.textContent = itemNames[itemId] || info.name || info.label || shortId(itemId);
+    name.className = "name " + (info.rarity ? "rarity-" + info.rarity : "");
+    const line = itemCard.querySelector(".line");
+    line.textContent = "";
+    // Type, rarity and element as badges, tinted like everywhere else on the page; a gun
+    // without an element is "Normal", as the hit lists call kinetic damage.
+    if (info.label) {
+      line.appendChild(badge(info.label, typeClass(info.label)));
+    }
+    if (info.rarity) {
+      line.appendChild(badge(info.rarity, "rarity-badge rarity-" + info.rarity));
+    }
+    if (info.element) {
+      const none = isKinetic(info.element);
+      line.appendChild(badge(none ? "Normal" : info.element, none ? "" : elementClass(info.element)));
+    }
+    itemCard.querySelector(".damage").textContent = info.damage ? "Card damage " + info.damage : "";
+    itemCard.querySelector(".id").textContent = "Id " + shortId(itemId);
+    itemCard.querySelector(".code").textContent = info.serial || "";
+  }
+
+  itemCardImage.addEventListener("error", function () {
+    // No picture on disk yet: say so instead of showing nothing. The placeholder is an
+    // inline SVG, so it cannot fail to load itself.
+    if (itemCardItemId && itemCardImage.src.indexOf("data:") !== 0) {
+      itemCardImage.src = placeholderThumbnail(itemCardItemId);
+    }
+  });
+
+  function placeholderThumbnail(itemId) {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160">' +
+      '<rect width="320" height="160" rx="6" fill="#14171c"/>' +
+      '<text x="160" y="74" text-anchor="middle" fill="#8a929c" font-family="Segoe UI, Arial, sans-serif" font-size="16">Thumbnail not found</text>' +
+      '<text x="160" y="98" text-anchor="middle" fill="#5c636b" font-family="Segoe UI, Arial, sans-serif" font-size="12">' + shortId(itemId) + ' - exported while a game menu is open</text>' +
+      '</svg>';
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  }
+
+  function placeItemCard(event) {
+    const width = itemCard.offsetWidth || 336;
+    const height = itemCard.offsetHeight || 260;
+    let x = event.clientX + ITEM_CARD_OFFSET;
+    let y = event.clientY + ITEM_CARD_OFFSET;
+    if (x + width > window.innerWidth) {
+      x = event.clientX - width - ITEM_CARD_OFFSET;
+    }
+    if (y + height > window.innerHeight) {
+      y = event.clientY - height - ITEM_CARD_OFFSET;
+    }
+    itemCard.style.left = Math.max(0, x) + "px";
+    itemCard.style.top = Math.max(0, y) + "px";
+  }
+
+  function hideItemCard() {
+    itemCardItemId = "";
+    itemCard.classList.remove("visible");
+  }
+
+  let lastLiveRows = null;
+
   function renderLive(rows) {
+    lastLiveRows = rows;
     // The first table after (re)connecting is a snapshot, not activity: no flash for it.
     const firstRender = liveTotals.length === 0;
     const totals = rows.map(function (r) { return parseSwiss(r.cells[1]); });
     const trs = rows.map(function (r, index) {
       const slot = index >= 1 && index <= WEAPON_SLOTS ? index - 1 : -1;
-      const itemId = slot >= 0 && r.cells[0] !== "-" ? slotItemIds[slot] : "";
+      let itemId = slot >= 0 && r.cells[0] !== "-" ? slotItemIds[slot] : "";
+      if (!itemId && slot < 0 && gadgetItemIds[r.cells[0]]) {
+        // The grenade's row carries the grenade's name once the inventory named it.
+        itemId = gadgetItemIds[r.cells[0]];
+      }
       const cells = r.cells.map(function (text, column) {
-        return column === 0 && itemId ? weaponCell(text, itemId) : cell(text);
+        const td = column === 0 && itemId ? weaponCell(text, itemId) : cell(text);
+        if (r.style === "header" || r.style === "total") {
+          const help = HEADER_HELP[text.replace(/^Last .*$/, "Last")] || HEADER_HELP[text];
+          if (help) {
+            td.title = help;
+          }
+        }
+        return td;
       });
       const grew = !firstRender && (r.style === "row" || r.style === "active") && totals[index] > (liveTotals[index] || 0);
       return row(cells, r.style + (grew ? " flash" : ""));
@@ -445,7 +879,6 @@
   // under the yellow total line, and the table's window average as a dashed line for
   // reference. A tooltip lists them for the hovered sample.
   let chartSeconds = 30;
-  let windowMinutes = 5;
   const AVERAGE_COLOR = "#9aa3ad";
   const chartSecondsSelect = document.getElementById("chart-seconds");
 
@@ -493,7 +926,7 @@
   function sourceNowOf(source) {
     return pickNow(source.now, source.dps);
   }
-  const CHART_MARGIN = { left: 8, right: 8, top: 34, bottom: 22 };
+  const CHART_MARGIN = { left: 8, right: 8, top: 14, bottom: 22 };
   const TIME_LABELS = 5;
   const LABEL_GAP = 12;
   const GRID_STEPS = 3;
@@ -572,6 +1005,10 @@
   }
 
   function drawChart() {
+    if (chart.offsetParent === null) {
+      // The Live tab is hidden: no box to draw into; the tab draws when it shows again.
+      return;
+    }
     const geometry = chartGeometry();
     const context = chart.getContext("2d");
     context.setTransform(geometry.ratio, 0, 0, geometry.ratio, 0, 0);
@@ -584,24 +1021,32 @@
       context.fillText("waiting for a fight", geometry.left, geometry.top);
       return;
     }
-    const series = chartSeries();
+    const allSeries = chartSeries();
+    renderLegend(allSeries);
+    const series = allSeries.filter(function (line) { return !hiddenLines.has(line.key); });
+    const showNow = !hiddenLines.has(NOW_KEY);
+    const showTable = !hiddenLines.has(TABLE_KEY);
     const totals = samples.map(nowOf);
     const averages = samples.map(function (sample) { return sample.dps; });
     stackSeries(series);
-    let peak = Math.max(Math.max.apply(null, totals), Math.max.apply(null, averages));
+    let peak = Math.max(showNow ? Math.max.apply(null, totals) : 0, showTable ? Math.max.apply(null, averages) : 0);
     series.forEach(function (line) { peak = Math.max(peak, line.stackPeak); });
     const max = peak || 1;
+    drawFights(context, geometry);
     drawGridLines(context, geometry, max);
     drawTimeLabels(context, geometry);
     series.forEach(function (line) { drawBand(context, geometry, line, max); });
-    context.setLineDash([4, 4]);
-    drawLine(context, geometry, averages, max, AVERAGE_COLOR, 1.5);
-    context.setLineDash([]);
-    drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
+    if (showTable) {
+      context.setLineDash([4, 4]);
+      drawLine(context, geometry, averages, max, AVERAGE_COLOR, 1.5);
+      context.setLineDash([]);
+    }
+    if (showNow) {
+      drawLine(context, geometry, totals, max, TOTAL_COLOR, 2.5);
+    }
     if (peak > 0) {
       drawValueLabels(context, geometry, max);
     }
-    drawLegend(context, geometry, series);
     if (hoverIndex >= 0 && hoverIndex < samples.length) {
       drawTooltip(context, geometry, hoverIndex, max, series);
     }
@@ -661,28 +1106,43 @@
     return (series.itemId && itemNames[series.itemId]) || series.label;
   }
 
-  function drawLegend(context, geometry, series) {
-    // One line of dots and names in the top margin; whatever does not fit is in the tooltip.
-    const entries = [{ label: "Now", color: TOTAL_COLOR }, { label: formatNumber(windowMinutes, 0) + " min", color: AVERAGE_COLOR }].concat(
-      series.map(function (line) { return { label: seriesLabel(line), color: line.color }; })
+  // The legend above the canvas: one entry per line, a click hides or shows it. The
+  // entries are rebuilt only when the set of lines changes, so a click never lands on a
+  // freshly replaced element.
+  const chartLegend = document.getElementById("chart-legend");
+  const NOW_KEY = "now";
+  const TABLE_KEY = "table";
+  const hiddenLines = new Set();
+  let legendSignature = "";
+
+  function renderLegend(series) {
+    const entries = [{ key: NOW_KEY, label: "Now", color: TOTAL_COLOR }, { key: TABLE_KEY, label: "Table", color: AVERAGE_COLOR }].concat(
+      series.map(function (line) { return { key: line.key, label: seriesLabel(line), color: line.color }; })
     );
-    context.font = "11px sans-serif";
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    const y = 10;
-    let x = geometry.left;
+    const signature = entries.map(function (entry) { return entry.key + "=" + entry.label; }).join("|");
+    if (signature === legendSignature) {
+      return;
+    }
+    legendSignature = signature;
+    chartLegend.textContent = "";
     entries.forEach(function (entry) {
-      const width = context.measureText(entry.label).width + 20;
-      if (x + width > geometry.right) {
-        return;
-      }
-      context.fillStyle = entry.color;
-      context.beginPath();
-      context.arc(x + 5, y, 4, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#9aa3ad";
-      context.fillText(entry.label, x + 13, y);
-      x += width;
+      const span = document.createElement("span");
+      span.className = "entry" + (hiddenLines.has(entry.key) ? " off" : "");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = entry.color;
+      span.appendChild(dot);
+      span.appendChild(document.createTextNode(entry.label));
+      span.addEventListener("click", function () {
+        if (hiddenLines.has(entry.key)) {
+          hiddenLines.delete(entry.key);
+        } else {
+          hiddenLines.add(entry.key);
+        }
+        span.classList.toggle("off", hiddenLines.has(entry.key));
+        drawChart();
+      });
+      chartLegend.appendChild(span);
     });
   }
 
@@ -752,6 +1212,27 @@
     });
   }
 
+  // The stretches in which a fight was on (a hit within the encounter gap), as a faint
+  // band behind everything, so a burst reads as "the fight at 00:07".
+  function drawFights(context, geometry) {
+    context.fillStyle = "rgba(245, 197, 66, 0.07)";
+    let start = -1;
+    samples.forEach(function (sample, index) {
+      const fighting = Boolean(sample.fight);
+      if (fighting && start < 0) {
+        start = index;
+      }
+      const last = index === samples.length - 1;
+      if (start >= 0 && (!fighting || last)) {
+        const end = fighting && last ? index : index - 1;
+        const x0 = sampleX(geometry, start);
+        const x1 = sampleX(geometry, Math.max(end, start));
+        context.fillRect(x0, geometry.top, Math.max(x1 - x0, 2), geometry.bottom - geometry.top);
+        start = -1;
+      }
+    });
+  }
+
   function drawTooltip(context, geometry, index, max, series) {
     const sample = samples[index];
     const x = sampleX(geometry, index);
@@ -777,52 +1258,60 @@
       context.arc(x, sampleY(geometry, entry.at, max), 4, 0, Math.PI * 2);
       context.fill();
     });
-    const header = formatTime(sample.t);
-    const footer = formatNumber(sample.total, 0) + " damage in the window";
-    context.font = "12px sans-serif";
-    let textWidth = Math.max(context.measureText(header).width, context.measureText(footer).width);
-    const minutes = formatNumber(windowMinutes, 0);
     function entryText(entry) {
-      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (" + minutes + " min: " + formatNumber(entry.average, 0) + ")";
+      return entry.label + "  " + formatNumber(entry.value, 0) + " DPS  (table: " + formatNumber(entry.average, 0) + ")";
     }
-    entries.forEach(function (entry) {
-      textWidth = Math.max(textWidth, 14 + context.measureText(entryText(entry)).width);
+    showChartTooltip(formatTime(sample.t), entries.map(function (entry) { return { color: entry.color, text: entryText(entry) }; }),
+      formatNumber(sample.total, 0) + " damage in the window");
+  }
+
+  const chartTooltip = document.getElementById("chart-tooltip");
+  const TOOLTIP_OFFSET = 14;
+  let pointer = { x: 0, y: 0 };
+
+  function showChartTooltip(header, lines, footer) {
+    chartTooltip.textContent = "";
+    const title = document.createElement("div");
+    title.textContent = header;
+    chartTooltip.appendChild(title);
+    lines.forEach(function (line) {
+      const div = document.createElement("div");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = line.color;
+      div.appendChild(dot);
+      div.appendChild(document.createTextNode(line.text));
+      chartTooltip.appendChild(div);
     });
-    const lineHeight = 16;
-    const boxWidth = textWidth + 16;
-    const boxHeight = (entries.length + 2) * lineHeight + 10;
-    let boxX = x + 12;
-    if (boxX + boxWidth > geometry.right) {
-      boxX = x - 12 - boxWidth;
+    const foot = document.createElement("div");
+    foot.className = "footer";
+    foot.textContent = footer;
+    chartTooltip.appendChild(foot);
+    chartTooltip.classList.add("visible");
+    placeChartTooltip();
+  }
+
+  function placeChartTooltip() {
+    const width = chartTooltip.offsetWidth;
+    const height = chartTooltip.offsetHeight;
+    let x = pointer.x + TOOLTIP_OFFSET;
+    let y = pointer.y + TOOLTIP_OFFSET;
+    if (x + width > window.innerWidth) {
+      x = pointer.x - width - TOOLTIP_OFFSET;
     }
-    let boxY = geometry.top + 4;
-    if (boxY + boxHeight > geometry.bottom) {
-      boxY = Math.max(0, geometry.bottom - boxHeight);
+    if (y + height > window.innerHeight) {
+      y = pointer.y - height - TOOLTIP_OFFSET;
     }
-    context.fillStyle = "rgba(20, 22, 26, 0.95)";
-    context.strokeStyle = "#2f343d";
-    context.beginPath();
-    context.rect(boxX, boxY, boxWidth, boxHeight);
-    context.fill();
-    context.stroke();
-    context.textAlign = "left";
-    context.textBaseline = "top";
-    context.fillStyle = "#e8e8e8";
-    context.fillText(header, boxX + 8, boxY + 5);
-    entries.forEach(function (entry, row) {
-      const y = boxY + 5 + (row + 1) * lineHeight;
-      context.fillStyle = entry.color;
-      context.beginPath();
-      context.arc(boxX + 12, y + 7, 4, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = "#e8e8e8";
-      context.fillText(entryText(entry), boxX + 22, y);
-    });
-    context.fillStyle = "#9aa3ad";
-    context.fillText(footer, boxX + 8, boxY + 5 + (entries.length + 1) * lineHeight);
+    chartTooltip.style.left = Math.max(0, x) + "px";
+    chartTooltip.style.top = Math.max(0, y) + "px";
+  }
+
+  function hideChartTooltip() {
+    chartTooltip.classList.remove("visible");
   }
 
   chart.addEventListener("pointermove", function (event) {
+    pointer = { x: event.clientX, y: event.clientY };
     if (samples.length < 2) {
       return;
     }
@@ -835,6 +1324,7 @@
   });
   chart.addEventListener("pointerleave", function () {
     hoverIndex = -1;
+    hideChartTooltip();
     drawChart();
   });
   window.addEventListener("resize", drawChart);
@@ -844,16 +1334,24 @@
     if (withCharacter) {
       cells.push(cell(event.character || ""));
     }
-    cells.push(cell(sourceLabel(event)));
-    cells.push(cell(formatNumber(event.dmg, 1)));
-    cells.push(cell(event.kind || ""));
-    cells.push(cell(event.crit ? "crit" : "", event.crit ? "crit" : ""));
-    cells.push(cell(event.kill ? "kill" : "", event.kill ? "kill" : ""));
-    cells.push(cell(targetLabel(event.target)));
-    cells.push(cell(event.elem || ""));
-    if (withCharacter) {
-      cells.push(cell(event.dtype || ""));
+    const source = cell("");
+    source.appendChild(nameSpan(sourceLabel(event), event.wid));
+    if (event.src === "weapon" || event.src === "grenade") {
+      // Named sources get their kind after the name; Skill, Melee and Other say it themselves.
+      source.appendChild(document.createTextNode(" "));
+      source.appendChild(kindBadge(event.src));
     }
+    source.title = whyText(event);
+    if (event.wid) {
+      showItemCardOnHover(source, event.wid);
+    }
+    cells.push(source);
+    cells.push(cell(formatNumber(event.dmg, 1)));
+    cells.push(cell(event.kind === "dot" ? "DoT" : capitalized(event.kind)));
+    cells.push(cell(event.crit ? "Crit" : "", event.crit ? "crit" : ""));
+    cells.push(cell(event.kill ? "Kill" : "", event.kill ? "kill" : ""));
+    cells.push(cell(targetLabel(event.target)));
+    cells.push(hitElementCell(event));
     return row(cells);
   }
 
@@ -914,24 +1412,26 @@
   let queryTimer = null;
 
   function loadHits() {
-    withSessions(function () {
-      const params = new URLSearchParams({
-        session: hitsSession.value,
-        page: String(hitsPage),
-        size: hitsSize.value,
-        q: hitsQuery.value
-      });
-      fetch("/api/hits?" + params.toString()).then(function (r) { return r.json(); }).then(function (data) {
-        if (data.error) {
-          document.getElementById("hits-count").textContent = data.error;
-          return;
-        }
-        hitsPage = data.page;
-        hitsPages = data.pages;
-        document.getElementById("hits-page").textContent = "page " + data.page + " / " + data.pages;
-        document.getElementById("hits-count").textContent = formatNumber(data.total, 0) + " hits";
-        fill(hitsBody, data.events.map(function (event) { return hitRow(event, true); }));
-      });
+    itemsReady.then(function () { withSessions(loadHitsPage); });
+  }
+
+  function loadHitsPage() {
+    const params = new URLSearchParams({
+      session: hitsSession.value,
+      page: String(hitsPage),
+      size: hitsSize.value,
+      q: hitsQuery.value
+    });
+    fetch("/api/hits?" + params.toString()).then(function (r) { return r.json(); }).then(function (data) {
+      if (data.error) {
+        document.getElementById("hits-count").textContent = data.error;
+        return;
+      }
+      hitsPage = data.page;
+      hitsPages = data.pages;
+      document.getElementById("hits-page").textContent = "page " + data.page + " / " + data.pages;
+      document.getElementById("hits-count").textContent = formatNumber(data.total, 0) + " hits";
+      fill(hitsBody, data.events.map(function (event) { return hitRow(event, true); }));
     });
   }
 
@@ -954,29 +1454,152 @@
   const weaponsBy = document.getElementById("weapons-by");
   const topBody = document.querySelector("#weapons-top tbody");
   const allBody = document.querySelector("#weapons-all tbody");
+  const typesBody = document.querySelector("#weapons-types tbody");
   const sourcesBody = document.querySelector("#weapons-sources tbody");
+  const grenadesBody = document.querySelector("#weapons-grenades tbody");
+  const GRENADE_COLUMNS = document.querySelectorAll("#weapons-grenades th").length;
   const SOURCE_LABELS = { skill: "Skill", grenade: "Grenade", melee: "Melee" };
 
   // Item name with the type label under it; the type label alone until the name is known.
+  // The gun's type from its manufacturer-and-type label, for the badge's tint.
+  function typeClass(label) {
+    const text = String(label || "").toLowerCase();
+    const types = ["pistol", "smg", "shotgun", "assault", "sniper", "heavy"];
+    for (let index = 0; index < types.length; index++) {
+      if (text.indexOf(types[index]) >= 0) {
+        return "type-" + types[index];
+      }
+    }
+    return "";
+  }
+
   function weaponNameCell(w) {
-    const td = cell(w.name || w.label);
-    if (w.name) {
+    return itemNameCell(w, true);
+  }
+
+  // The item's name in its rarity colour with its badges under it: the element, and the
+  // type where it tells something (in a list of grenades it does not).
+  function itemNameCell(item, withTypeBadge) {
+    const td = cell("");
+    td.appendChild(nameSpan(item.name || item.label, item.item_id));
+    if (item.name) {
       const label = document.createElement("div");
-      label.className = "muted";
-      label.textContent = w.label;
+      label.className = "badges";
+      if (withTypeBadge) {
+        label.appendChild(badge(item.label, typeClass(item.label)));
+      }
+      const element = elementBadge(item.item_id);
+      if (element) {
+        label.appendChild(element);
+      }
       td.appendChild(label);
+    }
+    if (item.item_id) {
+      showItemCardOnHover(td, item.item_id);
     }
     return td;
   }
 
+  // A small picture of the gun in the weapon lists; nothing when there is none yet.
+  function thumbnailCell(w) {
+    const td = cell("", "thumb-cell");
+    const info = itemInfos[w.item_id];
+    if (w.item_id) {
+      showItemCardOnHover(td, w.item_id);
+    }
+    if (info && info.thumbnail) {
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.loading = "lazy";
+      img.alt = "";
+      img.src = "/thumbnails/" + thumbnailKey(w.item_id) + ".png";
+      img.addEventListener("error", function () { img.remove(); });
+      td.appendChild(img);
+    }
+    return td;
+  }
+
+  // Guns of one manufacturer and type share the first four bytes of their item id (a
+  // type hash), so they can be compared with each other: one block per type with at
+  // least two guns, in the ranking's order.
+  function weaponTypeRows(weapons) {
+    const groups = {};
+    const order = [];
+    weapons.forEach(function (w) {
+      const key = String(w.item_id).slice(0, 8);
+      if (!groups[key]) {
+        groups[key] = [];
+        order.push(key);
+      }
+      groups[key].push(w);
+    });
+    const rows = [];
+    order.forEach(function (key) {
+      const members = groups[key];
+      if (members.length < 2) {
+        return;
+      }
+      const header = row([cell(""), cell(""), cell(members[0].label + "  (" + members.length + ")"), cell(""), cell(""), cell(""), cell(""), cell(""), cell("")], "group-header");
+      rows.push(header);
+      members.forEach(function (w, index) {
+        rows.push(row([
+          cell(String(index + 1), "rank"),
+          thumbnailCell(w),
+          weaponNameCell(w),
+          cell(formatNumber(w.dps_in_hand, 0)),
+          cell(formatNumber(w.peak_dps, 0)),
+          cell(formatNumber(w.damage, 0)),
+          cell(formatNumber(100 * w.crit_share, 1)),
+          cell(formatNumber(w.kills, 0)),
+          cell(formatDuration(w.held_seconds))
+        ]));
+      });
+    });
+    if (rows.length === 0) {
+      rows.push(row([cell(""), cell(""), cell("no two guns of one type yet", "muted"), cell(""), cell(""), cell(""), cell(""), cell(""), cell("")]));
+    }
+    return rows;
+  }
+
+  // The grenades' rows, one per grenade that dealt damage: the guns' numbers, "in hand"
+  // being equipped time, plus the throws and the damage per throw.
+  function grenadeRows(grenades) {
+    if (grenades.length === 0) {
+      const note = cell("no grenade damage yet", "muted");
+      note.colSpan = GRENADE_COLUMNS;
+      return [row([note])];
+    }
+    return grenades.map(function (g) {
+      return row([
+        cell(String(g.rank), "rank"),
+        thumbnailCell(g),
+        itemNameCell(g, false),
+        cell(formatNumber(g.dps_in_hand, 0)),
+        cell(formatNumber(g.peak_dps, 0)),
+        cell(formatDateTime(g.peak_dps_at)),
+        cell(formatNumber(g.damage, 0)),
+        cell(formatNumber(g.throws, 0)),
+        cell(formatNumber(g.damage_per_throw, 0)),
+        cell(formatNumber(g.hits, 0)),
+        cell(formatNumber(g.average_hit, 0)),
+        cell(formatNumber(100 * g.crit_share, 1)),
+        cell(formatNumber(g.kills, 0)),
+        cell(formatDuration(g.held_seconds)),
+        cell(formatDateTime(g.first_seen)),
+        cell(formatDateTime(g.last_seen))
+      ]);
+    });
+  }
+
   function loadWeapons() {
-    fetch("/api/weapons?by=" + encodeURIComponent(weaponsBy.value)).then(function (r) { return r.json(); }).then(function (data) {
+    loadItems().then(function () { return fetch("/api/weapons?by=" + encodeURIComponent(weaponsBy.value)); }).then(function (r) { return r.json(); }).then(function (data) {
       const who = data.character ? data.character.name + " (" + data.character.class + ")" : "no character loaded";
       document.getElementById("weapons-character").textContent = who;
-      data.weapons.forEach(function (w) { if (w.name) { itemNames[w.item_id] = w.name; } });
+      data.weapons.concat(data.grenades || []).forEach(function (w) { if (w.name) { itemNames[w.item_id] = w.name; } });
       fill(topBody, data.top.map(function (w) {
         return row([
           cell(String(w.rank), "rank"),
+          thumbnailCell(w),
           weaponNameCell(w),
           cell(formatNumber(w.dps_in_hand, 0)),
           cell(formatNumber(w.peak_dps, 0)),
@@ -986,11 +1609,12 @@
           cell(formatDuration(w.held_seconds))
         ]);
       }));
+      fill(typesBody, weaponTypeRows(data.weapons));
       fill(allBody, data.weapons.map(function (w) {
         return row([
           cell(String(w.rank), "rank"),
+          thumbnailCell(w),
           weaponNameCell(w),
-          cell(shortId(w.item_id), "muted"),
           cell(formatNumber(w.dps_in_hand, 0)),
           cell(formatNumber(w.peak_dps, 0)),
           cell(formatDateTime(w.peak_dps_at)),
@@ -1008,6 +1632,7 @@
         const peak = data.sources[kind];
         return row([cell(SOURCE_LABELS[kind]), cell(peak ? formatNumber(peak, 0) : "")]);
       }));
+      fill(grenadesBody, grenadeRows(data.grenades || []));
     });
   }
 

@@ -14,6 +14,7 @@ import os
 import time
 import webbrowser
 from pathlib import Path
+from dataclasses import asdict
 from typing import Any
 
 import unrealsdk
@@ -22,21 +23,22 @@ from unrealsdk import logging
 from unrealsdk.hooks import Type
 from unrealsdk.unreal import BoundFunction, UObject, WrappedStruct
 
-from .attribution import SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
+from .attribution import GRENADE_LABEL, SOURCE_GRENADE, SOURCE_MELEE, UNKNOWN_SOURCE, WEAPON_CLASS_NAME, DamageSource, WeaponResolver
 from .character import CharacterIdentity, read_identity
 from .dashboard import DEFAULT_CHART_SECONDS, Dashboard, DashboardSources
 from .dashboard import DEFAULT_HOST as DEFAULT_WEB_HOST
 from .formatting import format_number
 from .itemidentity import ItemIdentityReader, seed_of, short_item_id
-from .itemnames import ItemNameReader, layout_for_build
-from .itemnamestore import ITEM_NAMES_FILE, ItemNameStore
+from .itemnames import ItemCard, ItemNameReader, layout_for_build
+from .itemnamestore import ITEM_NAMES_FILE, ItemInfo, ItemNameStore
+from .thumbnails import THUMBNAILS_DIR_NAME, convert_exr_to_png, thumbnail_path
 from .logwriter import SessionLog
 from .poller import DamagePoller
 from .readout import Readout, ReadoutLayout
 from .report import format_report, gap_for, read_session
-from .stats import EncounterTracker, RollingStats, kind_damage, source_key
+from .stats import DamageRate, EncounterTracker, RollingStats, source_key
 from .table import PeakDps, build_rows
-from .weaponstats import PEAK_SOURCE_KINDS, WeaponStore
+from .weaponstats import PEAK_SOURCE_KINDS, RECORDED_KINDS, WeaponStore
 
 LOG_PREFIX = "[dmgtracker]"
 HOOK_ID = "dmgtracker"
@@ -94,7 +96,10 @@ DEFAULT_BEST_COLUMN_WIDTH = 170.0
 FIXED_COLUMN_COUNT = 3
 SHARE_COLUMN_INDEX = 3
 DEFAULT_READOUT_BACKGROUND_ALPHA = 0.6
-DEFAULT_READOUT_WINDOW_MINUTES = 5.0
+DEFAULT_READOUT_WINDOW_MINUTES = 60.0
+# The DPS column is damage per second right now: a row's hits of the last so many seconds
+# over the seconds in which it landed one. Totals stay over the window.
+DEFAULT_READOUT_DPS_SECONDS = 10.0
 READOUT_REFRESH_INTERVAL_S = 0.25
 EQUIPMENT_REFRESH_INTERVAL_S = 1.0
 # How long an equipped gun may stay without an item name before one warning is logged;
@@ -103,6 +108,16 @@ ITEM_NAMES_GRACE_S = 120.0
 # Item names are read only once the player has been in play this long: the UI builds its
 # models a moment after the world is up, and a scan during a load finds nothing.
 ITEM_NAMES_SETTLE_S = 3.0
+# Thumbnails: the card's texture is exported with the engine's own function, which flushes
+# the renderer (10 ms), so that happens only while a menu with the cursor is open, one
+# picture per refresh; the EXR it writes is turned into a PNG on the writer thread.
+RENDER_TARGET_PREFIX = "TextureRenderTarget2D'"
+# The game's enum behind DamageType.ElementalType (0 none, 1 Corrosive, 2 Cryo, 3 Fire,
+# 4 Shock, 5 Radiation in build 4845623); the hit lists show the names.
+ELEMENT_ENUM = "EOakElementalType"
+RENDER_TARGET_CLASS = "TextureRenderTarget2D"
+RENDERING_LIBRARY = "KismetRenderingLibrary"
+THUMBNAIL_ERRORS_TO_LOG = 3
 BUILD_VERSION_LIBRARY = "KismetSystemLibrary"
 # A held-time sample longer than this means the game was paused or loading, not playing.
 MAX_HELD_SAMPLE_S = 1.0
@@ -161,6 +176,7 @@ readout_column_gap = HiddenOption("readout_column_gap", DEFAULT_READOUT_COLUMN_G
 readout_column_widths = HiddenOption("readout_column_widths", DEFAULT_READOUT_COLUMN_WIDTHS)
 readout_background_alpha = HiddenOption("readout_background_alpha", DEFAULT_READOUT_BACKGROUND_ALPHA)
 readout_window_minutes = HiddenOption("readout_window_minutes", DEFAULT_READOUT_WINDOW_MINUTES)
+readout_dps_seconds = HiddenOption("readout_dps_seconds", DEFAULT_READOUT_DPS_SECONDS)
 readout_show_encounter_row = HiddenOption("readout_show_encounter_row", False)
 readout_show_best_column = HiddenOption("readout_show_best_column", True)
 readout_show_share_column = HiddenOption("readout_show_share_column", False)
@@ -183,6 +199,22 @@ identity_reader = ItemIdentityReader()
 resolver = WeaponResolver(identity_reader.item_id)
 name_reader: ItemNameReader | None = None
 name_store: ItemNameStore | None = None
+_thumbnails_dir: Path | None = None
+# item id -> render target path of the guns whose picture is still to be exported, the
+# ids already tried this session, and the exported files waiting to become PNGs.
+_thumbnail_exports: dict[str, tuple[str, str]] = {}
+_thumbnails_tried: set[str] = set()
+_thumbnail_conversions: list[tuple[str, Path, Path]] = []
+_thumbnail_errors = 0
+_element_names_cache: dict[int, str] | None = None
+# Whether a menu with the cursor has been open this session: the inventory list, which
+# alone names the gadgets, exists only from the first inventory screen on.
+_menu_seen = False
+# Whether the cursor is shown right now, to notice a menu opening or closing.
+_cursor_shown = False
+# When the game stopped being in play (a menu, a loading screen, a tunnel), 0 in play:
+# nothing ticks meanwhile, and what was paused is moved past the pause on the way back.
+_paused_since = 0.0
 poller: DamagePoller | None = None
 dashboard: Dashboard | None = None
 session_log: SessionLog | None = None
@@ -201,12 +233,22 @@ _last_equipment_refresh = 0.0
 _last_held_sample = 0.0
 _transition_hidden = False
 _equipped_cache: list = []
+# Row label -> item id of the equipped gadgets ("Grenade" -> the grenade's id), so the
+# dashboard can name those rows too.
+_gadget_ids: dict[str, str] = {}
 _item_names_unavailable_since = 0.0
 _item_names_reported = False
+# Whether the "no stable item id" line has been said this session (a co-op client).
+_identity_missing_reported = False
+# How many players the last check found, so the line is said only when it changes.
+_players_seen = -1
+# Names for a session whose items have no stable id (a co-op client), by the id that only
+# lasts this launch. They are never written to the shared table, which is keyed by item.
+_session_infos: dict[str, ItemInfo] = {}
 _item_names_asked = False
 _in_play_since = 0.0
-# The window's clock: wall time since the mod was enabled, counted while the table refresh
-# runs (with a controller in the world). It does not stop for menus, pauses or fights.
+# The window's clock: the seconds the game was in play since the mod was enabled. It stops
+# in menus, pauses, loading screens and tunnels, never for a fight ending.
 # Clocks: intervals and this play clock run on time.monotonic(), which cannot jump; event
 # timestamps and everything persisted use time.time(), which is comparable across sessions.
 _play_clock = 0.0
@@ -315,8 +357,11 @@ def _on_controller_changed(controller: UObject | None) -> None:
 def _prepare_item_names() -> None:
     """Pick the UI model layouts for this game build. An unknown build gets the latest
     layouts and one warning; the content validation guards every read either way."""
-    global name_reader, _item_names_unavailable_since
+    global name_reader, _item_names_unavailable_since, _identity_missing_reported, _players_seen
     _item_names_unavailable_since = 0.0
+    _identity_missing_reported = False
+    _players_seen = -1
+    _session_infos.clear()
     build = ""
     try:
         build = str(unrealsdk.find_class(BUILD_VERSION_LIBRARY).ClassDefaultObject.GetBuildVersion())
@@ -346,22 +391,34 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     # The reader pairs the UI's item cards with the guns by slot order, so it gets every
     # equipped gun's seed (None where a gun only has the fallback id), named or not.
     slot_seeds = [seed_of(weapon.item_id) for weapon in equipped]
-    unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and not name_store.name_for(weapon.item_id)]
-    if not unnamed:
+    _report_missing_identity(equipped, slot_seeds)
+    if equipped and all(seed is None for seed in slot_seeds):
+        _learn_names_by_slot(equipped, wall_now)
+        return
+    # A gun without a name, or one named before the table kept the card's details.
+    unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _needs_item_info(weapon.item_id)]
+    unpictured = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _thumbnail_wanted(weapon.item_id)]
+    if not unnamed and not unpictured:
         _item_names_unavailable_since = 0.0
         return
     if not _item_names_asked:
         _item_names_asked = True
-        logging.info(f"{LOG_PREFIX} item names: in play, asking for {len(unnamed)} gun(s) without a name")
+        logging.info(f"{LOG_PREFIX} item names: in play, asking for {len(unnamed)} gun(s) without a name, {len(unpictured)} without a picture")
     try:
         names = name_reader.names_for(slot_seeds)
     except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
         name_reader.last_error = f"{type(ex).__name__}: {ex}"
         names = {}
     for weapon in unnamed:
-        name = names.get(seed_of(weapon.item_id) or b"")
-        if name and name_store.set_name(weapon.item_id, name, weapon.label, wall_now):
+        seed = seed_of(weapon.item_id) or b""
+        name = names.get(seed)
+        if name and name_store.set_info(weapon.item_id, _item_info(name, weapon.label, name_reader.card_for(seed), wall_now)):
             _say(f"{weapon.label} {short_item_id(weapon.item_id)} is {name}")
+    unnamed = [weapon for weapon in unnamed if not name_store.name_for(weapon.item_id)]
+    for weapon in unpictured:
+        _note_thumbnail(weapon, names)
+    if not unnamed:
+        return
     if names:
         _item_names_unavailable_since = 0.0
     elif _item_names_unavailable_since == 0.0:
@@ -371,15 +428,221 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
         logging.warning(f"{LOG_PREFIX} item names unavailable ({name_reader.last_error or 'no UI model found'}); guns keep their type labels")
 
 
+def _learn_names_by_slot(equipped: list[DamageSource], wall_now: float) -> None:
+    """Name the guns of a session without item ids (a co-op client, where the identity is
+    not replicated). The UI's item cards still describe the equipped guns in slot order, so
+    the slot is the key. The names hang on ids that last one launch, so they stay in memory
+    and never reach the shared table."""
+    if name_reader is None:
+        return
+    try:
+        cards = name_reader.cards_by_slot(len(equipped))
+    except Exception as ex:  # noqa: BLE001 - a failed read costs names, never the game
+        name_reader.last_error = f"{type(ex).__name__}: {ex}"
+        return
+    for index, weapon in enumerate(equipped):
+        card = cards.get(index)
+        if card is None or not card.name:
+            continue
+        known = _session_infos.get(weapon.item_id)
+        if known is not None and known.name == card.name:
+            continue
+        _session_infos[weapon.item_id] = _item_info(card.name, weapon.label, card, wall_now)
+        _say(f"{weapon.label} in slot {index + 1} is {card.name}")
+        _queue_thumbnail(weapon.item_id, weapon.label, card)
+
+
+def _known_name(item_id: str) -> str:
+    """The item's name from the shared table, or from this launch's slot names."""
+    stored = "" if name_store is None else name_store.name_for(item_id)
+    if stored:
+        return stored
+    info = _session_infos.get(item_id)
+    return "" if info is None else info.name
+
+
+def _all_known_names() -> dict[str, str]:
+    names = {} if name_store is None else dict(name_store.names())
+    names.update({item_id: info.name for item_id, info in _session_infos.items() if info.name})
+    return names
+
+
+def _all_known_infos() -> dict[str, dict[str, Any]]:
+    """Every item the dashboard may show, as plain data: the shared table plus this
+    launch's slot names."""
+    infos = {} if name_store is None else dict(name_store.infos())
+    infos.update({item_id: asdict(info) for item_id, info in _session_infos.items()})
+    return infos
+
+
+def _report_missing_identity(equipped: list[DamageSource], slot_seeds: list[bytes | None]) -> None:
+    """One line when no equipped gun has a stable id. The identity struct the ids come from
+    is empty on a co-op client (seen on 2026-09-22: every gun read as zeroes while the
+    gadgets kept their seeds), so names, pictures and the lifetime record cannot follow a
+    gun there; the damage numbers themselves are unaffected."""
+    global _identity_missing_reported
+    if _identity_missing_reported or not equipped or any(seed is not None for seed in slot_seeds):
+        return
+    _identity_missing_reported = True
+    # The same session tells the mod it is not alone: an action skill trick names no owner,
+    # so a team mate's skill would otherwise start the player's skill state and take their
+    # grenade's damage with it (2026-09-22, a co-op fight where every grenade hit read as
+    # Skill). Without the tricks the skill falls back to its window, below the grenade.
+    if poller is not None:
+        poller.trust_skill_tricks = False
+    logging.warning(
+        f"{LOG_PREFIX} the equipped guns have no stable item id (their identity reads as empty, which is what a "
+        f"co-op client sees): item names come from the inventory cards by slot, pictures and the lifetime record fall "
+        f"back to per-launch ids, and action skill tricks are ignored because they do not say whose skill they are."
+    )
+
+
+def _needs_item_info(item_id: str) -> bool:
+    """No entry yet, or one from a version that stored the name alone (no item code)."""
+    if name_store is None:
+        return False
+    info = name_store.info_for(item_id)
+    return info is None or not info.serial
+
+
+def _item_info(name: str, label: str, card: ItemCard | None, now: float) -> ItemInfo:
+    """A table entry from a name and, when the reader has it, the item's card."""
+    if card is None:
+        return ItemInfo(name, label, seen=now)
+    return ItemInfo(name, label, card.rarity, card.element, card.damage_text, card.serial, now)
+
+
+def _learn_gadget_names(pawn: Any, wall_now: float) -> None:
+    """The equipped gadgets (the grenade, say) have item ids like the guns, and the
+    inventory list names them, so they are asked for only once a menu has been open
+    this session (before that a scan for the list finds nothing)."""
+    global _gadget_ids
+    if name_reader is None or name_store is None:
+        return
+    gadgets = resolver.equipped_gadgets(pawn, identity_reader.item_id)
+    _gadget_ids = {label: item_id for item_id, label in gadgets.items()}
+    if poller is not None and GRENADE_LABEL in _gadget_ids:
+        poller.set_grenade(_gadget_ids[GRENADE_LABEL])
+    unnamed: dict[bytes, tuple[str, str]] = {}
+    for item_id, label in gadgets.items():
+        seed = seed_of(item_id)
+        if seed is not None and (not name_store.name_for(item_id) or _thumbnail_wanted(item_id)):
+            unnamed[seed] = (item_id, label)
+    if not unnamed or not _menu_seen:
+        return
+    for seed, name in name_reader.names_of_items(list(unnamed)).items():
+        item_id, label = unnamed[seed]
+        if name_store.set_info(item_id, _item_info(name, label, name_reader.card_for(seed), wall_now)):
+            _say(f"{label} {short_item_id(item_id)} is {name}")
+        if _thumbnail_wanted(item_id):
+            _queue_thumbnail(item_id, label, name_reader.card_for(seed))
+
+
+def _element_names() -> dict[int, str]:
+    """ElementalType value -> element name from the game's enum, read once; empty (and
+    one log line) when the enum is not where this build expects it."""
+    global _element_names_cache
+    if _element_names_cache is None:
+        try:
+            enum = unrealsdk.find_enum(ELEMENT_ENUM)
+            _element_names_cache = {int(member): name for name, member in enum.__members__.items() if name != "MAX" and int(member) != 0}
+        except Exception as ex:  # noqa: BLE001 - the hit lists then show the numbers
+            logging.warning(f"{LOG_PREFIX} element names unavailable ({type(ex).__name__}: {ex})")
+            _element_names_cache = {}
+    return _element_names_cache
+
+
+def _thumbnail_wanted(item_id: str) -> bool:
+    """A gun whose picture is neither on disk nor tried this session."""
+    if _thumbnails_dir is None or item_id in _thumbnails_tried or item_id in _thumbnail_exports:
+        return False
+    return not thumbnail_path(_thumbnails_dir, item_id).exists()
+
+
+def _note_thumbnail(weapon: DamageSource, names: dict[bytes, str]) -> None:
+    """Queue the export of a gun's picture once the reader knows its card."""
+    seed = seed_of(weapon.item_id)
+    if seed is None or seed not in names or name_reader is None:
+        return
+    _queue_thumbnail(weapon.item_id, weapon.label, name_reader.card_for(seed))
+
+
+def _queue_thumbnail(item_id: str, label: str, card: ItemCard | None) -> None:
+    """An item's picture is exported when its card names a render target; a type icon
+    has no picture to export, so the item is not asked again this session."""
+    texture = card.thumbnail if card is not None else ""
+    if not texture.startswith(RENDER_TARGET_PREFIX):
+        _thumbnails_tried.add(item_id)
+        return
+    _thumbnail_exports[item_id] = (texture[len(RENDER_TARGET_PREFIX):].rstrip("'"), label)
+
+
+def _note_menu(controller: UObject) -> None:
+    """A menu with the cursor opening or closing is when the UI builds or rebuilds its
+    models: a scan that found nothing before may find them now, so its rest is cut short."""
+    global _menu_seen, _cursor_shown
+    shown = bool(controller.bShowMouseCursor)
+    if shown == _cursor_shown:
+        return
+    _cursor_shown = shown
+    if shown:
+        _menu_seen = True
+    if name_reader is not None:
+        name_reader.retry_now()
+
+
+def _export_thumbnail_if_in_menu(controller: UObject) -> None:
+    """One export per refresh while a menu with the cursor is open: the engine's export
+    flushes the renderer, which must never cost a frame of play."""
+    global _thumbnail_errors
+    if not controller.bShowMouseCursor:
+        return
+    if not _thumbnail_exports or _thumbnails_dir is None:
+        return
+    item_id, (path, label) = next(iter(_thumbnail_exports.items()))
+    del _thumbnail_exports[item_id]
+    _thumbnails_tried.add(item_id)
+    png = thumbnail_path(_thumbnails_dir, item_id)
+    exr = png.with_suffix(".exr")
+    try:
+        target = unrealsdk.find_object(RENDER_TARGET_CLASS, path)
+        library = unrealsdk.find_class(RENDERING_LIBRARY).ClassDefaultObject
+        _thumbnails_dir.mkdir(parents=True, exist_ok=True)
+        library.ExportRenderTarget(controller, target, str(_thumbnails_dir), exr.name)
+    except Exception as ex:  # noqa: BLE001 - a picture is a nicety, the game is not
+        _thumbnail_errors += 1
+        if _thumbnail_errors <= THUMBNAIL_ERRORS_TO_LOG:
+            logging.warning(f"{LOG_PREFIX} thumbnail of {label} not exported: {type(ex).__name__}: {ex}")
+        return
+    _thumbnail_conversions.append((label, exr, png))
+
+
+def _convert_thumbnails() -> None:
+    """On the writer thread: the exported EXR files become PNGs, one per tick."""
+    global _thumbnail_errors
+    if not _thumbnail_conversions:
+        return
+    label, exr, png = _thumbnail_conversions.pop(0)
+    try:
+        convert_exr_to_png(exr, png)
+        exr.unlink(missing_ok=True)
+    except Exception as ex:  # noqa: BLE001
+        _thumbnail_errors += 1
+        if _thumbnail_errors <= THUMBNAIL_ERRORS_TO_LOG:
+            logging.warning(f"{LOG_PREFIX} thumbnail of {label} not converted: {type(ex).__name__}: {ex}")
+        return
+    _say(f"thumbnail of {label} saved as {png.name}")
+
+
 def _item_names_for(equipped: list[DamageSource]) -> dict[str, str]:
     """item id -> item name for the equipped weapons whose name is known."""
-    if name_store is None:
+    if name_store is None and not _session_infos:
         return {}
     names: dict[str, str] = {}
-    for weapon in equipped:
-        name = name_store.name_for(weapon.item_id)
+    for item_id in [weapon.item_id for weapon in equipped] + list(_gadget_ids.values()):
+        name = _known_name(item_id)
         if name:
-            names[weapon.item_id] = name
+            names[item_id] = name
     return names
 
 
@@ -396,6 +659,35 @@ def _with_item_names(equipped: list[DamageSource]) -> list[DamageSource]:
 
 def _character_store_path(identity: CharacterIdentity) -> Path:
     return _log_dir().parent / CHARACTERS_DIR_NAME / identity.key / WEAPON_STORE_NAME
+
+
+def _note_other_players(controller: UObject) -> None:
+    """Count the players in the session once a second. An action skill trick carries no
+    owner, so with anyone else around it says nothing about whose skill it is: on
+    2026-09-22, hosting a co-op game, a team mate's DarkSiren tricks (the class names are
+    the same) held the player's skill state open and Skill took 68% of the session's damage.
+    Alone, the tricks are the only honest signal the action skill has, so they are used."""
+    global _players_seen
+    if poller is None:
+        return
+    players = _player_count(controller)
+    if players == _players_seen:
+        return
+    _players_seen = players
+    alone = players <= 1
+    poller.trust_skill_tricks = alone
+    logging.info(
+        f"{LOG_PREFIX} {players} player(s) in this session: action skill tricks are "
+        f"{'used' if alone else 'ignored, because they do not say whose skill they are'}"
+    )
+
+
+def _player_count(controller: UObject) -> int:
+    """How many players the game state lists, 0 when it cannot be read."""
+    try:
+        return len(controller.GetWorld().GameState.PlayerArray)
+    except Exception:  # noqa: BLE001 - no world or no game state yet
+        return 0
 
 
 def _check_character(controller: UObject, pawn: Any) -> None:
@@ -495,22 +787,33 @@ def _refresh_readout() -> None:
             # until they come back. Checked at refresh rate: a function call, not a field read.
             _transition_hidden = True
             readout.set_visible(False)
-        tracker.close_if_idle(wall_now)
         in_play = _in_play(controller, pawn)
+        _note_pause(now, in_play)
+        if in_play:
+            tracker.close_if_idle(wall_now)
         _advance_play_clock(now, in_play)
         on_foot = resolver.is_character(pawn)
         if on_foot and now - _last_equipment_refresh >= EQUIPMENT_REFRESH_INTERVAL_S:
             _last_equipment_refresh = now
             _check_character(controller, pawn)
+            _note_other_players(controller)
             equipped = resolver.equipped_weapons(pawn)
             if equipped is not None:
                 _learn_item_names(equipped, wall_now, now, in_play)
+                _learn_gadget_names(pawn, wall_now)
                 _equipped_cache = _with_item_names(equipped) if readout_item_names.value else equipped
+        _note_menu(controller)
+        _export_thumbnail_if_in_menu(controller)
         held = resolver.weapon_in_hand(pawn) if on_foot else UNKNOWN_SOURCE
         poller.note_weapon_in_hand(wall_now, held)
+        _note_action_skill_weapon(held, on_foot, in_play, wall_now)
         _sample_held_time(held)
+        _sample_grenade_time()
         rolling.prune(_play_clock)
-        _record_peaks(wall_now)
+        # The DPS column is damage per second right now: each row's hits of the last
+        # seconds over the seconds in which it hit. The totals keep the window's damage.
+        now_rate = rolling.recent(float(readout_dps_seconds.value))
+        _record_peaks(wall_now, now_rate)
         encounter = tracker.latest() if readout_show_encounter_row.value else None
         best = _peak_dps() if readout_show_best_column.value else None
         rows = build_rows(
@@ -523,11 +826,14 @@ def _refresh_readout() -> None:
             _hidden_row_kinds(),
             bool(readout_show_crit_and_kills.value),
             bool(readout_show_share_column.value),
+            now_rate,
         )
         _latest_rows = rows
         readout.render(rows, now)
         if dashboard is not None:
-            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache], _item_names_for(_equipped_cache))
+            dashboard.publish_rows(rows, [weapon.item_id for weapon in _equipped_cache], _item_names_for(_equipped_cache), _gadget_ids)
+            if not in_play:
+                dashboard.set_paused(True)
         _flush_held_lines(wall_now)
         _readout_errors = 0
     except Exception as ex:  # noqa: BLE001 - keep the tracker alive even if the table breaks
@@ -567,36 +873,52 @@ def _hidden_row_kinds() -> frozenset[str]:
         return frozenset()
 
 
-def _record_peaks(now: float) -> None:
-    """Offer every table row's current DPS (damage over the window's fighting time) to the
-    lifetime record as a peak."""
+def _record_peaks(now: float, now_rate: DamageRate) -> None:
+    """Offer every table row's current DPS (what the DPS column shows) to the lifetime
+    record as a peak."""
     if weapon_store is None:
         return
-    window_seconds = rolling.duration()
-    for totals in rolling.by_source.values():
-        if totals.kind != "weapon" or totals.item_id == "":
+    for key in now_rate.damage_by_source:
+        kind, label, item_id = key
+        if kind not in RECORDED_KINDS or item_id == "":
             continue
-        weapon_store.note_peak(totals.item_id, totals.label, "", totals.damage / window_seconds, window_seconds, now)
+        weapon_store.note_peak(item_id, label, "", now_rate.rate(key), now_rate.seconds, now, kind)
     for kind in PEAK_SOURCE_KINDS:
-        damage = kind_damage(rolling.by_source, kind)
-        weapon_store.note_source_peak(kind, damage / window_seconds, window_seconds, now)
+        weapon_store.note_source_peak(kind, now_rate.kind_rate(kind), now_rate.seconds, now)
+
+
+def _note_pause(now: float, in_play: bool) -> None:
+    """Remember when play stopped; when it resumes, the fight's gap timer and the chart's
+    recent hits are moved past the pause, so nothing ticked meanwhile."""
+    global _paused_since
+    if not in_play:
+        if _paused_since == 0.0:
+            _paused_since = now
+        return
+    if _paused_since == 0.0:
+        return
+    pause_seconds = now - _paused_since
+    _paused_since = 0.0
+    tracker.skip_pause(pause_seconds)
+    if dashboard is not None:
+        dashboard.set_paused(False, pause_seconds)
 
 
 def _advance_play_clock(now: float, in_play: bool) -> None:
-    """Run the window's clock on wall time: fighting or not, in a menu or not, the last
-    five minutes are the last five minutes (a user rule), so a source that stops dealing
-    damage comes down on schedule and a pause does not hold the numbers still. The step
-    doubles as the time-in-hand sample, but only in play, while a fight is open and between
-    samples close together (a long gap is a pause or a loading screen): the lifetime
-    record's DPS in hand stays about fighting."""
+    """Run the window's clock while the game is in play: fighting or not, the clock runs,
+    so a source that stops dealing damage comes down on schedule; in a menu, a loading
+    screen or a tunnel nothing ticks (a user rule: a pause is a pause). A step longer than
+    a second is a frozen game, not play. The step doubles as the time-in-hand sample,
+    but only while a fight is open: the lifetime record's DPS in hand stays about
+    fighting."""
     global _last_held_sample, _play_clock, _last_fight_step
     elapsed = now - _last_held_sample
     _last_held_sample = now
     _last_fight_step = 0.0
-    if elapsed <= 0:
+    if not in_play or elapsed <= 0 or elapsed > MAX_HELD_SAMPLE_S:
         return
     _play_clock += elapsed
-    if in_play and elapsed <= MAX_HELD_SAMPLE_S and tracker.current is not None:
+    if tracker.current is not None:
         _last_fight_step = elapsed
 
 
@@ -613,6 +935,39 @@ def _sample_held_time(held: Any) -> None:
         weapon_store.add_held(held.item_id, held.label, held.body, _last_fight_step, time.time())
     _label, seconds = _held_pending.get(held.item_id, (held.label, 0.0))
     _held_pending[held.item_id] = (held.label, seconds + _last_fight_step)
+
+
+def _note_action_skill_weapon(held: DamageSource, on_foot: bool, in_play: bool, now: float) -> None:
+    """An action skill that replaces the gun (the Exo Soldier's Peacebreaker cannons) leaves
+    no weapon in hand while it runs, which is a state the game really holds, unlike the
+    skill window that passive skill scripts keep open through a whole fight. The captures of
+    2026-09-22 show it exactly around the skill's damage (19:16:34 to 19:17:11). Skills that
+    keep the gun in hand do not show it; they still rely on their tricks."""
+    global _skill_weapon_gone
+    gone = on_foot and in_play and held.item_id == ""
+    if gone == _skill_weapon_gone:
+        return
+    _skill_weapon_gone = gone
+    if gone:
+        poller.note_skill_started(now, NO_WEAPON_TRICK)
+    else:
+        poller.note_skill_ended(now, NO_WEAPON_TRICK)
+
+
+def _sample_grenade_time() -> None:
+    """Credit the equipped grenade with the same fighting time as the gun in hand, so its
+    lifetime record has a DPS over the fights it was equipped in."""
+    grenade_id = _gadget_ids.get(GRENADE_LABEL, "")
+    if _last_fight_step <= 0 or not readout.visible() or grenade_id == "" or weapon_store is None:
+        return
+    weapon_store.add_held(grenade_id, GRENADE_LABEL, "", _last_fight_step, time.time(), SOURCE_GRENADE)
+
+
+def _count_grenade_throw(now: float) -> None:
+    """One more throw of the equipped grenade, for its lifetime damage per throw."""
+    grenade_id = _gadget_ids.get(GRENADE_LABEL, "")
+    if weapon_store is not None and grenade_id != "":
+        weapon_store.add_throw(grenade_id, GRENADE_LABEL, now)
 
 
 def _flush_held_lines(now: float) -> None:
@@ -695,7 +1050,9 @@ def _on_projectile_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: B
 def _on_grenade_thrown(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
     try:
         if poller is not None and _is_player_pawn(obj):
-            poller.note_grenade_thrown(time.time())
+            now = time.time()
+            poller.note_grenade_thrown(now)
+            _count_grenade_throw(now)
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 
@@ -712,6 +1069,13 @@ def _on_grenade_exploded(obj: UObject, args: WrappedStruct, ret: Any, func: Boun
 
 
 _seen_melee_tricks: set[str] = set()
+# The action skill tricks seen this session, one log line each: an unexplained Skill row can
+# be traced to the trick that opened it without a probe run.
+_seen_skill_tricks: set[str] = set()
+# The name the no-weapon-in-hand state uses as its "trick", so it starts and ends like one.
+NO_WEAPON_TRICK = "no weapon in hand"
+# Whether the gun is currently gone from the player's hands (an action skill that swaps it).
+_skill_weapon_gone = False
 
 
 def _is_player_melee_trick(class_name: str) -> bool:
@@ -735,7 +1099,10 @@ def _on_trick_begin(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunc
             return
         class_name = str(obj.Class.Name)
         if SKILL_TRICK_CLASS_FRAGMENT in class_name:
-            poller.note_skill_activity(time.time())
+            if class_name not in _seen_skill_tricks:
+                _seen_skill_tricks.add(class_name)
+                _say(f"action skill trick seen: {class_name}")
+            poller.note_skill_started(time.time(), class_name)
             return
         if MELEE_TRICK_FRAGMENT in class_name and class_name not in _seen_melee_tricks:
             # One line per new melee-like trick, so an unexplained Melee/Other case can be
@@ -763,10 +1130,11 @@ def _on_skill_action(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFun
 
 
 def _on_skill_token(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFunction) -> None:
-    """A static call with no owner; only the local player's skills run this code here."""
+    """A static call with no owner, so it does not say whose skill added the token: it keeps
+    a running skill open and never starts one (see `note_skill_token`)."""
     try:
         if poller is not None:
-            poller.note_skill_activity(time.time())
+            poller.note_skill_token(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
         pass
 
@@ -777,7 +1145,7 @@ def _on_trick_end(obj: UObject, args: WrappedStruct, ret: Any, func: BoundFuncti
             return
         class_name = str(obj.Class.Name)
         if SKILL_TRICK_CLASS_FRAGMENT in class_name:
-            poller.note_skill_activity(time.time())
+            poller.note_skill_ended(time.time(), class_name)
         elif _is_player_melee_trick(class_name):
             poller.note_melee_end(time.time())
     except Exception:  # noqa: BLE001 - a hook may never raise into the game
@@ -833,7 +1201,7 @@ def _remove_tick_hook() -> None:
 # ------------------------------------------------------------------ lifecycle
 
 def on_enable() -> None:
-    global poller, session_log, tracker, rolling, weapon_store, character
+    global poller, session_log, tracker, rolling, weapon_store, name_store, character, _thumbnails_dir, _menu_seen, _cursor_shown, _paused_since, _skill_weapon_gone
     global _last_status_time, _broken_reported, _readout_errors, _last_held_sample, _play_clock
     _broken_reported = False
     _readout_errors = 0
@@ -845,6 +1213,14 @@ def on_enable() -> None:
     character = None
     weapon_store = None
     name_store = _load_name_store(_log_dir().parent / ITEM_NAMES_FILE)
+    _thumbnails_dir = _log_dir().parent / THUMBNAILS_DIR_NAME
+    _thumbnail_exports.clear()
+    _thumbnails_tried.clear()
+    _thumbnail_conversions.clear()
+    _menu_seen = False
+    _cursor_shown = False
+    _paused_since = 0.0
+    _skill_weapon_gone = False
     _prepare_item_names()
     poller = DamagePoller(
         resolve_controller=lambda: get_pc(possibly_loading=True),
@@ -889,7 +1265,10 @@ def _dashboard_sources() -> DashboardSources:
         session_path=lambda: None if session_log is None else session_log.path,
         window_minutes=lambda: float(readout_window_minutes.value),
         encounter_gap_s=lambda: float(encounter_gap_s.value),
-        item_names=lambda: {} if name_store is None else name_store.names(),
+        item_names=_all_known_names,
+        item_infos=_all_known_infos,
+        thumbnails_dir=_log_dir().parent / THUMBNAILS_DIR_NAME,
+        element_names=_element_names,
     )
 
 
@@ -930,6 +1309,7 @@ def _save_stores_if_due() -> None:
     for store in (weapon_store, name_store):
         if store is not None:
             store.save_if_due(now)
+    _convert_thumbnails()
 
 
 def _load_name_store(path: Path) -> ItemNameStore:
@@ -990,7 +1370,10 @@ def dmgweapons_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} no character loaded yet (the mod must be enabled and you must be in the world)")
         return
     logging.info(f"{LOG_PREFIX} weapons of {character.display} ({character.class_name}), by {args.by}:")
-    for line in weapon_store.format_ranking(limit=args.limit, by=args.by, names=name_store.names() if name_store is not None else None):
+    names = name_store.names() if name_store is not None else None
+    for line in weapon_store.format_ranking(limit=args.limit, by=args.by, names=names):
+        logging.info(line)
+    for line in weapon_store.format_grenade_ranking(by=args.by, names=names):
         logging.info(line)
     for line in weapon_store.format_source_peaks():
         logging.info(line)
@@ -1053,10 +1436,14 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
         logging.info(f"{LOG_PREFIX} character: {character.display} ({character.class_name}), key {character.key[:8]}")
     else:
         logging.info(f"{LOG_PREFIX} character: not known yet")
+    logging.info(f"{LOG_PREFIX} players in the session: {_players_seen if _players_seen >= 0 else '?'}; action skill: {poller.skill_state()}")
     if weapon_store is not None:
         logging.info(f"{LOG_PREFIX} weapon record: {weapon_store.path} ({len(weapon_store.records)} weapons)")
     if name_store is not None:
         logging.info(f"{LOG_PREFIX} item name table: {name_store.path} ({name_store.count} names)")
+    if _thumbnails_dir is not None:
+        pictures = len(list(_thumbnails_dir.glob("*.png"))) if _thumbnails_dir.exists() else 0
+        logging.info(f"{LOG_PREFIX} thumbnails: {_thumbnails_dir} ({pictures} pictures, {len(_thumbnail_exports)} waiting for a menu, {_thumbnail_errors} errors)")
     identity_state = f"{identity_reader.fallbacks} fallback(s) to the instance id"
     if identity_reader.last_error:
         identity_state += f", last error: {identity_reader.last_error}"

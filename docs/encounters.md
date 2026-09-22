@@ -38,7 +38,7 @@ Two rates come from that:
 - **DPS** = total / duration: the honest number for the whole fight, including reloads, walking and waiting.
 - **Active DPS** = total / active seconds: the rate while you were actually landing hits.
 
-The table's DPS column is a third thing: each row's damage over the rolling window's length; it belongs to the window, not to encounters, see below.
+The table's DPS column is damage per second right now: each row's hits of the last ten seconds over the seconds in which it landed one, zero once its last hit is older than that. It belongs to neither encounters nor the window.
 
 ## Where fights show up
 
@@ -51,9 +51,10 @@ The mod keeps the last 1000 closed fights of a session in memory for the in-game
 
 ## The window's clock, which is related but not the same
 
-The table's other rows ("last 5 minutes") do not use encounters. They use the clock on the
-wall: it runs whether you are fighting or not, in a menu or not, paused or not (a user
-rule: the last five minutes are the last five minutes). On that clock the rolling window
+The table's other rows ("last 60 min") do not use encounters. They use a play clock: it
+runs whether you are fighting or not, and stops in menus, loading screens and tunnels (a
+user rule: a pause is a pause; the chart's samples and a fight's gap timer stop with it).
+On that clock the rolling window
 covers the last `readout_window_minutes`, so a source that stops dealing damage is out of
 the numbers that many minutes after its last hit, on schedule, and its DPS sinks on the way
 there as its hits leave the window one by one. Until the window is full, the DPS divides by

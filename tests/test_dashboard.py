@@ -76,6 +76,9 @@ class DashboardTests(unittest.TestCase):
             session_path=lambda: self.session,
             window_minutes=lambda: 5.0,
             encounter_gap_s=lambda: 15.0,
+            item_names=lambda: {"seed277": "Hunted Kettled Rangefinder"},
+            item_infos=lambda: {"seed277": {"name": "Hunted Kettled Rangefinder", "label": "Jakobs Sniper", "rarity": "legendary", "element": "", "damage": "911", "serial": "@Ug1", "seen": 1.0}},
+            thumbnails_dir=self.log_dir / "thumbnails",
         )
         self.dashboard = Dashboard(0, sources, self.messages.append, host="127.0.0.1")
         self.assertTrue(self.dashboard.start(), self.dashboard.start_error)
@@ -115,6 +118,30 @@ class DashboardTests(unittest.TestCase):
         status, session_weapons = fetch_json(self.url + "api/session-weapons")
         self.assertEqual((status, len(session_weapons["weapons"])), (200, 2))
 
+    def test_thumbnails_are_served_by_item_id_only(self) -> None:
+        folder = self.log_dir / "thumbnails"
+        folder.mkdir()
+        item_id = "ddbe5d456a2ec99a4c917f15"
+        (folder / f"{item_id}.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        (folder / "notes.png").write_bytes(b"secret")
+        status, headers, body = fetch(self.url + f"thumbnails/{item_id}.png")
+        self.assertEqual((status, headers["Content-Type"], body[:4]), (200, "image/png", b"\x89PNG"))
+        self.assertIn("max-age", headers["Cache-Control"])
+        self.assertEqual(fetch(self.url + "thumbnails/notes.png")[0], 404, "only item ids reach the disk")
+        # A co-op session has no item identities and falls back to per-launch ids, whose
+        # colon cannot be a file name; the mod writes them with a hyphen and serves those.
+        (folder / "instance-206.png").write_bytes(b"co-op")
+        status, _headers, body = fetch(self.url + "thumbnails/instance-206.png")
+        self.assertEqual((status, body), (200, b"co-op"))
+        self.assertEqual(fetch(self.url + "thumbnails/..%2Fweapons.json")[0], 404)
+        self.assertEqual(fetch(self.url + "thumbnails/0123456789abcdef01234567.png")[0], 404, "no picture yet")
+        status, payload = fetch_json(self.url + "api/weapons?by=damage")
+        self.assertEqual(payload["weapons"][0]["name"], "Hunted Kettled Rangefinder", "the weapons list carries the table's names")
+        status, payload = fetch_json(self.url + "api/items")
+        self.assertEqual((payload["items"]["seed277"]["rarity"], payload["items"]["seed277"]["thumbnail"]), ("legendary", False))
+        (folder / "seed277.png").write_bytes(b"x")
+        self.assertTrue(fetch_json(self.url + "api/items")[1]["items"]["seed277"]["thumbnail"], "the flag follows the file")
+
     def test_unknown_paths_and_sessions(self) -> None:
         status, _headers, _body = fetch(self.url + "nothing/here")
         self.assertEqual(status, 404)
@@ -132,15 +159,17 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual([event["dmg"] for event in hello["recent"]], [50.0, 100.0], "the session's newest hits, newest first")
             self.assertEqual(hello["history"], [])
             rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "1'000", "250", "100.0"), "active"), TableRow(("Last 5 min", "1'000", "12'345.6", "100.0"), "total")]
-            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"})
-            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"})
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"}, {"Grenade": "seed300"})
+            self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder"}, {"Grenade": "seed300"})
             table = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(table["type"], "table")
+            self.assertEqual(table["gadgets"], {"Grenade": "seed300"})
             self.assertEqual(table["rows"][:2], [{"cells": ["Weapon", "Total"], "style": "header"}, {"cells": ["Jakobs Sniper", "1'000", "250", "100.0"], "style": "active"}])
             self.assertEqual((table["slots"], table["names"]), (["seed277"], {"seed277": "Hunted Kettled Rangefinder"}))
             sample = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(sample["type"], "sample", "the first chart sample follows the first table at once")
             self.assertEqual((sample["sample"]["dps"], sample["sample"]["total"]), (12345.6, 1000.0))
+            self.assertFalse(sample["sample"]["fight"], "no hit within the encounter gap")
             self.dashboard.publish_rows(rows, ["seed277"], {"seed277": "Hunted Kettled Rangefinder", "other": "Lionized Parasite"})
             self.assertEqual(recv_typed(client, "table")["names"]["other"], "Lionized Parasite", "a new name alone is a change")
             self.dashboard.publish_hits([hit(6.0, 42.0)])
@@ -195,12 +224,32 @@ class DashboardTests(unittest.TestCase):
         with connect(self.url.replace("http://", "ws://") + "ws") as client:
             hello = json.loads(client.recv(RECV_TIMEOUT_S))
             self.assertEqual(hello["chart_seconds"], 30.0)
+            self.assertTrue(hello["history"][-1]["fight"], "a hit a second ago: the fight is on")
             self.assertEqual(hello["chart_windows"], [10.0, 30.0, 60.0, 120.0])
             sample = hello["history"][-1]
             self.assertEqual(sample["now"]["10"], 125.0, "1'250 damage in the last 10 s; the hit from 30 s ago is out")
             self.assertEqual(sample["now"]["60"], (1250.0 + 9999.0) / 60.0, "the 60 s window still holds it")
             self.assertEqual([(source["label"], source["now"]["10"]) for source in sample["sources"]], [("Jakobs Sniper", 100.0), ("Skill", 25.0)])
             self.assertEqual(sample["sources"][0]["dps"], 20.0, "the window value stays alongside")
+
+    def test_a_pause_stops_the_samples_and_the_decay(self) -> None:
+        import time as clock
+
+        now = clock.time()
+        self.dashboard.publish_hits([hit(now - 2.0, 600.0)])
+        rows = [TableRow(("Weapon", "Total"), "header"), TableRow(("Jakobs Sniper", "600", "300", "100.0"), "active"), TableRow(("Last 5 min", "600", "300", "100.0"), "total")]
+        self.dashboard.publish_rows(rows, ["seed277"])
+        wait_for_sample(self.dashboard, 300.0)
+        before = self.dashboard._history[-1]["now"]["10"]
+        self.assertEqual(before, 60.0)
+        self.dashboard.set_paused(True)
+        count = len(self.dashboard._history)
+        time.sleep(1.3)
+        self.assertEqual(len(self.dashboard._history), count, "no samples while paused")
+        # Back after a 30 s pause: the hit is still two seconds old for the chart.
+        self.dashboard.set_paused(False, 30.0)
+        with self.dashboard._state_lock:
+            self.assertAlmostEqual(self.dashboard._instant_dps(clock.time() + 30.0)["10"][""], 60.0, delta=0.5)
 
     def test_foreign_origin_is_refused(self) -> None:
         with self.assertRaises(InvalidStatus) as refused:

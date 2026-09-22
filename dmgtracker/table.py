@@ -26,7 +26,7 @@ from .attribution import (
     DamageSource,
 )
 from .formatting import format_number, format_share
-from .stats import Encounter, SourceKey, SourceTotals, kind_totals, scope_totals
+from .stats import DamageRate, Encounter, SourceKey, SourceTotals, kind_totals, scope_totals
 
 STYLE_HEADER = "header"
 STYLE_ROW = "row"
@@ -98,13 +98,16 @@ def build_rows(
     hidden_kinds: frozenset[str] = frozenset(),
     crit_and_kills: bool = False,
     share: bool = True,
+    now_rate: DamageRate | None = None,
 ) -> list[TableRow]:
     """The complete table for the current state. The row count only depends on the settings
     (encounter row, hidden non-weapon rows), never on the data. Optional columns, in this
     order after Weapon, Total and DPS: Share [%] (`share`), Crit [%] and Kills
     (`crit_and_kills`), then Best DPS (`best`, the lifetime peak DPS of each weapon and
-    non-weapon source)."""
-    columns = TableColumns(share, crit_and_kills)
+    non-weapon source). With `now_rate`, the DPS column is each row's damage per second
+    right now (its hits of the last seconds over the seconds in which it hit); without
+    it, the window average."""
+    columns = TableColumns(share, crit_and_kills, now_rate)
     header = HEADER_CELLS
     if share:
         header += (SHARE_HEADER_CELL,)
@@ -119,16 +122,25 @@ def build_rows(
     rows.append(TableRow(("",) * count, STYLE_SPACER))
     rows.append(_total_row(window_label(window_minutes), window, columns))
     if encounter is not None:
-        rows.append(_total_row(ENCOUNTER_LABEL, encounter, columns))
+        rows.append(_encounter_row(encounter, columns))
     return [_padded(row, count) for row in rows]
 
 
 @dataclass(frozen=True)
 class TableColumns:
-    """Which optional value columns a row carries."""
+    """Which optional value columns a row carries, and the rate the DPS column shows
+    (None: the window average)."""
 
     share: bool
     crit_and_kills: bool
+    now_rate: DamageRate | None = None
+
+    def dps(self, key: SourceKey | None, window_damage: float, window_duration: float) -> float:
+        """The DPS cell of a row: its source's damage per second right now (None: of
+        everything), or the window average when no rate was given."""
+        if self.now_rate is not None:
+            return self.now_rate.rate(key)
+        return window_damage / window_duration
 
 
 def _padded(row: TableRow, columns: int) -> TableRow:
@@ -151,10 +163,10 @@ def _weapon_slot_rows(
         weapon = equipped[slot]
         totals = _totals_for(scope, weapon)
         style = STYLE_ACTIVE if weapon.item_id == held_item_id else STYLE_ROW
-        # Every row's DPS is its damage over the window's fighting time (a user rule: a gun
-        # that is not firing must come down like any other source; the lifetime record keeps
-        # the DPS in hand for comparing guns), so the rows add up to the window row.
-        row = TableRow(_source_cells(weapon.label, totals, totals.damage / duration, scope.total, columns), style)
+        # The DPS of a gun is what it does per second right now (the lifetime record keeps
+        # the DPS in hand for comparing guns across fights).
+        dps = columns.dps((SOURCE_WEAPON, weapon.label, weapon.item_id), totals.damage, duration)
+        row = TableRow(_source_cells(weapon.label, totals, dps, scope.total, columns), style)
         if best is not None:
             row = _with_best_cell(row, best.weapons.get(weapon.item_id, 0.0))
         rows.append(row)
@@ -170,11 +182,20 @@ def _non_weapon_rows(
         if source.kind in hidden_kinds:
             continue
         totals = kind_totals(scope.by_source, source.kind)
-        row = TableRow(_source_cells(source.label, totals, totals.damage / duration, scope.total, columns), STYLE_ROW)
+        dps = _kind_dps(scope, source.kind, totals.damage, duration, columns)
+        row = TableRow(_source_cells(source.label, totals, dps, scope.total, columns), STYLE_ROW)
         if best is not None:
             row = _with_best_cell(row, best.sources.get(source.kind, 0.0))
         rows.append(row)
     return rows
+
+
+def _kind_dps(scope: DamageScope, kind: str, window_damage: float, duration: float, columns: TableColumns) -> float:
+    """A non-weapon row gathers every source of its kind (melee from several labels, say),
+    so its rate is over those sources together."""
+    if columns.now_rate is None:
+        return window_damage / duration
+    return columns.now_rate.kind_rate(kind)
 
 
 def _source_cells(label: str, totals: SourceTotals, dps: float, scope_total: float, columns: TableColumns) -> tuple[str, ...]:
@@ -203,4 +224,12 @@ def _totals_for(scope: DamageScope, weapon: DamageSource) -> SourceTotals:
 def _total_row(label: str, scope: DamageScope, columns: TableColumns) -> TableRow:
     totals = scope_totals(scope.by_source)
     totals.damage = scope.total
-    return TableRow(_source_cells(label, totals, scope.dps(), scope.total, columns), STYLE_TOTAL)
+    return TableRow(_source_cells(label, totals, columns.dps(None, scope.total, scope.duration()), scope.total, columns), STYLE_TOTAL)
+
+
+def _encounter_row(encounter: Encounter, columns: TableColumns) -> TableRow:
+    """The fight's own numbers: its DPS is its damage over its duration, whatever the DPS
+    column shows elsewhere."""
+    totals = scope_totals(encounter.by_source)
+    totals.damage = encounter.total
+    return TableRow(_source_cells(ENCOUNTER_LABEL, totals, encounter.dps(), encounter.total, columns), STYLE_TOTAL)

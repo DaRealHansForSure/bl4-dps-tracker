@@ -73,6 +73,42 @@ def target_family(target_name: str) -> str:
 
 
 @dataclass
+class DamageRate:
+    """Damage per second right now: each source's hits of the last `seconds` over the
+    seconds in which that source landed one, so a gun that did 40'000 in one second reads
+    40'000, sustained fire reads its sustained rate, and a source that stopped reads zero
+    once its last hit is older than the span. Nothing here is an average over a fight or
+    a window."""
+
+    seconds: float
+    total: float
+    active_seconds: set[int] = field(default_factory=set)
+    damage_by_source: dict[SourceKey, float] = field(default_factory=dict)
+    active_by_source: dict[SourceKey, set[int]] = field(default_factory=dict)
+
+    def rate(self, key: SourceKey | None = None) -> float:
+        """Damage per active second of one source (None: of everything)."""
+        if key is None:
+            return _per_active_second(self.total, self.active_seconds)
+        return _per_active_second(self.damage_by_source.get(key, 0.0), self.active_by_source.get(key, set()))
+
+    def kind_rate(self, kind: str) -> float:
+        """Damage per active second of every source of a kind together (melee from several
+        labels, say): their damage over the seconds in which any of them hit."""
+        damage = 0.0
+        active: set[int] = set()
+        for key, amount in self.damage_by_source.items():
+            if key[0] == kind:
+                damage += amount
+                active |= self.active_by_source.get(key, set())
+        return _per_active_second(damage, active)
+
+
+def _per_active_second(damage: float, active: set[int]) -> float:
+    return damage / len(active) if active else 0.0
+
+
+@dataclass
 class SourceTotals:
     """Damage dealt by one source (a weapon instance, or the 'other' bucket) in an encounter."""
 
@@ -208,6 +244,13 @@ class EncounterTracker:
         self._close()
         return True
 
+    def skip_pause(self, seconds: float) -> None:
+        """The game was paused for so many seconds: move the open fight's clock past them,
+        so the gap that ends a fight counts play only and its duration stays the same."""
+        if self.current is not None and seconds > 0:
+            self.current.started += seconds
+            self.current.last_hit += seconds
+
     def finish(self) -> None:
         """Close whatever is open; used when a whole file has been replayed."""
         if self.current is not None:
@@ -333,6 +376,26 @@ class RollingStats:
             return self.window_s
         since_first_hit = self._now - self._first_hit
         return max(min(self.window_s, since_first_hit), MIN_DURATION_S)
+
+    def recent(self, seconds: float) -> DamageRate:
+        """The damage per second right now: every source's hits of the last `seconds` (on
+        the window's clock) over the seconds in which it landed one. Walks the newest
+        events only, so it costs the hits of those seconds, not the window's. Call after
+        prune()."""
+        cutoff = self._now - seconds
+        rate = DamageRate(seconds, 0.0)
+        for at, event in reversed(self._events):
+            if at < cutoff:
+                break
+            damage = float(event["dmg"])
+            second = int(float(event["t"]))
+            key = source_key(event)
+            rate.total += damage
+            rate.active_seconds.add(second)
+            rate.damage_by_source[key] = rate.damage_by_source.get(key, 0.0) + damage
+            rate.active_by_source.setdefault(key, set()).add(second)
+        return rate
+
 
     def dps(self) -> float:
         return self.total / self.duration()

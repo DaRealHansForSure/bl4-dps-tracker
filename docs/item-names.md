@@ -103,7 +103,10 @@ own:
    change by a moment. The addresses are remembered; a new gun is read from them without a
    scan, and a scan that found nothing rests 15 s, then twice as long each time (ten
    minutes at most): the first scan of a session, seconds after the character loaded,
-   usually runs before the UI has built its models.
+   usually runs before the UI has built its models. A menu with the cursor opening or
+   closing ends the rest at once (`retry_now`, `mod.py` `_note_menu`): that is when the
+   UI builds or rebuilds its models, so a scan that failed before it may succeed now, and
+   an ESC menu's failed list scan no longer delays the inventory screen's by its rest.
 
 The mod asks the reader only while the player has been in play for three seconds (a pawn,
 no menu, controls not taken by a tunnel or cutscene, `mod.py` `_in_play`): a scan during a
@@ -123,11 +126,93 @@ committed and not guard pages: a read that touches a guard page disarms it, and 
 whose stack it guarded crashes later. The scan pauses every 8 MB; the game thread only ever
 reads remembered addresses.
 
-Not covered: backpack items (no actor, not needed for damage) and the thumbnails. The
-card's render target could be exported with `KismetRenderingLibrary.ExportRenderTarget`
-(the `OakThumbnailManager` keeps them in `RenderedThumbnails`, a map pyunrealsdk cannot
-read but whose raw elements are `{key 8 bytes, UTextureRenderTarget2D*, hash links}`, key
-not yet understood); that is a feature for later.
+## Co-op
+
+On a client in a co-op session the identity struct of the equipped guns reads as all zeroes
+(2026-09-22: four `OakWeapon` items at the right addresses, layout and size confirmed, seed
+bytes empty), so `itemidentity.py` falls back to the per-launch instance id. The gadgets
+keep their seeds in the same session, so it is the weapons' identity that is not replicated
+to clients. Consequences: no item names or pictures for guns, and lifetime records that do
+not merge with the single-player ones. `mod.py` `_report_missing_identity` says so once.
+Damage attribution does not depend on the identity and is unaffected. A co-op identity
+would have to come from the UI models instead, where the item cards carry the serial.
+
+## Gadgets
+
+The grenade, the shield, the class mod, the repair kit and the enhancement sit in the
+same slot array as the guns (`EquippedInventorySlots`, `attribution.equipped_gadgets`) and
+have item ids the same way. Only the inventory list names them (they have no item card),
+so the mod asks the reader for them (`names_of_items`) only once a menu with the cursor
+has been open in the session, which is when the list first exists; a list-only scan (no
+node search) finds it, 3 s live. The equipped grenade's item id is handed to the poller
+(`set_grenade`), so grenade hits carry it (`wid`) and the dashboard names the Grenade row
+and the grenade's hits like a gun's. Pictures are exported for gadgets the same way.
+
+So the guns are named in the first lookup (the cards, seconds after the load) and the
+gadgets in a second one (the list, after the first inventory screen). That is the data,
+not a scheduling choice: runner runs 80-83 (session of 2026-09-22, 25 minutes in the world
+and no menu opened) found the grenade's name held by one game structure only, a record of
+a third model described below, and no inventory list anywhere.
+
+### The item records (a third model, not used)
+
+`poc/probe_run80_grenade_holders.py` to `probe_run83_hud_records.py`. Searching the heaps
+for the equipped grenade's name (known from the table) found one copy held by the game, in
+a record of about 700 bytes that also exists for the gun in hand, 6.4 KB away from it:
+
+| offset | field |
+| --- | --- |
+| +0, +56 | the type as text, localised (`Tediore-Granate`, `Vladof-Assault-Rifle`) |
+| +32 | the name (trailing space) |
+| +88 | the kind slug (`gadget`, `weapon`) |
+| +112 | the rarity as text, localised (`Episch`, `Legendär`) |
+| +136 | the rarity slug (`epic`, `legendary`) |
+| +168, +216 | the manufacturer (`Tediore`) and its slug |
+| +248 | the element slug (`corrosive`) |
+| +320 | the picture: the gun's render target path, the gadget's static icon (`.../ico_art_item_card_grenade_tediore`) |
+| +344 | the item serial (`@Ugr%DXm/*B2!...`) |
+| +624.. | tint slugs (`tint-common`) |
+
+Every FString is followed by a `{1, n}` pair; the kind slug's pair makes `07 00 00 00 08 00
+00 00 01 00 00 00 04` at +96 a usable needle for a scan by shape. It is not used, for three
+reasons. The record holds no seed and nothing within 2 KB of it does, so it can only be
+paired by heap adjacency to the gun in hand's record, which this project found unreliable
+for the other models. Its holders are Coherent's per-frame binding tables (the pointers at
+0x3419781a0 and 0x32e16c7a0 pointed elsewhere three minutes later), so the record cannot be
+reached from anything stable either. And it is not alone: run 83 found about forty records
+of the same shape for grenades that were not equipped (the backpack's or the bank's, all
+in one arena at 0x36d04....), so "the gadget record with a grenade icon" does not identify
+the equipped one. What the model would give, if a session-proof pairing turned up, is the
+grenade's name, rarity, element, serial and icon before any menu.
+
+The serial is not a way to pair either. Its format is public (Nicnl's
+`borderlands4-serials`, ported to `poc/serial_decode.py`: strip `@U`, base85 with the
+alphabet
+
+    0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{/}~
+
+mirror every byte, then a token stream: a 7-bit header, `100` varints of 4-bit blocks,
+`110` varbits, `101` parts, `00`/`01` separators). Decoded, the 25 serials of the table
+read `type, 0, 1, level | 2, n || parts`: the first number is the item type (311 for both
+grenades whose item ids start with `05a0253d`, 293 for both `96344065` shields, 18 for both
+`9bf02ca5` Vladof assault rifles), so it maps one to one onto the id's first four bytes,
+but the id's other eight bytes appear nowhere in the stream (`n` is below 4096) and are no
+FNV, CRC, Murmur, xxHash or digest of the serial. The item id stays the seed bytes of the
+identity, which only the inventory list carries.
+
+## Thumbnails
+
+The card's render target (`OakInventoryThumbnail_...`, 512 x 256, RGBA16f) is exported
+with `KismetRenderingLibrary.ExportRenderTarget`, which writes an OpenEXR (ZIP, half
+floats); `dmgtracker/thumbnails.py` decodes it with the standard library into
+`BL4DamageTracker	humbnails\<item id>.png`. The export flushes the renderer (10 ms), so
+it runs only while a menu with the cursor is open, one item per refresh; the conversion
+runs on the writer thread and yields every scanline. The `OakThumbnailManager` keeps the
+targets in `RenderedThumbnails`, a `TMap` pyunrealsdk cannot read; its raw elements are
+`{key 8 bytes, UTextureRenderTarget2D*, hash links}` with a key that is neither the
+instance id nor the seed (not needed: the card names the target).
+
+Not covered: backpack items (no actor, not needed for damage).
 
 ## Tools
 
