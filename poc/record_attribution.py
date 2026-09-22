@@ -21,7 +21,10 @@ from unrealsdk import logging
 MINUTES = 10.0
 FLUSH_INTERVAL_S = 2.0
 OUT = Path(__file__).parent / "probe_output.txt"
-CAPTURES = Path(__file__).parent.parent / "captures"
+# The probe runner copies this file into poc/runs/<run>/, so __file__ is two levels below
+# poc/; walk up until the folder that holds this script's own directory is found.
+CAPTURES = (Path(__file__).resolve().parents[2] if Path(__file__).resolve().parent.parent.name == "runs"
+            else Path(__file__).resolve().parent) / "captures"
 STATUS_SUFFIX = "_Status"
 
 _lines = []
@@ -80,6 +83,7 @@ def read_instance(instance, pawn, now, flagged_targets):
 
 
 poller._read_instance = read_instance
+_installed = read_instance
 
 SIGNALS = ("note_grenade_thrown", "note_grenade_exploded", "note_explosion", "note_melee_swing",
            "note_melee_end", "note_skill_activity", "note_skill_token", "note_weapon_in_hand")
@@ -116,6 +120,10 @@ def writer():
             for line in batch:
                 handle.write(json.dumps(line) + "\n")
             handle.flush()
+            if poller._read_instance is not _installed:
+                # Another probe restored the hot path and dropped this recorder with it.
+                say("   the hot path was taken over by something else; recording stops here")
+                break
             if time.time() >= finish_at:
                 break
         poller._read_instance = original_read
