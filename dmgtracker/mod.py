@@ -237,6 +237,8 @@ _equipped_cache: list = []
 _gadget_ids: dict[str, str] = {}
 _item_names_unavailable_since = 0.0
 _item_names_reported = False
+# Whether the "no stable item id" line has been said this session (a co-op client).
+_identity_missing_reported = False
 _item_names_asked = False
 _in_play_since = 0.0
 # The window's clock: the seconds the game was in play since the mod was enabled. It stops
@@ -349,8 +351,9 @@ def _on_controller_changed(controller: UObject | None) -> None:
 def _prepare_item_names() -> None:
     """Pick the UI model layouts for this game build. An unknown build gets the latest
     layouts and one warning; the content validation guards every read either way."""
-    global name_reader, _item_names_unavailable_since
+    global name_reader, _item_names_unavailable_since, _identity_missing_reported
     _item_names_unavailable_since = 0.0
+    _identity_missing_reported = False
     build = ""
     try:
         build = str(unrealsdk.find_class(BUILD_VERSION_LIBRARY).ClassDefaultObject.GetBuildVersion())
@@ -380,6 +383,7 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     # The reader pairs the UI's item cards with the guns by slot order, so it gets every
     # equipped gun's seed (None where a gun only has the fallback id), named or not.
     slot_seeds = [seed_of(weapon.item_id) for weapon in equipped]
+    _report_missing_identity(equipped, slot_seeds)
     # A gun without a name, or one named before the table kept the card's details.
     unnamed = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _needs_item_info(weapon.item_id)]
     unpictured = [weapon for weapon, seed in zip(equipped, slot_seeds) if seed is not None and _thumbnail_wanted(weapon.item_id)]
@@ -411,6 +415,22 @@ def _learn_item_names(equipped: list[DamageSource], wall_now: float, now: float,
     elif now - _item_names_unavailable_since >= ITEM_NAMES_GRACE_S and not _item_names_reported and not name_reader.discovering:
         _item_names_reported = True
         logging.warning(f"{LOG_PREFIX} item names unavailable ({name_reader.last_error or 'no UI model found'}); guns keep their type labels")
+
+
+def _report_missing_identity(equipped: list[DamageSource], slot_seeds: list[bytes | None]) -> None:
+    """One line when no equipped gun has a stable id. The identity struct the ids come from
+    is empty on a co-op client (seen on 2026-09-22: every gun read as zeroes while the
+    gadgets kept their seeds), so names, pictures and the lifetime record cannot follow a
+    gun there; the damage numbers themselves are unaffected."""
+    global _identity_missing_reported
+    if _identity_missing_reported or not equipped or any(seed is not None for seed in slot_seeds):
+        return
+    _identity_missing_reported = True
+    logging.warning(
+        f"{LOG_PREFIX} the equipped guns have no stable item id (their identity reads as empty, which is what a "
+        f"co-op client sees): item names, pictures and the lifetime record fall back to per-launch ids this session. "
+        f"Damage attribution is unaffected."
+    )
 
 
 def _needs_item_info(item_id: str) -> bool:

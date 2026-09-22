@@ -60,6 +60,8 @@ Everything the mod writes goes to `%LOCALAPPDATA%\BL4DamageTracker\` (`C:\Users\
 - `logs\session-<date>-<time>.jsonl`: one file per game launch, one JSON line per hit, plus a meta line and a marker line whenever you switch character. The newest 20 sessions are kept. `latest-session.txt` names the running one.
 - `characters\<character id>\weapons.json`: that character's lifetime weapon record (the grenades included, as records of kind `grenade`).
 
+In a co-op session as a client the guns' item identity is not replicated, so they have no stable id: item names and pictures stay empty and the lifetime record does not merge with your single-player one (the mod says so once in the log). The damage numbers are unaffected.
+
 Use the "Open log folder" button in the mod menu to get there.
 
 ## Settings

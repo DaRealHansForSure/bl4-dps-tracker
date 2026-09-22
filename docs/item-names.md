@@ -126,6 +126,17 @@ committed and not guard pages: a read that touches a guard page disarms it, and 
 whose stack it guarded crashes later. The scan pauses every 8 MB; the game thread only ever
 reads remembered addresses.
 
+## Co-op
+
+On a client in a co-op session the identity struct of the equipped guns reads as all zeroes
+(2026-09-22: four `OakWeapon` items at the right addresses, layout and size confirmed, seed
+bytes empty), so `itemidentity.py` falls back to the per-launch instance id. The gadgets
+keep their seeds in the same session, so it is the weapons' identity that is not replicated
+to clients. Consequences: no item names or pictures for guns, and lifetime records that do
+not merge with the single-player ones. `mod.py` `_report_missing_identity` says so once.
+Damage attribution does not depend on the identity and is unaffected. A co-op identity
+would have to come from the UI models instead, where the item cards carry the serial.
+
 ## Gadgets
 
 The grenade, the shield, the class mod, the repair kit and the enhancement sit in the
