@@ -1460,7 +1460,12 @@ def dmgstatus_command(args: argparse.Namespace) -> None:
             f"{LOG_PREFIX} session log: {session_log.path} ({session_log.written} written, {session_log.buffered()} buffered, "
             f"{session_log.write_errors} write errors)"
         )
-    table_state = "shown" if readout is not None and readout.visible() else ("created, hidden" if readout is not None else "not created")
+    if readout is None:
+        table_state = "not created"
+    elif readout.visible():
+        table_state = "shown"
+    else:
+        table_state = "created, hidden"
     logging.info(f"{LOG_PREFIX} table: {table_state}; play clock {format_number(_play_clock)} s; window {readout_window_minutes.value} min")
     if dashboard is not None:
         logging.info(f"{LOG_PREFIX} dashboard: {dashboard.url} ({dashboard.client_count()} client(s), {dashboard.errors} errors)")

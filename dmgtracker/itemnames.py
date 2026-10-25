@@ -334,7 +334,9 @@ class ItemNameReader:
         clock: Callable[[], float] = time.monotonic,
         log: Callable[[str], None] | None = None,
     ) -> None:
-        kernel = _Kernel() if read_memory is None or list_regions is None else None
+        # The kernel reader is opened only when a test has not injected both functions.
+        needs_kernel = read_memory is None or list_regions is None
+        kernel = _Kernel() if needs_kernel else None
         self.layout = layout
         self._read = read_memory if read_memory is not None else kernel.read
         self._regions = list_regions if list_regions is not None else kernel.regions
@@ -600,10 +602,10 @@ class ItemNameReader:
                 if since_rest >= SCAN_REST_EVERY_BYTES:
                     since_rest = 0
                     time.sleep(SCAN_REST_S)
-        self.last_error = (
-            "no item cards were found" if not seed
-            else f"no UI model holds the seed {seed.hex()[:6]} and no item cards were found"
-        )
+        if seed:
+            self.last_error = f"no UI model holds the seed {seed.hex()[:6]} and no item cards were found"
+        else:
+            self.last_error = "no item cards were found"
         return False
 
     def _scan_order(self, regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
